@@ -1,0 +1,38 @@
+name: FSC Snapshot
+
+on:
+  schedule:
+    - cron: "10 6 * * *"      # 每日 06:10 UTC（台灣 14:10）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: farehunter           # 與 monitor 共用鎖，避免同時 commit 衝突
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run full-service snapshot
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+        run: PYTHONPATH=src python -m farehunter.fsc_snapshot
+      - name: Export dashboard data
+        run: python src/farehunter/export_web.py prices.db docs/data.json
+      - name: Commit
+        run: |
+          git config user.name "farehunter-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git pull --rebase
+          git add prices.db docs/data.json
+          git diff --cached --quiet || git commit -m "chore: fsc snapshot $(date -u +'%Y-%m-%dT%H:%MZ')"
+          git push

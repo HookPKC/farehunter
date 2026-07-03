@@ -331,7 +331,10 @@ function render(data){
       const cur = curOffer ? curOffer.price : null;
       const curAl = curOffer ? alFull((curOffer.carriers||"").split(",")[0]) : "";
       const fulls = r.latest.filter(x=>x.full_price);
-      const bestFull = fulls.length ? fulls.reduce((a,b)=>a.full_price<=b.full_price?a:b) : null;
+      let bestFull = fulls.length ? fulls.reduce((a,b)=>a.full_price<=b.full_price?a:b) : null;
+      if(!bestFull && r.fsc_latest)
+        bestFull = {full_price:r.fsc_latest.price, full_carriers:r.fsc_latest.carriers,
+                    depart_date:r.fsc_latest.depart_date};
       const med = r.stats.median;
       let pill = `<span class="pill flat">—</span>`;
       if(cur!=null && med){

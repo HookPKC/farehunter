@@ -51,6 +51,15 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
                 item["full_price"] = f["price"]
                 item["full_carriers"] = f["carriers"]
 
+        # freshest full-service snapshot (last 7 days), independent of calendar match
+        fsc_latest = conn.execute(
+            """SELECT depart_date, return_date, price, carriers, observed_at
+               FROM observations
+               WHERE origin=? AND destination=? AND fare_class='full'
+                 AND depart_date >= date('now')
+                 AND observed_at >= datetime('now', '-7 days')
+               ORDER BY price ASC LIMIT 1""", (o, d)).fetchone()
+
         # trend: daily minimum across all departure dates
         history = [dict(r) for r in conn.execute(
             """SELECT substr(observed_at, 1, 10) AS day, MIN(price) AS min_price
@@ -63,6 +72,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
                       "avg": round(srow["av"], 1) if srow["av"] else None,
                       "median": median},
             "latest": latest,
+            "fsc_latest": dict(fsc_latest) if fsc_latest else None,
             "history": history,
         })
 

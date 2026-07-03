@@ -1,0 +1,51 @@
+{
+  "search_metadata": { "status": "Success" },
+  "search_parameters": { "engine": "google_flights", "currency": "TWD" },
+  "best_flights": [
+    {
+      "flights": [
+        { "departure_airport": {"id": "TPE", "time": "2026-07-31 09:00"},
+          "arrival_airport": {"id": "NRT", "time": "2026-07-31 13:10"},
+          "airline": "Tigerair Taiwan", "flight_number": "IT 200",
+          "travel_class": "Economy", "duration": 190 }
+      ],
+      "price": 8900, "total_duration": 190, "type": "Round trip"
+    },
+    {
+      "flights": [
+        { "departure_airport": {"id": "TPE", "time": "2026-07-31 08:55"},
+          "arrival_airport": {"id": "NRT", "time": "2026-07-31 13:05"},
+          "airline": "China Airlines", "flight_number": "CI 100",
+          "travel_class": "Economy", "duration": 190 }
+      ],
+      "price": 14203, "total_duration": 190, "type": "Round trip"
+    }
+  ],
+  "other_flights": [
+    {
+      "flights": [
+        { "departure_airport": {"id": "TPE", "time": "2026-07-31 07:30"},
+          "arrival_airport": {"id": "OKA", "time": "2026-07-31 10:00"},
+          "airline": "EVA Air", "flight_number": "BR 112",
+          "travel_class": "Economy", "duration": 90 },
+        { "departure_airport": {"id": "OKA", "time": "2026-07-31 11:30"},
+          "arrival_airport": {"id": "NRT", "time": "2026-07-31 14:00"},
+          "airline": "Peach", "flight_number": "MM 512",
+          "travel_class": "Economy", "duration": 150 }
+      ],
+      "price": 11800, "total_duration": 390, "type": "Round trip"
+    },
+    {
+      "flights": [
+        { "departure_airport": {"id": "TPE", "time": "2026-07-31 14:20"},
+          "arrival_airport": {"id": "NRT", "time": "2026-07-31 18:30"},
+          "airline": "EVA Air", "flight_number": "BR 198",
+          "travel_class": "Economy", "duration": 190 }
+      ],
+      "price": 13540, "total_duration": 190, "type": "Round trip"
+    },
+    {
+      "flights": [ { "airline": "Broken", "flight_number": "XX 1" } ]
+    }
+  ]
+}
