@@ -1,0 +1,36 @@
+name: Test Notification
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Send test alert to all configured channels
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: |
+          python - << 'PY'
+          import sys; sys.path.insert(0, "src")
+          from farehunter.models import Offer
+          from farehunter.analyzer import Verdict
+          from farehunter.notify import notify
+          sent = notify(
+              Offer("TPE", "NRT", "2026-09-08", "2026-09-13", 5713, "TWD",
+                    "IT", 0, "205",
+                    "https://www.aviasales.com/search/TPE0809NRT13091"),
+              Verdict(True, "test", "這是 FareHunter 測試通知——收到代表 LINE 推播設定成功"))
+          print("sent via:", sent or "no channel configured")
+          if not sent:
+              raise SystemExit(1)
+          PY
