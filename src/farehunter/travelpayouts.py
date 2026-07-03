@@ -45,7 +45,7 @@ class TravelpayoutsClient:
     def search_month(self, origin: str, destination: str, month: str,
                      currency: str = "twd", market: Optional[str] = None,
                      direct: bool = False, one_way: bool = False,
-                     limit: int = 100, max_retries: int = 3) -> dict:
+                     limit: int = 1000, max_retries: int = 3) -> dict:
         """Fetch cached cheapest fares for a route in a month (YYYY-MM)."""
         if not self.token:
             raise RuntimeError("Missing TRAVELPAYOUTS_TOKEN environment variable.")
