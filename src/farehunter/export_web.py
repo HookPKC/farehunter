@@ -1,0 +1,85 @@
+"""Export prices.db into docs/data.json for the web dashboard (GitHub Pages)."""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    routes = []
+    route_rows = conn.execute(
+        "SELECT DISTINCT origin, destination FROM observations ORDER BY origin, destination"
+    ).fetchall()
+
+    for rr in route_rows:
+        o, d = rr["origin"], rr["destination"]
+
+        # stats over full history
+        srow = conn.execute(
+            "SELECT COUNT(*) n, MIN(price) mn, AVG(price) av FROM observations "
+            "WHERE origin=? AND destination=?", (o, d)).fetchone()
+        prices = [r["price"] for r in conn.execute(
+            "SELECT price FROM observations WHERE origin=? AND destination=? ORDER BY price",
+            (o, d))]
+        mid = len(prices) // 2
+        median = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
+
+        # fare calendar: most recent observation per FUTURE departure date
+        latest = [dict(r) for r in conn.execute(
+            """SELECT depart_date, return_date, price, currency, carriers, stops,
+                      MAX(observed_at) AS observed_at
+               FROM observations
+               WHERE origin=? AND destination=? AND depart_date >= date('now')
+               GROUP BY depart_date ORDER BY depart_date LIMIT 16""", (o, d))]
+
+        # trend: daily minimum across all departure dates
+        history = [dict(r) for r in conn.execute(
+            """SELECT substr(observed_at, 1, 10) AS day, MIN(price) AS min_price
+               FROM observations WHERE origin=? AND destination=?
+               GROUP BY day ORDER BY day""", (o, d))]
+
+        routes.append({
+            "origin": o, "destination": d,
+            "stats": {"n": srow["n"], "min": srow["mn"],
+                      "avg": round(srow["av"], 1) if srow["av"] else None,
+                      "median": median},
+            "latest": latest,
+            "history": history,
+        })
+
+    alerts = [dict(r) for r in conn.execute(
+        """SELECT origin, destination, depart_date, price, reason, sent_at
+           FROM alerts ORDER BY sent_at DESC LIMIT 20""")]
+    alerts_24h = conn.execute(
+        "SELECT COUNT(*) c FROM alerts WHERE sent_at >= datetime('now','-24 hours')"
+    ).fetchone()["c"]
+    total_obs = conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"]
+    conn.close()
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "env": os.environ.get("AMADEUS_ENV", "test"),
+        "totals": {"observations": total_obs, "routes": len(routes),
+                   "alerts_24h": alerts_24h},
+        "routes": routes,
+        "alerts": alerts,
+    }
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    return payload
+
+
+if __name__ == "__main__":
+    import sys
+    db = sys.argv[1] if len(sys.argv) > 1 else "prices.db"
+    out = sys.argv[2] if len(sys.argv) > 2 else "docs/data.json"
+    p = export(db, out)
+    print(f"exported {p['totals']['observations']} observations, "
+          f"{p['totals']['routes']} routes -> {out}")

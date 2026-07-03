@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FareHunter — 機票低價看板</title>
+<meta name="theme-color" content="#0A0D14">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+:root{
+  --bg:#0A0D14; --panel:#111623; --cell:#0D1220; --line:#1E2637;
+  --amber:#FFB300; --amber-dim:#7A6222; --ink:#E9EEF7; --muted:#6E7B94;
+  --deal:#45E0A0; --up:#FF6B5E;
+  --mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue','Segoe UI',
+  'Noto Sans TC',sans-serif;
+  padding:max(14px,env(safe-area-inset-top)) 14px calc(28px + env(safe-area-inset-bottom));
+  max-width:760px;margin:0 auto}
+
+/* ---- split-flap header ---- */
+.board{display:flex;gap:3px;flex-wrap:wrap;margin-bottom:6px}
+.flap{background:var(--cell);border:1px solid var(--line);border-radius:4px;
+  font-family:var(--mono);font-weight:700;color:var(--amber);
+  font-size:clamp(18px,5.2vw,26px);line-height:1;
+  padding:8px 0;width:clamp(24px,6.4vw,34px);text-align:center;
+  position:relative;overflow:hidden;
+  text-shadow:0 0 12px rgba(255,179,0,.45)}
+.flap::after{content:"";position:absolute;left:0;right:0;top:50%;height:1px;
+  background:rgba(0,0,0,.55)}
+@media (prefers-reduced-motion:no-preference){
+  .flap{animation:flip .5s cubic-bezier(.3,1.4,.5,1) backwards}
+  .flap:nth-child(n){animation-delay:calc(var(--i)*55ms)}
+  @keyframes flip{from{transform:rotateX(90deg);opacity:0}to{transform:rotateX(0);opacity:1}}
+}
+.statusline{font-family:var(--mono);font-size:11px;color:var(--muted);
+  letter-spacing:.08em;margin-bottom:16px}
+.statusline b{color:var(--ink);font-weight:600}
+.badge-env{color:var(--amber);border:1px solid var(--amber-dim);border-radius:3px;
+  padding:1px 5px;margin-left:6px}
+.badge-env.production{color:var(--deal);border-color:var(--deal)}
+
+/* ---- summary strip ---- */
+.strip{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:18px}
+.strip div{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:10px 12px}
+.strip .k{font-size:10px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase}
+.strip .v{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--amber);margin-top:2px}
+
+/* ---- alert feed ---- */
+h2{font-size:11px;letter-spacing:.2em;color:var(--muted);text-transform:uppercase;
+  margin:22px 0 10px;font-weight:600}
+.alerts{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.alert-row{display:flex;align-items:baseline;gap:10px;padding:9px 12px;
+  font-family:var(--mono);font-size:13px;border-bottom:1px solid var(--line);
+  background:var(--panel)}
+.alert-row:last-child{border-bottom:0}
+.alert-row .rt{color:var(--ink);font-weight:700;min-width:86px}
+.alert-row .pr{color:var(--deal);font-weight:700}
+.alert-row .why{color:var(--muted);font-size:11px;margin-left:auto;text-align:right}
+.alerts-empty{padding:14px 12px;color:var(--muted);font-size:13px;background:var(--panel)}
+
+/* ---- route stub cards ---- */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  margin-bottom:16px;position:relative}
+.card-main{padding:14px 16px 12px}
+.route{display:flex;align-items:baseline;gap:8px}
+.route .codes{font-weight:800;font-size:20px;letter-spacing:.02em}
+.route .codes .arr{color:var(--amber);font-weight:400;padding:0 2px}
+.route .carriers{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.1em}
+.price-row{display:flex;align-items:flex-end;gap:12px;margin:10px 0 4px;flex-wrap:wrap}
+.big-price{font-family:var(--mono);font-weight:700;font-size:34px;color:var(--amber);
+  line-height:1;text-shadow:0 0 16px rgba(255,179,0,.25);font-variant-numeric:tabular-nums}
+.big-price small{font-size:13px;color:var(--muted);font-weight:400;margin-left:4px}
+.delta{font-family:var(--mono);font-size:13px;font-weight:700;padding-bottom:3px}
+.delta.down{color:var(--deal)}.delta.up{color:var(--up)}.delta.flat{color:var(--muted)}
+.spark{display:block;width:100%;height:56px;margin:6px 0 2px}
+.spark-cap{font-family:var(--mono);font-size:10px;color:var(--muted);
+  display:flex;justify-content:space-between}
+
+/* fare calendar */
+.cal{display:flex;gap:8px;overflow-x:auto;padding:12px 16px 14px;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none}
+.cal::-webkit-scrollbar{display:none}
+.chip{flex:0 0 auto;text-decoration:none;text-align:center;
+  border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--cell)}
+.chip .d{font-size:10px;color:var(--muted);font-family:var(--mono)}
+.chip .p{font-family:var(--mono);font-size:14px;font-weight:700;margin-top:2px;
+  font-variant-numeric:tabular-nums;color:var(--ink)}
+.chip.lo{border-color:rgba(69,224,160,.5)}.chip.lo .p{color:var(--deal)}
+.chip.hi .p{color:var(--muted)}
+
+/* perforated stub */
+.stub{border-top:1.5px dashed var(--line);padding:9px 16px;display:flex;gap:16px;
+  font-family:var(--mono);font-size:11px;color:var(--muted);position:relative}
+.stub b{color:var(--ink);font-weight:600}
+.stub::before,.stub::after{content:"";position:absolute;top:-7px;width:14px;height:14px;
+  border-radius:50%;background:var(--bg);border:1px solid var(--line)}
+.stub::before{left:-8px}.stub::after{right:-8px}
+
+footer{margin-top:26px;font-size:11px;color:var(--muted);line-height:1.6;
+  font-family:var(--mono)}
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+</style>
+</head>
+<body>
+<header>
+  <div class="board" id="board" aria-label="FareHunter"></div>
+  <div class="statusline" id="statusline">載入中…</div>
+</header>
+
+<div class="strip" id="strip"></div>
+
+<h2>最新警報</h2>
+<div class="alerts" id="alerts"></div>
+
+<h2>監控航線</h2>
+<div id="routes"></div>
+
+<footer id="foot"></footer>
+
+<script>
+/* Fallback sample: replaced by real data.json on GitHub Pages */
+const EMBEDDED = /*__SAMPLE__*/{"generated_at":"2026-07-03T05:47:04+00:00","env":"sample","totals":{"observations":2064,"routes":4,"alerts_24h":2},"routes":[{"origin":"KHH","destination":"KIX","stats":{"n":516,"min":6696.0,"avg":13078.5,"median":12892.0},"latest":[{"depart_date":"2026-07-03","return_date":"2026-07-08","price":15204.0,"currency":"TWD","carriers":"CI,BR","stops":0,"observed_at":"2026-06-21T14:00:00+00:00"},{"depart_date":"2026-07-10","return_date":"2026-07-15","price":14160.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-07-17","return_date":"2026-07-22","price":14944.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-07-24","return_date":"2026-07-29","price":13239.0,"currency":"TWD","carriers":"CI","stops":1,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-07-31","return_date":"2026-08-05","price":15585.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-08-07","return_date":"2026-08-12","price":16017.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-08-14","return_date":"2026-08-19","price":13828.0,"currency":"TWD","carriers":"CI,BR","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-08-21","return_date":"2026-08-26","price":15315.0,"currency":"TWD","carriers":"CI,BR","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-08-28","return_date":"2026-09-02","price":15711.0,"currency":"TWD","carriers":"CI,BR","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-09-04","return_date":"2026-09-09","price":9182.0,"currency":"TWD","carriers":"CI,BR","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-09-11","return_date":"2026-09-16","price":10100.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-09-18","return_date":"2026-09-23","price":11440.0,"currency":"TWD","carriers":"CI,BR","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-09-25","return_date":"2026-09-30","price":10824.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"}],"history":[{"day":"2026-05-22","min_price":11124.0},{"day":"2026-05-23","min_price":10912.0},{"day":"2026-05-24","min_price":11470.0},{"day":"2026-05-25","min_price":10544.0},{"day":"2026-05-26","min_price":10008.0},{"day":"2026-05-27","min_price":9527.0},{"day":"2026-05-28","min_price":9488.0},{"day":"2026-05-29","min_price":10394.0},{"day":"2026-05-30","min_price":10815.0},{"day":"2026-05-31","min_price":10994.0},{"day":"2026-06-01","min_price":9628.0},{"day":"2026-06-02","min_price":11766.0},{"day":"2026-06-03","min_price":10594.0},{"day":"2026-06-04","min_price":11050.0},{"day":"2026-06-05","min_price":9776.0},{"day":"2026-06-06","min_price":9559.0},{"day":"2026-06-07","min_price":9909.0},{"day":"2026-06-08","min_price":10566.0},{"day":"2026-06-09","min_price":9196.0},{"day":"2026-06-10","min_price":9229.0},{"day":"2026-06-11","min_price":9999.0},{"day":"2026-06-12","min_price":9788.0},{"day":"2026-06-13","min_price":9554.0},{"day":"2026-06-14","min_price":9553.0},{"day":"2026-06-15","min_price":11535.0},{"day":"2026-06-16","min_price":11318.0},{"day":"2026-06-17","min_price":6696.0},{"day":"2026-06-18","min_price":10733.0},{"day":"2026-06-19","min_price":11564.0},{"day":"2026-06-20","min_price":11543.0},{"day":"2026-06-21","min_price":10847.0},{"day":"2026-06-22","min_price":9205.0},{"day":"2026-06-23","min_price":9858.0},{"day":"2026-06-24","min_price":9210.0},{"day":"2026-06-25","min_price":10761.0},{"day":"2026-06-26","min_price":9537.0},{"day":"2026-06-27","min_price":10107.0},{"day":"2026-06-28","min_price":9182.0},{"day":"2026-06-29","min_price":10464.0},{"day":"2026-06-30","min_price":9846.0},{"day":"2026-07-01","min_price":9397.0},{"day":"2026-07-02","min_price":9229.0},{"day":"2026-07-03","min_price":9882.0}]},{"origin":"KHH","destination":"NRT","stats":{"n":516,"min":7130.0,"avg":13869.1,"median":13815.5},"latest":[{"depart_date":"2026-07-03","return_date":"2026-07-08","price":14314.0,"currency":"TWD","carriers":"CI","stops":1,"observed_at":"2026-06-21T14:00:00+00:00"},{"depart_date":"2026-07-10","return_date":"2026-07-15","price":13238.0,"currency":"TWD","carriers":"CI","stops":1,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-07-17","return_date":"2026-07-22","price":15247.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-07-24","return_date":"2026-07-29","price":14778.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-07-31","return_date":"2026-08-05","price":14072.0,"currency":"TWD","carriers":"CI","stops":1,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-08-07","return_date":"2026-08-12","price":12524.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-08-14","return_date":"2026-08-19","price":7130.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-08-21","return_date":"2026-08-26","price":14655.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-08-28","return_date":"2026-09-02","price":15407.0,"currency":"TWD","carriers":"CI","stops":1,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-09-04","return_date":"2026-09-09","price":10858.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-09-11","return_date":"2026-09-16","price":10715.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-09-18","return_date":"2026-09-23","price":12846.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-09-25","return_date":"2026-09-30","price":11497.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"}],"history":[{"day":"2026-05-22","min_price":10894.0},{"day":"2026-05-23","min_price":10258.0},{"day":"2026-05-24","min_price":11443.0},{"day":"2026-05-25","min_price":11403.0},{"day":"2026-05-26","min_price":10887.0},{"day":"2026-05-27","min_price":11493.0},{"day":"2026-05-28","min_price":10065.0},{"day":"2026-05-29","min_price":10113.0},{"day":"2026-05-30","min_price":10728.0},{"day":"2026-05-31","min_price":9812.0},{"day":"2026-06-01","min_price":7130.0},{"day":"2026-06-02","min_price":9842.0},{"day":"2026-06-03","min_price":10249.0},{"day":"2026-06-04","min_price":11745.0},{"day":"2026-06-05","min_price":12750.0},{"day":"2026-06-06","min_price":12314.0},{"day":"2026-06-07","min_price":10316.0},{"day":"2026-06-08","min_price":10168.0},{"day":"2026-06-09","min_price":12410.0},{"day":"2026-06-10","min_price":9927.0},{"day":"2026-06-11","min_price":10889.0},{"day":"2026-06-12","min_price":10915.0},{"day":"2026-06-13","min_price":10448.0},{"day":"2026-06-14","min_price":10098.0},{"day":"2026-06-15","min_price":11548.0},{"day":"2026-06-16","min_price":11440.0},{"day":"2026-06-17","min_price":10215.0},{"day":"2026-06-18","min_price":9822.0},{"day":"2026-06-19","min_price":11155.0},{"day":"2026-06-20","min_price":11121.0},{"day":"2026-06-21","min_price":10426.0},{"day":"2026-06-22","min_price":11015.0},{"day":"2026-06-23","min_price":9920.0},{"day":"2026-06-24","min_price":10619.0},{"day":"2026-06-25","min_price":10535.0},{"day":"2026-06-26","min_price":9938.0},{"day":"2026-06-27","min_price":10746.0},{"day":"2026-06-28","min_price":10858.0},{"day":"2026-06-29","min_price":10025.0},{"day":"2026-06-30","min_price":7130.0},{"day":"2026-07-01","min_price":10083.0},{"day":"2026-07-02","min_price":10046.0},{"day":"2026-07-03","min_price":7130.0}]},{"origin":"TPE","destination":"KIX","stats":{"n":516,"min":5518.0,"avg":10673.7,"median":10610.0},"latest":[{"depart_date":"2026-07-03","return_date":"2026-07-08","price":11409.0,"currency":"TWD","carriers":"CI,BR","stops":0,"observed_at":"2026-06-21T14:00:00+00:00"},{"depart_date":"2026-07-10","return_date":"2026-07-15","price":10944.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-07-17","return_date":"2026-07-22","price":11804.0,"currency":"TWD","carriers":"CI,BR","stops":1,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-07-24","return_date":"2026-07-29","price":10567.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-07-31","return_date":"2026-08-05","price":11299.0,"currency":"TWD","carriers":"CI,BR","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-08-07","return_date":"2026-08-12","price":10651.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-08-14","return_date":"2026-08-19","price":10900.0,"currency":"TWD","carriers":"CI,BR","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-08-21","return_date":"2026-08-26","price":11849.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-08-28","return_date":"2026-09-02","price":13120.0,"currency":"TWD","carriers":"CI,BR","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-09-04","return_date":"2026-09-09","price":8493.0,"currency":"TWD","carriers":"CI","stops":1,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-09-11","return_date":"2026-09-16","price":10603.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-09-18","return_date":"2026-09-23","price":10347.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-09-25","return_date":"2026-09-30","price":8988.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"}],"history":[{"day":"2026-05-22","min_price":8041.0},{"day":"2026-05-23","min_price":5518.0},{"day":"2026-05-24","min_price":8459.0},{"day":"2026-05-25","min_price":8389.0},{"day":"2026-05-26","min_price":7855.0},{"day":"2026-05-27","min_price":9386.0},{"day":"2026-05-28","min_price":7804.0},{"day":"2026-05-29","min_price":7703.0},{"day":"2026-05-30","min_price":8233.0},{"day":"2026-05-31","min_price":9044.0},{"day":"2026-06-01","min_price":7757.0},{"day":"2026-06-02","min_price":5518.0},{"day":"2026-06-03","min_price":7920.0},{"day":"2026-06-04","min_price":9484.0},{"day":"2026-06-05","min_price":7889.0},{"day":"2026-06-06","min_price":9760.0},{"day":"2026-06-07","min_price":5518.0},{"day":"2026-06-08","min_price":8032.0},{"day":"2026-06-09","min_price":5518.0},{"day":"2026-06-10","min_price":8018.0},{"day":"2026-06-11","min_price":7761.0},{"day":"2026-06-12","min_price":7982.0},{"day":"2026-06-13","min_price":9477.0},{"day":"2026-06-14","min_price":8343.0},{"day":"2026-06-15","min_price":9939.0},{"day":"2026-06-16","min_price":9181.0},{"day":"2026-06-17","min_price":8068.0},{"day":"2026-06-18","min_price":9334.0},{"day":"2026-06-19","min_price":9549.0},{"day":"2026-06-20","min_price":5518.0},{"day":"2026-06-21","min_price":8034.0},{"day":"2026-06-22","min_price":8072.0},{"day":"2026-06-23","min_price":5518.0},{"day":"2026-06-24","min_price":8300.0},{"day":"2026-06-25","min_price":7976.0},{"day":"2026-06-26","min_price":7629.0},{"day":"2026-06-27","min_price":5518.0},{"day":"2026-06-28","min_price":7932.0},{"day":"2026-06-29","min_price":5518.0},{"day":"2026-06-30","min_price":8629.0},{"day":"2026-07-01","min_price":8341.0},{"day":"2026-07-02","min_price":5518.0},{"day":"2026-07-03","min_price":7929.0}]},{"origin":"TPE","destination":"NRT","stats":{"n":516,"min":6076.0,"avg":11776.4,"median":11784.5},"latest":[{"depart_date":"2026-07-03","return_date":"2026-07-08","price":13067.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-21T14:00:00+00:00"},{"depart_date":"2026-07-10","return_date":"2026-07-15","price":13631.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-07-17","return_date":"2026-07-22","price":13100.0,"currency":"TWD","carriers":"CI,BR,JX","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-07-24","return_date":"2026-07-29","price":13235.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-07-31","return_date":"2026-08-05","price":10755.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-08-07","return_date":"2026-08-12","price":13786.0,"currency":"TWD","carriers":"CI,BR,JX","stops":1,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-08-14","return_date":"2026-08-19","price":10688.0,"currency":"TWD","carriers":"CI","stops":1,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-08-21","return_date":"2026-08-26","price":10775.0,"currency":"TWD","carriers":"CI,BR","stops":1,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-08-28","return_date":"2026-09-02","price":12493.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-09-04","return_date":"2026-09-09","price":10350.0,"currency":"TWD","carriers":"CI","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-09-11","return_date":"2026-09-16","price":9243.0,"currency":"TWD","carriers":"CI,BR,JX","stops":0,"observed_at":"2026-07-03T14:00:00+00:00"},{"depart_date":"2026-09-18","return_date":"2026-09-23","price":9829.0,"currency":"TWD","carriers":"CI,BR,JX","stops":0,"observed_at":"2026-06-28T14:00:00+00:00"},{"depart_date":"2026-09-25","return_date":"2026-09-30","price":8662.0,"currency":"TWD","carriers":"CI","stops":1,"observed_at":"2026-07-03T14:00:00+00:00"}],"history":[{"day":"2026-05-22","min_price":8854.0},{"day":"2026-05-23","min_price":8959.0},{"day":"2026-05-24","min_price":8336.0},{"day":"2026-05-25","min_price":8692.0},{"day":"2026-05-26","min_price":8632.0},{"day":"2026-05-27","min_price":8381.0},{"day":"2026-05-28","min_price":8569.0},{"day":"2026-05-29","min_price":8861.0},{"day":"2026-05-30","min_price":8763.0},{"day":"2026-05-31","min_price":8801.0},{"day":"2026-06-01","min_price":9037.0},{"day":"2026-06-02","min_price":8490.0},{"day":"2026-06-03","min_price":9470.0},{"day":"2026-06-04","min_price":8875.0},{"day":"2026-06-05","min_price":9018.0},{"day":"2026-06-06","min_price":8371.0},{"day":"2026-06-07","min_price":10206.0},{"day":"2026-06-08","min_price":6076.0},{"day":"2026-06-09","min_price":9430.0},{"day":"2026-06-10","min_price":8349.0},{"day":"2026-06-11","min_price":6076.0},{"day":"2026-06-12","min_price":8915.0},{"day":"2026-06-13","min_price":9965.0},{"day":"2026-06-14","min_price":6076.0},{"day":"2026-06-15","min_price":8516.0},{"day":"2026-06-16","min_price":9093.0},{"day":"2026-06-17","min_price":8995.0},{"day":"2026-06-18","min_price":8816.0},{"day":"2026-06-19","min_price":9912.0},{"day":"2026-06-20","min_price":8945.0},{"day":"2026-06-21","min_price":8517.0},{"day":"2026-06-22","min_price":8756.0},{"day":"2026-06-23","min_price":8700.0},{"day":"2026-06-24","min_price":9922.0},{"day":"2026-06-25","min_price":8509.0},{"day":"2026-06-26","min_price":8965.0},{"day":"2026-06-27","min_price":8621.0},{"day":"2026-06-28","min_price":9829.0},{"day":"2026-06-29","min_price":9814.0},{"day":"2026-06-30","min_price":8768.0},{"day":"2026-07-01","min_price":8875.0},{"day":"2026-07-02","min_price":6076.0},{"day":"2026-07-03","min_price":8662.0}]}],"alerts":[{"origin":"TPE","destination":"KIX","depart_date":"2026-07-10","price":5518.0,"reason":"big_drop","sent_at":"2026-07-02 21:00:00"},{"origin":"TPE","destination":"KIX","depart_date":"2026-06-05","price":5518.0,"reason":"big_drop","sent_at":"2026-07-02 08:00:00"},{"origin":"TPE","destination":"KIX","depart_date":"2026-08-28","price":5518.0,"reason":"big_drop","sent_at":"2026-07-02 02:00:00"},{"origin":"TPE","destination":"KIX","depart_date":"2026-07-03","price":5518.0,"reason":"big_drop","sent_at":"2026-07-01 21:00:00"},{"origin":"TPE","destination":"KIX","depart_date":"2026-06-26","price":5518.0,"reason":"big_drop","sent_at":"2026-06-30 23:00:00"},{"origin":"TPE","destination":"KIX","depart_date":"2026-08-21","price":5518.0,"reason":"big_drop","sent_at":"2026-06-30 17:00:00"},{"origin":"TPE","destination":"KIX","depart_date":"2026-07-31","price":5518.0,"reason":"big_drop","sent_at":"2026-06-29 21:00:00"}]}/*__END__*/;
+
+const $ = id => document.getElementById(id);
+const fmt = n => Math.round(n).toLocaleString("en-US");
+const WD = ["日","一","二","三","四","五","六"];
+
+function flapTitle(){
+  const b = $("board");
+  "FAREHUNTER".split("").forEach((ch,i)=>{
+    const s = document.createElement("span");
+    s.className="flap"; s.textContent=ch; s.style.setProperty("--i",i);
+    b.appendChild(s);
+  });
+}
+
+function sparkline(hist, median){
+  if(!hist || hist.length<2) return "";
+  const w=600,h=56,pad=4;
+  const ps=hist.map(x=>x.min_price);
+  const lo=Math.min(...ps), hi=Math.max(...ps), span=(hi-lo)||1;
+  const X=i=>pad+i*(w-2*pad)/(hist.length-1);
+  const Y=v=>h-pad-(v-lo)*(h-2*pad)/span;
+  const line=ps.map((v,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join("");
+  const medY=(median>=lo&&median<=hi)?
+    `<line x1="${pad}" x2="${w-pad}" y1="${Y(median).toFixed(1)}" y2="${Y(median).toFixed(1)}"
+      stroke="#6E7B94" stroke-width="1" stroke-dasharray="3 4" opacity=".6"/>`:"";
+  const last=ps.length-1;
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img"
+    aria-label="價格趨勢圖">
+    ${medY}
+    <path d="${line}" fill="none" stroke="#FFB300" stroke-width="2"
+      stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${X(last).toFixed(1)}" cy="${Y(ps[last]).toFixed(1)}" r="3.5" fill="#FFB300"/>
+  </svg>`;
+}
+
+function gfLink(o,d,dep){
+  return `https://www.google.com/travel/flights?q=Flights%20from%20${o}%20to%20${d}%20on%20${dep}`;
+}
+
+function render(data){
+  const t = data.generated_at.replace("T"," ").slice(5,16);
+  $("statusline").innerHTML =
+    `資料更新 <b>${t} UTC</b><span class="badge-env ${data.env}">${data.env.toUpperCase()}</span>`;
+
+  $("strip").innerHTML = [
+    ["觀察筆數", fmt(data.totals.observations)],
+    ["監控航線", data.totals.routes],
+    ["24H 警報", data.totals.alerts_24h],
+  ].map(([k,v])=>`<div><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+  $("alerts").innerHTML = data.alerts.length
+    ? data.alerts.slice(0,8).map(a=>`<div class="alert-row">
+        <span class="rt">${a.origin}→${a.destination}</span>
+        <span class="pr">${fmt(a.price)}</span>
+        <span>${a.depart_date.slice(5)}</span>
+        <span class="why">${a.reason} · ${a.sent_at.slice(5,10)}</span></div>`).join("")
+    : `<div class="alerts-empty">尚無警報。累積約 30 筆觀察後統計規則會自動啟用。</div>`;
+
+  $("routes").innerHTML = data.routes.map(r=>{
+    const cur = r.latest.length ? Math.min(...r.latest.map(x=>x.price)) : null;
+    const med = r.stats.median;
+    let delta = `<span class="delta flat">—</span>`;
+    if(cur!=null && med){
+      const pct = (cur/med-1)*100;
+      delta = pct<=-3 ? `<span class="delta down">▼ ${Math.abs(pct).toFixed(0)}% vs 中位</span>`
+            : pct>= 3 ? `<span class="delta up">▲ ${pct.toFixed(0)}% vs 中位</span>`
+            : `<span class="delta flat">≈ 中位數</span>`;
+    }
+    const carriers = [...new Set(r.latest.flatMap(x=>(x.carriers||"").split(",")))]
+      .filter(Boolean).slice(0,4).join(" · ");
+    const ps = r.latest.map(x=>x.price).sort((a,b)=>a-b);
+    const q1 = ps[Math.floor(ps.length*.25)] ?? 0, q3 = ps[Math.floor(ps.length*.75)] ?? Infinity;
+    const chips = r.latest.map(x=>{
+      const dt = new Date(x.depart_date+"T00:00:00");
+      const cls = x.price<=q1 ? "lo" : x.price>=q3 ? "hi" : "";
+      return `<a class="chip ${cls}" target="_blank" rel="noopener"
+        href="${gfLink(r.origin,r.destination,x.depart_date)}">
+        <div class="d">${x.depart_date.slice(5).replace("-","/")} 週${WD[dt.getDay()]}</div>
+        <div class="p">${fmt(x.price)}</div></a>`;
+    }).join("");
+    return `<div class="card">
+      <div class="card-main">
+        <div class="route"><span class="codes">${r.origin}<span class="arr">→</span>${r.destination}</span>
+          <span class="carriers">${carriers}</span></div>
+        <div class="price-row">
+          <span class="big-price">${cur!=null?fmt(cur):"—"}<small>TWD 起</small></span>${delta}
+        </div>
+        ${sparkline(r.history, med)}
+        <div class="spark-cap"><span>${(r.history[0]||{}).day||""}</span>
+          <span>每日最低價</span><span>${(r.history.at(-1)||{}).day||""}</span></div>
+      </div>
+      <div class="cal">${chips}</div>
+      <div class="stub">
+        <span>歷史低 <b>${fmt(r.stats.min)}</b></span>
+        <span>中位 <b>${fmt(med)}</b></span>
+        <span>樣本 <b>${fmt(r.stats.n)}</b></span>
+      </div>
+    </div>`;
+  }).join("");
+
+  $("foot").textContent =
+    "價格為 Amadeus 公告票價（不含廉航促銷），點日期可到 Google Flights 核對。" +
+    (data.env==="test" ? " TEST 環境為快取資料，僅供流程驗證。" :
+     data.env==="sample" ? " 目前顯示示範資料——監控首次執行後會自動換成真實價格。" : "");
+}
+
+flapTitle();
+fetch("data.json?t="+Date.now())
+  .then(r=>{ if(!r.ok) throw 0; return r.json(); })
+  .then(render)
+  .catch(()=> EMBEDDED ? render(EMBEDDED)
+    : $("statusline").textContent = "找不到 data.json — 請先執行監控產生資料");
+if("serviceWorker" in navigator && location.protocol==="https:")
+  navigator.serviceWorker.register("sw.js").catch(()=>{});
+</script>
+</body>
+</html>

@@ -1,0 +1,133 @@
+{
+  "meta": { "count": 3 },
+  "data": [
+    {
+      "type": "flight-offer",
+      "id": "1",
+      "source": "GDS",
+      "oneWay": false,
+      "numberOfBookableSeats": 5,
+      "itineraries": [
+        {
+          "duration": "PT3H10M",
+          "segments": [
+            {
+              "departure": { "iataCode": "TPE", "terminal": "1", "at": "2026-09-18T09:00:00" },
+              "arrival": { "iataCode": "NRT", "terminal": "2", "at": "2026-09-18T13:10:00" },
+              "carrierCode": "CI",
+              "number": "100",
+              "aircraft": { "code": "77W" },
+              "duration": "PT3H10M",
+              "id": "1",
+              "numberOfStops": 0
+            }
+          ]
+        },
+        {
+          "duration": "PT4H5M",
+          "segments": [
+            {
+              "departure": { "iataCode": "NRT", "terminal": "2", "at": "2026-09-23T14:00:00" },
+              "arrival": { "iataCode": "TPE", "terminal": "1", "at": "2026-09-23T17:05:00" },
+              "carrierCode": "CI",
+              "number": "101",
+              "aircraft": { "code": "77W" },
+              "duration": "PT4H5M",
+              "id": "2",
+              "numberOfStops": 0
+            }
+          ]
+        }
+      ],
+      "price": {
+        "currency": "TWD",
+        "total": "9820.00",
+        "base": "7200.00",
+        "grandTotal": "9820.00"
+      },
+      "validatingAirlineCodes": ["CI"],
+      "travelerPricings": [
+        {
+          "travelerId": "1",
+          "fareOption": "STANDARD",
+          "travelerType": "ADULT",
+          "price": { "currency": "TWD", "total": "9820.00" }
+        }
+      ]
+    },
+    {
+      "type": "flight-offer",
+      "id": "2",
+      "source": "GDS",
+      "oneWay": false,
+      "numberOfBookableSeats": 3,
+      "itineraries": [
+        {
+          "duration": "PT3H15M",
+          "segments": [
+            {
+              "departure": { "iataCode": "TPE", "terminal": "2", "at": "2026-09-18T10:30:00" },
+              "arrival": { "iataCode": "NRT", "terminal": "1", "at": "2026-09-18T14:45:00" },
+              "carrierCode": "BR",
+              "number": "198",
+              "aircraft": { "code": "789" },
+              "duration": "PT3H15M",
+              "id": "3",
+              "numberOfStops": 0
+            }
+          ]
+        },
+        {
+          "duration": "PT6H40M",
+          "segments": [
+            {
+              "departure": { "iataCode": "NRT", "terminal": "1", "at": "2026-09-23T09:00:00" },
+              "arrival": { "iataCode": "OKA", "at": "2026-09-23T11:45:00" },
+              "carrierCode": "BR",
+              "number": "1191",
+              "aircraft": { "code": "321" },
+              "duration": "PT2H45M",
+              "id": "4",
+              "numberOfStops": 0
+            },
+            {
+              "departure": { "iataCode": "OKA", "at": "2026-09-23T13:20:00" },
+              "arrival": { "iataCode": "TPE", "terminal": "2", "at": "2026-09-23T14:10:00" },
+              "carrierCode": "BR",
+              "number": "112",
+              "aircraft": { "code": "321" },
+              "duration": "PT1H50M",
+              "id": "5",
+              "numberOfStops": 0
+            }
+          ]
+        }
+      ],
+      "price": {
+        "currency": "TWD",
+        "total": "8540.00",
+        "base": "6100.00",
+        "grandTotal": "8540.00"
+      },
+      "validatingAirlineCodes": ["BR"],
+      "travelerPricings": [
+        {
+          "travelerId": "1",
+          "fareOption": "STANDARD",
+          "travelerType": "ADULT",
+          "price": { "currency": "TWD", "total": "8540.00" }
+        }
+      ]
+    },
+    {
+      "type": "flight-offer",
+      "id": "3",
+      "source": "GDS",
+      "itineraries": [],
+      "price": { "currency": "TWD", "grandTotal": "not-a-number" }
+    }
+  ],
+  "dictionaries": {
+    "carriers": { "CI": "CHINA AIRLINES", "BR": "EVA AIR" }
+  }
+}
