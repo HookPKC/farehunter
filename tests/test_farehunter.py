@@ -115,7 +115,7 @@ def test_load_config_validates(tmp_path):
 
 def test_repo_config_is_valid():
     cfg = load_config(str(Path(__file__).resolve().parents[1] / "config.yaml"))
-    assert len(cfg["routes"]) == 4
+    assert len(cfg["routes"]) == 10
     for r in cfg["routes"]:
         assert "origin" in r and "destination" in r
 
