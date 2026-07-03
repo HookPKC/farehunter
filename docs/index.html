@@ -25,8 +25,8 @@
   /* type */
   --mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;
   --sans:-apple-system,BlinkMacSystemFont,'Helvetica Neue','Segoe UI','Noto Sans TC',sans-serif;
-  --fs-xs:11px; --fs-s:12px; --fs-m:13.5px; --fs-l:15px;
-  --fs-xl:17px; --fs-2xl:22px; --fs-3xl:34px;
+  --fs-xs:12px; --fs-s:13px; --fs-m:15px; --fs-l:16.5px;
+  --fs-xl:20px; --fs-2xl:25px; --fs-3xl:40px;
   /* spacing scale */
   --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s7:32px; --s8:48px;
   /* radius / shadow / motion */
@@ -49,7 +49,7 @@ body{background:var(--bg0);color:var(--ink1);font-family:var(--sans);
 .board{display:flex;gap:3px;flex-wrap:nowrap;margin-bottom:var(--s2)}
 .flap{background:var(--bg2);border:1px solid var(--line1);border-radius:var(--r-s);
   font-family:var(--mono);font-weight:700;color:var(--fare);
-  font-size:clamp(16px,4.8vw,24px);line-height:1;
+  font-size:clamp(17px,5vw,26px);line-height:1;
   padding:var(--s2) 0;width:clamp(22px,6vw,32px);text-align:center;
   position:relative;overflow:hidden;text-shadow:0 0 12px rgba(255,179,0,.4)}
 .flap::after{content:"";position:absolute;left:0;right:0;top:50%;height:1px;
@@ -74,7 +74,7 @@ body{background:var(--bg0);color:var(--ink1);font-family:var(--sans);
   margin-bottom:var(--s6)}
 .stat{background:var(--bg1);border:1px solid var(--line1);border-radius:var(--r-m);
   padding:var(--s3) var(--s4)}
-.stat .k{font-size:10px;color:var(--ink3);letter-spacing:.16em;text-transform:uppercase}
+.stat .k{font-size:11px;color:var(--ink3);letter-spacing:.16em;text-transform:uppercase}
 .stat .v{font-family:var(--mono);font-size:var(--fs-xl);font-weight:700;
   color:var(--ink1);margin-top:2px;font-variant-numeric:tabular-nums}
 
@@ -136,7 +136,7 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
 .pill.flat{color:var(--ink3);background:var(--bg2)}
 .cur-al{font-size:var(--fs-m);color:var(--ink2);margin-top:var(--s1)}
 .spark{display:block;width:100%;height:60px;margin:var(--s3) 0 2px}
-.spark-cap{font-family:var(--mono);font-size:10px;color:var(--ink3);
+.spark-cap{font-family:var(--mono);font-size:11.5px;color:var(--ink3);
   display:flex;justify-content:space-between;letter-spacing:.05em}
 
 /* fare calendar */
@@ -146,14 +146,14 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
 .cal::-webkit-scrollbar{display:none}
 .chip{flex:0 0 auto;scroll-snap-align:start;text-decoration:none;text-align:center;
   border:1px solid var(--line1);border-radius:var(--r-m);
-  padding:var(--s2) var(--s3);background:var(--bg2);min-width:92px;
+  padding:var(--s2) var(--s3);background:var(--bg2);min-width:104px;
   transition:border-color var(--t-fast),transform var(--t-fast),background var(--t-fast)}
 .chip:hover{border-color:var(--line2);background:var(--bg3)}
 .chip:active{transform:scale(.96)}
-.chip .d{font-size:10px;color:var(--ink3);font-family:var(--mono);letter-spacing:.04em}
+.chip .d{font-size:11.5px;color:var(--ink3);font-family:var(--mono);letter-spacing:.04em}
 .chip .p{font-family:var(--mono);font-size:var(--fs-l);font-weight:700;
   margin-top:3px;font-variant-numeric:tabular-nums;color:var(--ink1)}
-.chip .al{font-size:10px;color:var(--ink3);margin-top:3px;white-space:nowrap}
+.chip .al{font-size:11.5px;color:var(--ink3);margin-top:3px;white-space:nowrap}
 .chip.lo{border-color:rgba(63,214,143,.45)}
 .chip.lo .p{color:var(--pos)}
 .chip.hi .p{color:var(--ink3)}
@@ -292,7 +292,7 @@ function render(data){
     `資料更新 <b>${t} UTC</b><span class="badge ${data.env}">${data.env.toUpperCase()}</span>`;
 
   $("strip").innerHTML = [
-    ["觀察筆數", fmt(data.totals.observations)],
+    ["價格紀錄", fmt(data.totals.observations)],
     ["監控航線", data.totals.routes],
     ["24H 警報", data.totals.alerts_24h],
   ].map(([k,v])=>`<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
