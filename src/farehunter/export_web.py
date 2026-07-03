@@ -23,25 +23,38 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
         # stats over full history
         srow = conn.execute(
             "SELECT COUNT(*) n, MIN(price) mn, AVG(price) av FROM observations "
-            "WHERE origin=? AND destination=?", (o, d)).fetchone()
+            "WHERE origin=? AND destination=? AND fare_class='any'", (o, d)).fetchone()
         prices = [r["price"] for r in conn.execute(
-            "SELECT price FROM observations WHERE origin=? AND destination=? ORDER BY price",
-            (o, d))]
+            "SELECT price FROM observations WHERE origin=? AND destination=? "
+            "AND fare_class='any' ORDER BY price", (o, d))]
         mid = len(prices) // 2
         median = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
 
-        # fare calendar: most recent observation per FUTURE departure date
+        # fare calendar: most recent cheapest-overall per FUTURE departure date
         latest = [dict(r) for r in conn.execute(
             """SELECT depart_date, return_date, price, currency, carriers, stops,
                       MAX(observed_at) AS observed_at
                FROM observations
                WHERE origin=? AND destination=? AND depart_date >= date('now')
+                 AND fare_class='any'
                GROUP BY depart_date ORDER BY depart_date LIMIT 16""", (o, d))]
+        # full-service (華航/長榮等) cheapest per date, attached to the same calendar
+        full = {r["depart_date"]: r for r in conn.execute(
+            """SELECT depart_date, price, carriers, MAX(observed_at) AS observed_at
+               FROM observations
+               WHERE origin=? AND destination=? AND depart_date >= date('now')
+                 AND fare_class='full'
+               GROUP BY depart_date""", (o, d))}
+        for item in latest:
+            f = full.get(item["depart_date"])
+            if f:
+                item["full_price"] = f["price"]
+                item["full_carriers"] = f["carriers"]
 
         # trend: daily minimum across all departure dates
         history = [dict(r) for r in conn.execute(
             """SELECT substr(observed_at, 1, 10) AS day, MIN(price) AS min_price
-               FROM observations WHERE origin=? AND destination=?
+               FROM observations WHERE origin=? AND destination=? AND fare_class='any'
                GROUP BY day ORDER BY day""", (o, d))]
 
         routes.append({

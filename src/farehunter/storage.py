@@ -41,6 +41,11 @@ class Store:
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        # migration: fare_class distinguishes cheapest-overall from full-service
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(observations)")]
+        if "fare_class" not in cols:
+            self.conn.execute(
+                "ALTER TABLE observations ADD COLUMN fare_class TEXT DEFAULT 'any'")
         self.conn.commit()
 
     def close(self):
@@ -51,12 +56,13 @@ class Store:
         self.conn.execute(
             """INSERT INTO observations
                (origin, destination, depart_date, return_date, price,
-                currency, carriers, stops, duration, observed_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                currency, carriers, stops, duration, observed_at, fare_class)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (offer.origin, offer.destination, offer.depart_date,
              offer.return_date, offer.price, offer.currency,
              offer.carriers, offer.stops, offer.duration,
-             datetime.now(timezone.utc).isoformat(timespec="seconds")),
+             datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             offer.fare_class),
         )
         self.conn.commit()
 
@@ -64,13 +70,14 @@ class Store:
         """Historical stats across ALL departure dates for a route."""
         row = self.conn.execute(
             """SELECT COUNT(*) AS n, MIN(price) AS min_price, AVG(price) AS avg_price
-               FROM observations WHERE origin=? AND destination=?""",
+               FROM observations WHERE origin=? AND destination=? AND fare_class='any'""",
             (origin, destination),
         ).fetchone()
         median = None
         if row["n"]:
             prices = [r["price"] for r in self.conn.execute(
-                "SELECT price FROM observations WHERE origin=? AND destination=? ORDER BY price",
+                "SELECT price FROM observations WHERE origin=? AND destination=? "
+                "AND fare_class='any' ORDER BY price",
                 (origin, destination))]
             mid = len(prices) // 2
             median = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2

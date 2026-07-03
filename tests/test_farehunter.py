@@ -19,26 +19,28 @@ FIXTURE = json.loads(
 )
 
 
-def make_offer(price, origin="TPE", dest="NRT", dep="2099-09-18", link=""):
+def make_offer(price, origin="TPE", dest="NRT", dep="2099-09-18", link="", fc="any"):
     return Offer(origin=origin, destination=dest, depart_date=dep,
                  return_date="2099-09-23", price=price, currency="TWD",
-                 carriers="CI", stops=0, duration="190", link=link)
+                 carriers="CI", stops=0, duration="190", link=link, fare_class=fc)
 
 
 # ---- parsing ----------------------------------------------------------------
 def test_parse_keeps_cheapest_per_date_and_skips_malformed():
     offers = parse_offers(FIXTURE, "TPE", "NRT")
-    assert len(offers) == 2                     # 2 valid dates; malformed skipped
-    o1, o2 = offers
+    by = {(o.depart_date, o.fare_class): o for o in offers}
+    assert len(offers) == 4                     # 2 dates x (any + full); malformed skipped
+    o1 = by[("2099-09-18", "any")]
     assert o1.destination == "NRT"              # config code, not city code TYO
-    assert o1.depart_date == "2099-09-18"
-    assert o1.price == 8540.0                   # min of 9820 / 8540 on same date
+    assert o1.price == 8540.0                   # LCC wins the cheapest slot
     assert o1.carriers == "IT"
     assert o1.currency == "TWD"
     assert o1.return_date == "2099-09-23"
     assert o1.link.startswith("https://www.aviasales.com/search/")
-    assert o2.depart_date == "2099-09-25"
-    assert o2.stops == 1
+    full = by[("2099-09-18", "full")]
+    assert full.price == 9820.0 and full.carriers == "CI"   # 傳統航空另計
+    assert by[("2099-09-25", "any")].stops == 1
+    assert by[("2099-09-25", "full")].carriers == "BR"
 
 
 def test_parse_empty_payload():
@@ -50,6 +52,7 @@ def test_store_record_and_stats(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     for p in [10000, 9000, 8000, 12000, 11000]:
         store.record(make_offer(p))
+    store.record(make_offer(20000, fc="full"))   # full-service rows excluded from stats
     stats = store.route_stats("TPE", "NRT")
     assert stats["n"] == 5
     assert stats["min"] == 8000

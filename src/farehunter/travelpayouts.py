@@ -19,6 +19,10 @@ import requests
 
 from .models import Offer
 
+# Full-service carriers (vs LCC) relevant to TW/JP/Asia routes
+FULL_SERVICE = {"CI","BR","JX","JL","NH","CX","OZ","KE","TG","SQ","MF","VN","PR",
+                "MU","CZ","CA","HX","KL","EK","QR","TK","BA","AF","LH","UA","DL","AA"}
+
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
@@ -89,7 +93,7 @@ def parse_offers(payload: dict, origin: str, destination: str,
     Route identity (origin/destination) is stamped from the caller's config,
     NOT from the response: the API returns city codes (e.g. TYO) while config
     uses airport codes (e.g. NRT), and mixing them breaks history matching."""
-    best: dict[str, Offer] = {}
+    best: dict[tuple, Offer] = {}   # (depart_date, fare_class) -> cheapest offer
     for item in payload.get("data", []):
         try:
             price = float(item["price"])
@@ -106,9 +110,15 @@ def parse_offers(payload: dict, origin: str, destination: str,
                 duration=str(item.get("duration", "") or ""),
                 link=(AVIASALES_WEB + link) if link.startswith("/") else link,
             )
-            prev = best.get(depart_date)
-            if prev is None or offer.price < prev.price:
-                best[depart_date] = offer
+            classes = ["any"]
+            if offer.carriers in FULL_SERVICE:
+                classes.append("full")
+            for fc in classes:
+                key = (depart_date, fc)
+                prev = best.get(key)
+                if prev is None or offer.price < prev.price:
+                    from dataclasses import replace
+                    best[key] = replace(offer, fare_class=fc)
         except (KeyError, ValueError, TypeError) as exc:
             log.warning("Skipping malformed offer: %s", exc)
     return [best[k] for k in sorted(best)]

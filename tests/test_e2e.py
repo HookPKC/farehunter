@@ -40,16 +40,16 @@ def test_full_pipeline(tmp_path, monkeypatch, capsys):
     summary = runner_mod.run(str(cfg), str(db))
 
     assert summary["searched"] == 2            # 2 months, 1 route
-    assert summary["recorded"] == 4            # 2 valid dates x 2 months
+    assert summary["recorded"] == 8            # 2 dates x (any+full) x 2 months
     assert summary["errors"] == 0
-    assert summary["alerts"] == 1              # 8540 fires once; month 2 deduped
+    assert summary["alerts"] == 1              # any-class 8540 fires once; rest deduped/above
     out = capsys.readouterr().out
     assert out.count("低價警報") == 1
     assert "8,540 TWD" in out
     assert "aviasales.com/search" in out       # deep link in the alert
 
     store = Store(str(db))
-    assert store.route_stats("TPE", "NRT")["n"] == 4
+    assert store.route_stats("TPE", "NRT")["n"] == 4   # stats only count fare_class='any'
     store.close()
 
     # second run within 24h: same prices -> dedup suppresses the alert
