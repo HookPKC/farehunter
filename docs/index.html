@@ -44,7 +44,7 @@ body{background:var(--bg);color:var(--ink);
 .statusline b{color:var(--ink);font-weight:600}
 .badge-env{color:var(--amber);border:1px solid var(--amber-dim);border-radius:3px;
   padding:1px 5px;margin-left:6px}
-.badge-env.production{color:var(--deal);border-color:var(--deal)}
+.badge-env.aviasales{color:var(--deal);border-color:var(--deal)}
 
 /* ---- summary strip ---- */
 .strip{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:18px}
@@ -229,9 +229,8 @@ function render(data){
   }).join("");
 
   $("foot").textContent =
-    "價格為 Amadeus 公告票價（不含廉航促銷），點日期可到 Google Flights 核對。" +
-    (data.env==="test" ? " TEST 環境為快取資料，僅供流程驗證。" :
-     data.env==="sample" ? " 目前顯示示範資料——監控首次執行後會自動換成真實價格。" : "");
+    "價格為 Aviasales 快取低價（來自近期搜尋，非即時報價），下訂前請點日期到 Google Flights 或 Aviasales 核對現價。" +
+    (data.env==="sample" ? " 目前顯示示範資料——監控首次執行後會自動換成真實價格。" : "");
 }
 
 flapTitle();

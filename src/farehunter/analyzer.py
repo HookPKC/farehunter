@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from .amadeus import Offer
+from .models import Offer
 
 
 @dataclass

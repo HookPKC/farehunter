@@ -1,18 +1,18 @@
-# FareHunter v1 — 監控路線設定
+# FareHunter v1.1 — 監控路線設定（資料來源：Travelpayouts / Aviasales 快取）
 defaults:
-  currency: TWD
-  days_ahead_start: 14      # 搜尋 14 天後起
-  days_ahead_end: 90        # 到 90 天後
-  sample_step_days: 7       # 每 7 天取樣一個出發日
-  trip_length_days: 5       # 來回 5 天；設 null 為單程
+  currency: twd
+  months_ahead: 6           # 監控當月起共 6 個月
+  one_way: false            # false = 來回票價
+  non_stop: false
   drop_pct: 25              # 低於中位數 25% 觸發
   min_history: 30           # 累積 30 筆觀察後才啟用統計規則
-  pause_seconds: 1.5
+  pause_seconds: 0.6
+  # market: tw              # 資料來源市場；先不設，首跑後視資料量再調整
 
 routes:
   - origin: TPE
     destination: NRT
-    absolute_threshold: 7000    # TWD，第一天就能用的絕對門檻
+    absolute_threshold: 7000    # TWD 來回，第一天就能用的絕對門檻
   - origin: TPE
     destination: KIX
     absolute_threshold: 6500

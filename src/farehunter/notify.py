@@ -11,7 +11,7 @@ import logging
 
 import requests
 
-from .amadeus import Offer
+from .models import Offer
 from .analyzer import Verdict
 
 log = logging.getLogger(__name__)
@@ -20,13 +20,17 @@ log = logging.getLogger(__name__)
 def format_alert(offer: Offer, verdict: Verdict) -> str:
     rt = f" ↩ {offer.return_date}" if offer.return_date else ""
     stops = "直飛" if offer.stops == 0 else f"{offer.stops} 轉"
+    if offer.link:
+        booking = f"訂票: {offer.link}"
+    else:
+        booking = (f"查價: https://www.google.com/travel/flights?q=Flights%20from%20"
+                   f"{offer.origin}%20to%20{offer.destination}%20on%20{offer.depart_date}")
     return (
         f"✈️ 低價警報 {offer.origin}→{offer.destination}\n"
         f"日期: {offer.depart_date}{rt}\n"
         f"價格: {offer.price:,.0f} {offer.currency}（{offer.carriers}, {stops}）\n"
         f"原因: {verdict.detail}\n"
-        f"查價: https://www.google.com/travel/flights?q=Flights%20from%20"
-        f"{offer.origin}%20to%20{offer.destination}%20on%20{offer.depart_date}"
+        f"{booking}"
     )
 
 

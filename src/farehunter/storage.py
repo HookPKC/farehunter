@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
-from .amadeus import Offer
+from .models import Offer
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS observations (

@@ -64,7 +64,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "env": os.environ.get("AMADEUS_ENV", "test"),
+        "env": os.environ.get("DATA_SOURCE_LABEL", "aviasales"),
         "totals": {"observations": total_obs, "routes": len(routes),
                    "alerts_24h": alerts_24h},
         "routes": routes,
