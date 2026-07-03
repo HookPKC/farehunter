@@ -32,7 +32,7 @@ jobs:
         run: |
           git config user.name "farehunter-bot"
           git config user.email "bot@users.noreply.github.com"
-          git pull --rebase
           git add prices.db docs/data.json
           git diff --cached --quiet || git commit -m "chore: fsc snapshot $(date -u +'%Y-%m-%dT%H:%MZ')"
+          git pull --rebase
           git push
