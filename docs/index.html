@@ -93,6 +93,7 @@ h2{font-size:11px;letter-spacing:.2em;color:var(--muted);text-transform:uppercas
 .chip .d{font-size:10px;color:var(--muted);font-family:var(--mono)}
 .chip .p{font-family:var(--mono);font-size:14px;font-weight:700;margin-top:2px;
   font-variant-numeric:tabular-nums;color:var(--ink)}
+.chip .al{font-size:9px;color:var(--muted);margin-top:2px;white-space:nowrap}
 .chip.lo{border-color:rgba(69,224,160,.5)}.chip.lo .p{color:var(--deal)}
 .chip.hi .p{color:var(--muted)}
 
@@ -132,6 +133,14 @@ const EMBEDDED = /*__SAMPLE__*/{"generated_at":"2026-07-03T05:47:04+00:00","env"
 const $ = id => document.getElementById(id);
 const fmt = n => Math.round(n).toLocaleString("en-US");
 const WD = ["日","一","二","三","四","五","六"];
+const AIRLINES = {IT:"台灣虎航",TR:"酷航",MM:"樂桃",GK:"捷星日本",
+  "7C":"濟州航空",TW:"德威航空",LJ:"真航空",RS:"首爾航空",BX:"釜山航空",
+  ZE:"易斯達",VZ:"泰越捷",SL:"泰國獅航",FD:"泰亞航",AK:"亞洲航空",
+  D7:"AirAsia X",HB:"大灣區航空",UO:"香港快運",CX:"國泰航空",
+  CI:"中華航空",BR:"長榮航空",JX:"星宇航空",JL:"日本航空",NH:"全日空",
+  BC:"天馬航空",OZ:"韓亞航空",KE:"大韓航空",TG:"泰國航空",SQ:"新加坡航空",
+  VJ:"越捷",VN:"越南航空",PR:"菲律賓航空","5J":"宿霧太平洋",MF:"廈門航空"};
+const alName = c => AIRLINES[c] || c;
 
 function flapTitle(){
   const b = $("board");
@@ -196,8 +205,9 @@ function render(data){
             : pct>= 3 ? `<span class="delta up">▲ ${pct.toFixed(0)}% vs 中位</span>`
             : `<span class="delta flat">≈ 中位數</span>`;
     }
-    const carriers = [...new Set(r.latest.flatMap(x=>(x.carriers||"").split(",")))]
-      .filter(Boolean).slice(0,4).join(" · ");
+    const all = [...new Set(r.latest.flatMap(x=>(x.carriers||"").split(",")))].filter(Boolean);
+    const carriers = all.slice(0,4).map(alName).join(" · ") +
+      (all.length>4 ? ` +${all.length-4}` : "");
     const ps = r.latest.map(x=>x.price).sort((a,b)=>a-b);
     const q1 = ps[Math.floor(ps.length*.25)] ?? 0, q3 = ps[Math.floor(ps.length*.75)] ?? Infinity;
     const chips = r.latest.map(x=>{
@@ -206,7 +216,8 @@ function render(data){
       return `<a class="chip ${cls}" target="_blank" rel="noopener"
         href="${gfLink(r.origin,r.destination,x.depart_date)}">
         <div class="d">${x.depart_date.slice(5).replace("-","/")} 週${WD[dt.getDay()]}</div>
-        <div class="p">${fmt(x.price)}</div></a>`;
+        <div class="p">${fmt(x.price)}</div>
+        <div class="al">${alName((x.carriers||"").split(",")[0])}</div></a>`;
     }).join("");
     return `<div class="card">
       <div class="card-main">
