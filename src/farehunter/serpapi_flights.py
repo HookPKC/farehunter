@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://serpapi.com/search"
 SEARCHES_PER_DAY = 3
+HORIZON_WEEKS = [4, 12, 24]   # 近期 / 季度 / 年底，每條航線輪替視距
 
 
 class SerpApiError(RuntimeError):
@@ -103,9 +104,18 @@ def pick_routes_for_today(routes: list[dict], today: date | None = None,
     return [routes[(start + i) % len(routes)] for i in range(min(per_day, len(routes)))]
 
 
-def snapshot_dates(today: date | None = None) -> tuple[str, str]:
-    """Departure ~4 weeks out snapped to Friday; 5-day trip."""
+def snapshot_dates(today: date | None = None,
+                   horizon_weeks: int = 4) -> tuple[str, str]:
+    """Departure ~N weeks out snapped to Friday; 5-day trip."""
     today = today or date.today()
-    dep = today + timedelta(days=28)
+    dep = today + timedelta(weeks=horizon_weeks)
     dep += timedelta(days=(4 - dep.weekday()) % 7)   # snap forward to Friday
     return dep.isoformat(), (dep + timedelta(days=5)).isoformat()
+
+
+def horizon_for_slot(routes_count: int, today: date, slot: int,
+                     per_day: int = SEARCHES_PER_DAY) -> int:
+    """Cycle horizons as the rotation completes passes over the route list:
+    pass 1 -> 4 weeks, pass 2 -> 12 weeks, pass 3 -> 24 weeks, repeat."""
+    cumulative = today.toordinal() * per_day + slot
+    return HORIZON_WEEKS[(cumulative // max(routes_count, 1)) % len(HORIZON_WEEKS)]

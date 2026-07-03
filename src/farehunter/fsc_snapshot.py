@@ -6,7 +6,8 @@ import time
 
 from .runner import load_config
 from .serpapi_flights import (search_google_flights, parse_full_service,
-                              pick_routes_for_today, snapshot_dates, SerpApiError)
+                              pick_routes_for_today, snapshot_dates,
+                              horizon_for_slot, SerpApiError)
 from .storage import Store
 
 log = logging.getLogger(__name__)
@@ -14,13 +15,16 @@ log = logging.getLogger(__name__)
 
 def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
     cfg = load_config(config_path)
-    routes = pick_routes_for_today(cfg["routes"])
-    dep, ret = snapshot_dates()
+    from datetime import date as _date
+    today = _date.today()
+    routes = pick_routes_for_today(cfg["routes"], today=today)
     store = Store(db_path)
     summary = {"searched": 0, "recorded": 0, "errors": 0}
     try:
-        for route in routes:
+        for slot, route in enumerate(routes):
             o, d = route["origin"], route["destination"]
+            weeks = horizon_for_slot(len(cfg["routes"]), today, slot)
+            dep, ret = snapshot_dates(today, horizon_weeks=weeks)
             summary["searched"] += 1
             try:
                 payload = search_google_flights(o, d, dep, ret)

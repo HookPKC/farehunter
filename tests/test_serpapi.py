@@ -51,3 +51,18 @@ def test_snapshot_dates_snap_to_friday():
     assert d.weekday() == 4                      # Friday
     assert (d - date(2026, 7, 3)).days >= 28
     assert (date.fromisoformat(ret) - d).days == 5
+
+
+def test_snapshot_dates_respects_horizon():
+    dep24, _ = snapshot_dates(today=date(2026, 7, 4), horizon_weeks=24)
+    d = date.fromisoformat(dep24)
+    assert d.weekday() == 4
+    assert d.month == 12                          # 24 週後已到 12 月
+
+def test_horizon_cycles_through_passes():
+    from farehunter.serpapi_flights import horizon_for_slot, HORIZON_WEEKS
+    seen = set()
+    for day in range(12):                         # 10 routes / 3 per day -> 每 ~3.3 天換一檔
+        for slot in range(3):
+            seen.add(horizon_for_slot(10, date(2026, 7, 1 + day), slot))
+    assert seen == set(HORIZON_WEEKS)             # 12 天內三檔視距都出現
