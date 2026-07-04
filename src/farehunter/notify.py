@@ -69,6 +69,11 @@ def send_line(text: str, session: requests.Session | None = None) -> bool:
     return True
 
 
+def channels_configured() -> bool:
+    return bool(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+                or os.environ.get("TELEGRAM_BOT_TOKEN"))
+
+
 def notify(offer: Offer, verdict: Verdict) -> list[str]:
     """Send to all configured channels; return the list that succeeded."""
     text = format_alert(offer, verdict)

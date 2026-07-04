@@ -11,7 +11,7 @@ from .runner import load_config
 from .searchapi_calendar import fetch_calendar, parse_calendar, SearchApiError
 from .storage import Store
 from .analyzer import evaluate
-from .notify import notify
+from .notify import notify, channels_configured
 
 log = logging.getLogger(__name__)
 
@@ -68,10 +68,14 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
                                        min_history=merged.get("min_history", 30))
                     if verdict.is_deal and not store.recently_alerted(
                             o, d, offer.depart_date, offer.price):
-                        notify(offer, verdict)
-                        store.record_alert(o, d, offer.depart_date,
-                                           offer.price, verdict.reason)
-                        summary["alerts"] += 1
+                        sent = notify(offer, verdict)
+                        if not sent and channels_configured():
+                            log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",
+                                      o, d, offer.depart_date)
+                        else:
+                            store.record_alert(o, d, offer.depart_date,
+                                               offer.price, verdict.reason)
+                            summary["alerts"] += 1
                 time.sleep(1)
     finally:
         store.close()
