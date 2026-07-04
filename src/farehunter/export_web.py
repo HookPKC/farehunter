@@ -49,6 +49,20 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
                FROM ranked WHERE rk=1
                ORDER BY depart_date LIMIT 24""", (o, d))]
 
+        # google-sourced chips carry no airline; attach the aviasales
+        # reference airline seen for the same departure date (approximate)
+        for item in latest:
+            if item.get("source") == "google" and not item.get("carriers"):
+                ref = conn.execute(
+                    """SELECT carriers FROM observations
+                       WHERE origin=? AND destination=? AND depart_date=?
+                         AND fare_class='any' AND source='aviasales'
+                         AND carriers != ''
+                       ORDER BY observed_at DESC LIMIT 1""",
+                    (o, d, item["depart_date"])).fetchone()
+                if ref:
+                    item["ref_carriers"] = ref["carriers"]
+
         # full-service (華航/長榮等) cheapest per date, attached to the same calendar
         full = {r["depart_date"]: r for r in conn.execute(
             """SELECT depart_date, price, carriers, MAX(observed_at) AS observed_at

@@ -357,7 +357,8 @@ function render(data){
         const dt = new Date(x.depart_date+"T00:00:00");
         const cls = x.price<=q1 ? "lo" : x.price>=q3 ? "hi" : "";
         const aln = x.source==="google" && !x.carriers
-          ? "Google 實價" : alFull((x.carriers||"").split(",")[0]);
+          ? (x.ref_carriers ? `≈ ${alFull(x.ref_carriers.split(",")[0])}` : "點入看航空")
+          : alFull((x.carriers||"").split(",")[0]);
         const nights = x.return_date
           ? Math.round((new Date(x.return_date)-new Date(x.depart_date))/864e5) : null;
         return `<a class="chip ${cls}" target="_blank" rel="noopener"
@@ -393,7 +394,7 @@ function render(data){
   }
 
   $("foot").textContent =
-    "價格為 Aviasales 快取低價（來自近期搜尋，非即時報價），下訂前請點日期到 Google Flights 或 Aviasales 核對現價。" +
+    "價格：8 天內的 Google 實價優先顯示，其餘為 Aviasales 快取低價。「≈ 航空」表示由快取推估的航空公司，實際承運請點日期到 Google Flights 確認。" +
     (data.env==="sample" ? " 目前顯示示範資料——監控首次執行後會自動換成真實價格。" : "");
 }
 

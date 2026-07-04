@@ -45,3 +45,4 @@ def test_chip_prefers_fresh_google_price(tmp_path):
     chip = payload["routes"][0]["latest"][0]
     assert chip["source"] == "google"
     assert chip["price"] == 9200
+    assert chip["ref_carriers"] == "MM"     # 最近一筆快取所見航空作為參考
