@@ -40,12 +40,14 @@ jobs:
 
       - name: Export dashboard data
         run: python src/farehunter/export_web.py prices.db docs/data.json
+      - name: Export FIE v2 ranked intelligence (additive, non-blocking)
+        run: PYTHONPATH=src python -m farehunter.intelligence prices.db docs/ranked.json || echo "ranked export skipped"
 
       - name: Commit price history
         run: |
           git config user.name "farehunter-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add prices.db docs/data.json
+          git add prices.db docs/data.json docs/ranked.json
           git diff --cached --quiet || git commit -m "chore: price observations $(date -u +'%Y-%m-%dT%H:%MZ')"
           git pull --rebase
           git push
