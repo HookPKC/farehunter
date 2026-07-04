@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 CHUNK_DAYS = 14
 NEAR_CHUNKS = 1       # 未來 14 天：每週必掃（可訂票的迫近區）
-DEEP_POSITIONS = 13   # 深掃輪替位置（每週前進 14 天，約 6 個月一輪）
+DEEP_POSITIONS = 19   # 深掃輪替位置（每週前進 14 天，約 9 個月一輪，額度不變）
 
 
 def sweep_windows(today: date) -> list[tuple[date, date]]:

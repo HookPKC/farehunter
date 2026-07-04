@@ -6,6 +6,7 @@ import time
 
 from .runner import load_config
 from .serpapi_flights import (search_google_flights, parse_full_service,
+                              parse_cheapest_direct,
                               pick_routes_for_today, snapshot_dates,
                               horizon_for_slot, SerpApiError)
 from .storage import Store
@@ -19,7 +20,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
     today = _date.today()
     routes = pick_routes_for_today(cfg["routes"], today=today)
     store = Store(db_path)
-    summary = {"searched": 0, "recorded": 0, "errors": 0}
+    summary = {"searched": 0, "recorded": 0, "real": 0, "errors": 0}
     try:
         for slot, route in enumerate(routes):
             o, d = route["origin"], route["destination"]
@@ -37,14 +38,23 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
                 rng = pi.get("typical_price_range") or [None, None]
                 store.record_insight(o, d, dep, str(pi["price_level"]),
                                      rng[0], rng[1])
+            # real overall-cheapest DIRECT with confirmed carrier → feeds the
+            # monthly view with a genuine price instead of a cache estimate
+            real = parse_cheapest_direct(payload, o, d, dep, ret)
+            if real is not None:
+                store.record(real)
+                summary["real"] += 1
+                log.info("Real probe %s→%s %s: %.0f TWD (%s)",
+                         o, d, dep, real.price, real.carriers)
+            # cheapest all-full-service DIRECT → 傳統航空 reference
             offer = parse_full_service(payload, o, d, dep, ret)
             if offer is None:
                 log.info("No all-full-service itinerary %s→%s %s", o, d, dep)
-                continue
-            store.record(offer)
-            summary["recorded"] += 1
-            log.info("FSC snapshot %s→%s %s: %.0f TWD (%s)",
-                     o, d, dep, offer.price, offer.carriers)
+            else:
+                store.record(offer)
+                summary["recorded"] += 1
+                log.info("FSC snapshot %s→%s %s: %.0f TWD (%s)",
+                         o, d, dep, offer.price, offer.carriers)
             time.sleep(1)
     finally:
         store.close()
@@ -58,4 +68,4 @@ if __name__ == "__main__":
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     s = run(sys.argv[1] if len(sys.argv) > 1 else "config.yaml",
             sys.argv[2] if len(sys.argv) > 2 else "prices.db")
-    print(f"快照完成: 查詢 {s['searched']} 次, 記錄 {s['recorded']} 筆, 錯誤 {s['errors']} 次")
+    print(f"快照完成: 查詢 {s['searched']} 次, 實價 {s['real']} 筆, 傳統航空 {s['recorded']} 筆, 錯誤 {s['errors']} 次")

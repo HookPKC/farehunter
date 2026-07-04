@@ -188,6 +188,7 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
 .mcell.mlo .mp{color:var(--pos)}
 .mcell.mhi .mp{color:var(--ink3);opacity:.75}
 .mcell.mest .mp{opacity:.7}
+.mprog{color:var(--ink3);font-weight:600}
 .mnote{font-size:10px;color:var(--ink3);opacity:.7;margin-left:6px;
   letter-spacing:0;text-transform:none;font-weight:400}
 
@@ -328,29 +329,35 @@ function monthlyStrip(r){
   if(m.length < 2) return "";
   const prices = m.map(x=>x.price);
   const lo = Math.min(...prices), hi = Math.max(...prices), span = (hi-lo)||1;
+  const real = m.filter(x=>x.source==="google");           // 實價（含確認航空）
+  const loReal = real.length ? Math.min(...real.map(x=>x.price)) : null;
   const cells = m.map(x=>{
     const mm = x.ym.slice(5);                       // "09"
     const t = (parseInt(x.ym.slice(0,4))>new Date().getFullYear())
       ? `${mm}<span class="yr">'${x.ym.slice(2,4)}</span>` : mm;
-    const isLo = x.price === lo;
+    const est = x.source !== "google";              // 非實價 = 快取估算
+    const isLo = !est && x.price === loReal;          // 綠色高亮只給實價最低
     // 顏色深淺依價位在區間中的位置（越低越綠、越高越淡）
     const frac = (x.price - lo) / span;
-    const cls = isLo ? "mlo" : frac >= 0.66 ? "mhi" : "";
-    const est = x.source !== "google";              // 非 google 實價 = 快取估算
+    const cls = isLo ? "mlo" : (!est && frac >= 0.66) ? "mhi" : "";
     const al = x.carriers ? alZh(x.carriers.split(",")[0])
              : (x.ref_carriers ? alZh(x.ref_carriers.split(",")[0]) : "");
     const href = gfLink(r.origin, r.destination, x.depart_date, x.return_date);
     return `<a class="mcell ${cls} ${est?"mest":""}" href="${href}" target="_blank" rel="noopener"
-      aria-label="${x.ym} 最低 ${fmt(x.price)} 元${est?"（快取估算）":"（實價）"}${al?(" "+al):""}">
+      aria-label="${x.ym} ${est?"快取估算":"實價"} ${fmt(x.price)} 元${al?(" "+al):""}">
       <span class="mm">${t}</span>
       <span class="mp">${est?"≈":""}${fmt(x.price)}</span>
       ${al?`<span class="mal">${al}</span>`:""}</a>`;
   }).join("");
-  const cheapest = m.find(x=>x.price===lo);
-  const loEst = cheapest.source !== "google";
+  let cap;
+  if(loReal != null){
+    const c = real.find(x=>x.price===loReal);
+    cap = `全年每月最低 <b>${c.ym.slice(5)}月最便宜 ${fmt(loReal)}</b>`;
+  } else {
+    cap = `全年每月最低 <span class="mprog">實價累積中</span>`;
+  }
   return `<div class="mrow">
-    <div class="mrow-cap">全年每月最低 <b>${cheapest.ym.slice(5)}月最便宜 ${loEst?"≈":""}${fmt(lo)}</b>
-      <span class="mnote">≈ 為快取估算，實價每週輪替更新</span></div>
+    <div class="mrow-cap">${cap}<span class="mnote">綠＝實價最低；≈ 為快取估算，逐週更新為實價</span></div>
     <div class="mscroll">${cells}</div>
   </div>`;
 }

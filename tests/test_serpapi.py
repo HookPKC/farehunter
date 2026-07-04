@@ -61,8 +61,24 @@ def test_snapshot_dates_respects_horizon():
 
 def test_horizon_cycles_through_passes():
     from farehunter.serpapi_flights import horizon_for_slot, HORIZON_WEEKS
+    from datetime import timedelta
     seen = set()
-    for day in range(12):                         # 10 routes / 3 per day -> 每 ~3.3 天換一檔
+    base = date(2026, 7, 1)
+    for day in range(60):
         for slot in range(3):
-            seen.add(horizon_for_slot(10, date(2026, 7, 1 + day), slot))
-    assert seen == set(HORIZON_WEEKS)             # 12 天內三檔視距都出現
+            seen.add(horizon_for_slot(10, base + timedelta(days=day), slot))
+    assert seen == set(HORIZON_WEEKS)             # 一輪內所有視距都出現
+
+
+def test_parse_cheapest_direct_real_carrier():
+    from farehunter.serpapi_flights import parse_cheapest_direct
+    o = parse_cheapest_direct(FIXTURE, "TPE", "NRT", "2026-07-31", "2026-08-05")
+    # IT 8900 是最便宜的直飛（廉航），帶真實航空代碼；轉機的 BR+MM 不列入
+    assert o is not None and o.stops == 0
+    assert o.carriers == "IT" and o.price == 8900
+    assert o.source == "google" and o.fare_class == "any"
+
+
+def test_full_service_offer_tagged_google_source():
+    o = parse_full_service(FIXTURE, "TPE", "NRT", "2026-07-31", "2026-08-05")
+    assert o.source == "google"      # 快照為真實 google 資料，非快取

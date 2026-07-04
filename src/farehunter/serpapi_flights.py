@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://serpapi.com/search"
 SEARCHES_PER_DAY = 3
-HORIZON_WEEKS = [4, 12, 24]   # 近期 / 季度 / 年底，每條航線輪替視距
+HORIZON_WEEKS = [6, 12, 18, 26, 34, 42]   # ≈1.5/3/4/6/8/10 個月，輪替涵蓋整個規劃期
 
 
 class SerpApiError(RuntimeError):
@@ -94,7 +94,37 @@ def parse_full_service(payload: dict, origin: str, destination: str,
                  depart_date=outbound, return_date=ret,
                  price=price, currency="TWD",
                  carriers=",".join(codes), stops=len(segs) - 1 if best else 0,
-                 duration="", link=link, fare_class="full")
+                 duration="", link=link, fare_class="full", source="google")
+
+
+def parse_cheapest_direct(payload: dict, origin: str, destination: str,
+                          outbound: str, ret: str) -> Offer | None:
+    """Cheapest single-segment (direct) itinerary of ANY carrier, with its
+    real airline code — the real monthly low with a confirmed carrier."""
+    candidates = (payload.get("best_flights") or []) + (payload.get("other_flights") or [])
+    best = None
+    for it in candidates:
+        try:
+            segs = it.get("flights") or []
+            if len(segs) != 1:
+                continue
+            code = _airline_code(segs[0].get("flight_number", ""))
+            if not code:
+                continue
+            price = float(it["price"])
+            if best is None or price < best[0]:
+                best = (price, code)
+        except (KeyError, ValueError, TypeError) as exc:
+            log.warning("Skipping malformed itinerary: %s", exc)
+    if best is None:
+        return None
+    price, code = best
+    link = (f"https://www.google.com/travel/flights?q=Flights%20from%20{origin}"
+            f"%20to%20{destination}%20on%20{outbound}%20through%20{ret}")
+    return Offer(origin=origin, destination=destination,
+                 depart_date=outbound, return_date=ret,
+                 price=price, currency="TWD", carriers=code, stops=0,
+                 duration="", link=link, fare_class="any", source="google")
 
 
 def pick_routes_for_today(routes: list[dict], today: date | None = None,
