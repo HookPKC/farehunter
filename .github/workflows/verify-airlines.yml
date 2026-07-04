@@ -1,0 +1,38 @@
+name: Verify Airlines
+
+on:
+  schedule:
+    - cron: "0 7 * * *"       # 每日 07:00 UTC（台灣 15:00）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: farehunter
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Verify airlines for cheapest calendar dates
+        env:
+          SCRAPEDO_KEY: ${{ secrets.SCRAPEDO_KEY }}
+        run: PYTHONPATH=src python -m farehunter.verify_airlines
+      - name: Export dashboard data
+        run: python src/farehunter/export_web.py prices.db docs/data.json
+      - name: Commit
+        run: |
+          git config user.name "farehunter-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add prices.db docs/data.json docs/verify-report.json
+          git diff --cached --quiet || git commit -m "chore: airline verify $(date -u +'%Y-%m-%dT%H:%MZ')"
+          git pull --rebase
+          git push
