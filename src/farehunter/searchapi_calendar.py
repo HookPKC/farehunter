@@ -39,6 +39,10 @@ def fetch_calendar(origin: str, destination: str,
     key = api_key or os.environ.get("SEARCHAPI_KEY", "")
     if not key:
         raise RuntimeError("Missing SEARCHAPI_KEY environment variable.")
+    # API 限制: 去程天數 × 回程天數 ≤ 200 組合。14×14=196 是安全上限，
+    # 回程窗與去程窗同步位移 +5 天（主力 5 晚，邊緣 4/6 晚部分涵蓋）。
+    if (out_end - out_start).days > 13:
+        out_end = out_start + timedelta(days=13)
     base_out = out_start + timedelta(days=7)
     params = {
         "engine": "google_flights_calendar",
@@ -49,8 +53,8 @@ def fetch_calendar(origin: str, destination: str,
         "return_date": (base_out + timedelta(days=5)).isoformat(),
         "outbound_date_start": out_start.isoformat(),
         "outbound_date_end": out_end.isoformat(),
-        "return_date_start": (out_start + timedelta(days=min(TRIP_NIGHTS))).isoformat(),
-        "return_date_end": (out_end + timedelta(days=max(TRIP_NIGHTS))).isoformat(),
+        "return_date_start": (out_start + timedelta(days=5)).isoformat(),
+        "return_date_end": (out_end + timedelta(days=5)).isoformat(),
         "stops": "nonstop",
         "currency": currency,
         "api_key": key,

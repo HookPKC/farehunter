@@ -15,7 +15,8 @@ from .notify import notify
 
 log = logging.getLogger(__name__)
 
-MONTH_CHUNKS = 2      # 未來 2 個 30 天窗口
+CHUNK_DAYS = 14
+CHUNKS = 2            # 未來 2 個 14 天窗口（共 28 天真實價格）
 
 
 def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
@@ -31,9 +32,9 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
             o, d = route["origin"], route["destination"]
             merged = {**defaults, **route}
             stats = store.route_stats(o, d)
-            for chunk in range(MONTH_CHUNKS):
-                start = today + timedelta(days=1 + 30 * chunk)
-                end = start + timedelta(days=29)
+            for chunk in range(CHUNKS):
+                start = today + timedelta(days=1 + CHUNK_DAYS * chunk)
+                end = start + timedelta(days=CHUNK_DAYS - 1)
                 summary["searched"] += 1
                 try:
                     payload = fetch_calendar(o, d, start, end,
