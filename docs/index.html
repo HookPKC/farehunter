@@ -339,12 +339,15 @@ function render(data){
                     depart_date:r.fsc_latest.depart_date};
       const med = r.stats.median;
       let pill = `<span class="pill flat">—</span>`;
-      if(cur!=null && med){
+      if(r.stats.n < 30){
+        pill = `<span class="pill flat">樣本 ${r.stats.n}・統計累積中</span>`;
+      } else if(cur!=null && med){
         const pct = (cur/med-1)*100;
         pill = pct<=-3 ? `<span class="pill down">▼ ${Math.abs(pct).toFixed(0)}% vs 中位</span>`
              : pct>= 3 ? `<span class="pill up">▲ ${pct.toFixed(0)}% vs 中位</span>`
              : `<span class="pill flat">≈ 中位數</span>`;
       }
+      if(cur==null) pill = "";
       const all = [...new Set(r.latest.flatMap(x=>(x.carriers||"").split(",")))].filter(Boolean);
       const carriers = all.slice(0,4).map(alZh).join(" · ") +
         (all.length>4 ? ` +${all.length-4}` : "");
@@ -362,16 +365,18 @@ function render(data){
           <div class="d">${x.depart_date.slice(5).replace("-","/")} 週${WD[dt.getDay()]}${nights?` · ${nights}天`:""}</div>
           <div class="p">${fmt(x.price)}</div>
           <div class="al">${aln}</div>
-          ${x.full_price ? `<div class="fs">${alZh((x.full_carriers||"").split(",")[0])} ${fmt(x.full_price)}</div>` : ""}</a>`;
+          ${x.full_price && (x.full_price !== x.price || x.full_carriers !== x.carriers)
+            ? `<div class="fs">${alZh((x.full_carriers||"").split(",")[0])} ${fmt(x.full_price)}</div>` : ""}</a>`;
       }).join("");
       return `<article class="card" id="${r.origin}-${r.destination}">
         <div class="card-main">
-          <div class="route"><span class="codes">${r.origin}<span class="arr">→</span>${r.destination}</span>
+          <div class="route"><span class="codes">${r.origin}<span class="arr">⇄</span>${r.destination}</span>
             <span class="carriers">${carriers}</span></div>
           <div class="price-row">
-            <span class="big-price">${cur!=null?fmt(cur):"—"}<small>TWD 起</small></span>${pill}
+            <span class="big-price">${cur!=null?fmt(cur):"—"}<small>TWD 來回起</small></span>${pill}
           </div>
-          <div class="cur-al">${curAl}${bestFull ? ` <span class="fsline">・傳統航空最低 ${fmt(bestFull.full_price)}（${alZh((bestFull.full_carriers||"").split(",")[0])}，${bestFull.depart_date.slice(5).replace("-","/")}）</span>` : ""}</div>
+          <div class="cur-al">${curAl}${bestFull && !(cur!=null && bestFull.full_price===cur)
+            ? ` <span class="fsline">・傳統航空最低 ${fmt(bestFull.full_price)}（${alZh((bestFull.full_carriers||"").split(",")[0])}，${bestFull.depart_date.slice(5).replace("-","/")}）</span>` : ""}</div>
           ${sparkline(r.history, med)}
           <div class="spark-cap"><span>${(r.history[0]||{}).day||""}</span>
             <span>每日最低價</span><span>${(r.history.at(-1)||{}).day||""}</span></div>
