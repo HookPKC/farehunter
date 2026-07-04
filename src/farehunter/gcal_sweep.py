@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from datetime import date, timedelta
 
 from .runner import load_config
@@ -22,6 +23,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
     defaults = cfg.get("defaults", {})
     store = Store(db_path)
     summary = {"searched": 0, "recorded": 0, "alerts": 0, "errors": 0}
+    report = {"errors": [], "probe": None}
     today = date.today()
     probed = False
     try:
@@ -39,6 +41,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
                 except SearchApiError as exc:
                     log.error("Calendar failed %s→%s: %s", o, d, exc)
                     summary["errors"] += 1
+                    if len(report["errors"]) < 5:
+                        report["errors"].append(f"{o}→{d} {start}: {exc}")
                     continue
                 offers = parse_calendar(payload, o, d)
                 if not probed:   # 首次回應印出結構供人工驗證
@@ -48,6 +52,9 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
                              sorted(payload.keys()),
                              len(payload.get("calendar") or []),
                              json.dumps(sample, ensure_ascii=False))
+                    report["probe"] = {"keys": sorted(payload.keys()),
+                                       "rows": len(payload.get("calendar") or []),
+                                       "sample": sample}
                 if not offers:
                     log.info("Calendar empty %s→%s %s..%s", o, d, start, end)
                     continue
@@ -67,6 +74,9 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
                 time.sleep(1)
     finally:
         store.close()
+    report["summary"] = summary
+    Path("docs/sweep-report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     log.info("Sweep summary: %s", summary)
     return summary
 

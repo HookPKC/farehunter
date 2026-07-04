@@ -34,7 +34,7 @@ jobs:
         run: |
           git config user.name "farehunter-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add prices.db docs/data.json
+          git add prices.db docs/data.json docs/sweep-report.json
           git diff --cached --quiet || git commit -m "chore: gcal sweep $(date -u +'%Y-%m-%dT%H:%MZ')"
           git pull --rebase
           git push
