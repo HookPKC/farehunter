@@ -41,8 +41,9 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
         mid = len(prices) // 2
         median = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
 
-        # fare calendar: per FUTURE departure date, prefer a fresh (<=8d)
-        # google real price; otherwise the most recent aviasales cache price
+        # fare calendar chips: skip departures that are too soon to realistically
+        # plan/book — start from next calendar month AND at least 21 days out
+        # (monitoring/alerts still cover the current month; this is display only).
         latest = [dict(r) for r in conn.execute(
             """WITH ranked AS (
                  SELECT depart_date, return_date, price, currency, carriers,
@@ -54,7 +55,8 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
                                    observed_at DESC) AS rk
                  FROM observations
                  WHERE origin=? AND destination=? AND fare_class='any'
-                   AND depart_date >= date('now'))
+                   AND depart_date >= date('now','start of month','+1 month')
+                   AND depart_date >= date('now','+21 days'))
                SELECT depart_date, return_date, price, currency, carriers,
                       stops, observed_at, source
                FROM ranked WHERE rk=1
