@@ -89,7 +89,7 @@ def parse_full_service(payload: dict, origin: str, destination: str,
         return None
     price, codes = best
     link = (f"https://www.google.com/travel/flights?q=Flights%20from%20{origin}"
-            f"%20to%20{destination}%20on%20{outbound}")
+            f"%20to%20{destination}%20on%20{outbound}%20through%20{ret}")
     return Offer(origin=origin, destination=destination,
                  depart_date=outbound, return_date=ret,
                  price=price, currency="TWD",

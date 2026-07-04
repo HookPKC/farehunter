@@ -2,6 +2,7 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
+<meta name="author" content="Hook Li">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>FareHunter — 機票低價看板</title>
 <meta name="theme-color" content="#07090F">
@@ -394,7 +395,7 @@ function render(data){
   }
 
   $("foot").textContent =
-    "價格：8 天內的 Google 實價優先顯示，其餘為 Aviasales 快取低價。「≈ 航空」表示由快取推估的航空公司，實際承運請點日期到 Google Flights 確認。" +
+    "價格：8 天內的 Google 實價優先顯示，其餘為 Aviasales 快取低價。「≈ 航空」表示由快取推估的航空公司，實際承運請點日期到 Google Flights 確認。 © FareHunter · 作者 Hook Li" +
     (data.env==="sample" ? " 目前顯示示範資料——監控首次執行後會自動換成真實價格。" : "");
 }
 

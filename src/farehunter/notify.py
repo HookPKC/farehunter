@@ -17,20 +17,28 @@ from .analyzer import Verdict
 log = logging.getLogger(__name__)
 
 
+WEEKDAYS = "一二三四五六日"
+
+
 def format_alert(offer: Offer, verdict: Verdict) -> str:
-    rt = f" ↩ {offer.return_date}" if offer.return_date else ""
-    stops = "直飛" if offer.stops == 0 else f"{offer.stops} 轉"
-    if offer.link:
-        booking = f"訂票: {offer.link}"
-    else:
-        booking = (f"查價: https://www.google.com/travel/flights?q=Flights%20from%20"
-                   f"{offer.origin}%20to%20{offer.destination}%20on%20{offer.depart_date}")
+    from datetime import date as _d
+    dep = _d.fromisoformat(offer.depart_date)
+    day = f"{offer.depart_date} 週{WEEKDAYS[dep.weekday()]}"
+    if offer.return_date:
+        nights = (_d.fromisoformat(offer.return_date) - dep).days
+        day += f" ↩ {offer.return_date}（{nights} 天來回）"
+    who = offer.carriers or "多家航空（點入查看）"
+    q = f"Flights from {offer.origin} to {offer.destination} on {offer.depart_date}"
+    if offer.return_date:
+        q += f" through {offer.return_date}"
+    from urllib.parse import quote
+    booking = "https://www.google.com/travel/flights?q=" + quote(q)
     return (
-        f"✈️ 低價警報 {offer.origin}→{offer.destination}\n"
-        f"日期: {offer.depart_date}{rt}\n"
-        f"價格: {offer.price:,.0f} {offer.currency}（{offer.carriers}, {stops}）\n"
+        f"✈️ 低價警報 {offer.origin}⇄{offer.destination}\n"
+        f"日期: {day}\n"
+        f"價格: {offer.price:,.0f} {offer.currency}（{who}, 直飛）\n"
         f"原因: {verdict.detail}\n"
-        f"{booking}"
+        f"查票: {booking}"
     )
 
 
