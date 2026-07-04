@@ -301,9 +301,11 @@ function gfLink(o,d,dep,ret){
 }
 
 function render(data){
-  const t = data.generated_at.replace("T"," ").slice(5,16);
+  const t = new Date(data.generated_at).toLocaleString("zh-TW",
+    {timeZone:"Asia/Taipei", month:"2-digit", day:"2-digit",
+     hour:"2-digit", minute:"2-digit", hour12:false});
   $("statusline").innerHTML =
-    `資料更新 <b>${t} UTC</b><span class="badge ${data.env}">${data.env.toUpperCase()}</span>`;
+    `資料更新 <b>${t} 台灣時間</b><span class="badge ${data.env}">${data.env.toUpperCase()}</span>`;
 
   $("strip").innerHTML = [
     ["價格紀錄", fmt(data.totals.observations)],

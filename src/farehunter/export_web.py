@@ -62,17 +62,27 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
 
         # google-sourced chips carry no airline; attach the aviasales
         # reference airline seen for the same departure date (approximate)
+        route_common = conn.execute(
+            """SELECT carriers FROM observations
+               WHERE origin=? AND destination=? AND fare_class='any'
+                 AND carriers != '' AND stops=0
+                 AND observed_at >= datetime('now','-30 days')
+               GROUP BY carriers ORDER BY COUNT(*) DESC LIMIT 1""",
+            (o, d)).fetchone()
         for item in latest:
             if item.get("source") == "google" and not item.get("carriers"):
                 ref = conn.execute(
                     """SELECT carriers FROM observations
-                       WHERE origin=? AND destination=? AND depart_date=?
-                         AND fare_class='any' AND source='aviasales'
+                       WHERE origin=? AND destination=? AND fare_class='any'
                          AND carriers != ''
-                       ORDER BY observed_at DESC, rowid DESC LIMIT 1""",
-                    (o, d, item["depart_date"])).fetchone()
+                         AND abs(julianday(depart_date) - julianday(?)) <= 3
+                       ORDER BY abs(julianday(depart_date) - julianday(?)) ASC,
+                                observed_at DESC, rowid DESC LIMIT 1""",
+                    (o, d, item["depart_date"], item["depart_date"])).fetchone()
                 if ref:
                     item["ref_carriers"] = ref["carriers"]
+                elif route_common:
+                    item["ref_carriers"] = route_common["carriers"]
 
         # full-service (華航/長榮等) cheapest per date, attached to the same calendar
         full = {r["depart_date"]: r for r in conn.execute(

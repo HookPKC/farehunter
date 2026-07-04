@@ -60,3 +60,17 @@ def test_route_insight_upsert_and_export(tmp_path):
     ins = payload["routes"][0]["insight"]
     assert ins["price_level"] == "low" and ins["depart_date"] == "2099-08-07"
     assert ins["typical_low"] == 12000
+
+
+def test_ref_carriers_falls_back_to_route_common(tmp_path):
+    db = tmp_path / "t.db"
+    store = Store(str(db))
+    # 快取只有很遠的日期（>3 天差），但航線常見航空是 IT
+    store.record(Offer("KHH", "CTS", "2099-09-20", "2099-09-24", 12000, "TWD",
+                       "IT", 0, "250", source="aviasales"))
+    store.record(Offer("KHH", "CTS", "2099-08-01", "2099-08-05", 10765, "TWD",
+                       "", 0, "", source="google"))
+    store.close()
+    payload = export(str(db), str(tmp_path / "d.json"))
+    chips = {c["depart_date"]: c for c in payload["routes"][0]["latest"]}
+    assert chips["2099-08-01"]["ref_carriers"] == "IT"   # 航線常見航空退階
