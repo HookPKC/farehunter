@@ -82,19 +82,20 @@ def parse_full_service(payload: dict, origin: str, destination: str,
                 continue
             price = float(it["price"])
             if best is None or price < best[0]:
-                best = (price, sorted(set(codes)))
+                best = (price, sorted(set(codes)), it.get("total_duration"))
         except (KeyError, ValueError, TypeError) as exc:
             log.warning("Skipping malformed itinerary: %s", exc)
     if best is None:
         return None
-    price, codes = best
+    price, codes, total_dur = best
     link = (f"https://www.google.com/travel/flights?q=Flights%20from%20{origin}"
             f"%20to%20{destination}%20on%20{outbound}%20through%20{ret}")
     return Offer(origin=origin, destination=destination,
                  depart_date=outbound, return_date=ret,
                  price=price, currency="TWD",
-                 carriers=",".join(codes), stops=len(segs) - 1 if best else 0,
-                 duration="", link=link, fare_class="full", source="google")
+                 carriers=",".join(codes), stops=0,
+                 duration=str(total_dur or ""), link=link,
+                 fare_class="full", source="google")
 
 
 def parse_cheapest_direct(payload: dict, origin: str, destination: str,
@@ -113,18 +114,19 @@ def parse_cheapest_direct(payload: dict, origin: str, destination: str,
                 continue
             price = float(it["price"])
             if best is None or price < best[0]:
-                best = (price, code)
+                best = (price, code, it.get("total_duration"))
         except (KeyError, ValueError, TypeError) as exc:
             log.warning("Skipping malformed itinerary: %s", exc)
     if best is None:
         return None
-    price, code = best
+    price, code, total_dur = best
     link = (f"https://www.google.com/travel/flights?q=Flights%20from%20{origin}"
             f"%20to%20{destination}%20on%20{outbound}%20through%20{ret}")
     return Offer(origin=origin, destination=destination,
                  depart_date=outbound, return_date=ret,
                  price=price, currency="TWD", carriers=code, stops=0,
-                 duration="", link=link, fare_class="any", source="google")
+                 duration=str(total_dur or ""), link=link,
+                 fare_class="any", source="google")
 
 
 def pick_routes_for_today(routes: list[dict], today: date | None = None,

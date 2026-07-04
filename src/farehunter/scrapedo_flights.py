@@ -84,17 +84,17 @@ def parse_cheapest_direct(payload: dict, origin: str, destination: str,
                 continue
             price = float(it["price"])
             if best is None or price < best[0]:
-                best = (price, code)
+                best = (price, code, it.get("total_duration"))
         except (KeyError, ValueError, TypeError) as exc:
             log.warning("Skipping malformed itinerary: %s", exc)
     if best is None:
         return None
-    price, code = best
+    price, code, total_dur = best
     link = ("https://www.google.com/travel/flights?q=" +
             f"Flights%20from%20{origin}%20to%20{destination}"
             f"%20on%20{outbound}%20through%20{ret}")
     return Offer(origin=origin, destination=destination,
                  depart_date=outbound, return_date=ret,
                  price=price, currency=currency, carriers=code,
-                 stops=0, duration="", link=link,
+                 stops=0, duration=str(total_dur or ""), link=link,
                  fare_class="any", source="google")

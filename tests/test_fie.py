@@ -22,16 +22,28 @@ NOW = datetime(2026, 7, 4, tzinfo=timezone.utc)
 
 # ---- normalize -----------------------------------------------------------
 
-def test_normalize_travelpayouts_full_fields():
-    item = {"price": 9000, "airline": "IT", "transfers": 0, "duration": 190,
+def test_normalize_travelpayouts_drops_unreliable_cache_duration():
+    item = {"price": 9000, "airline": "IT", "transfers": 0, "duration": 385,
             "departure_at": "2026-08-07T09:00:00+08:00",
             "return_at": "2026-08-12T10:00:00+08:00", "link": "/x"}
     o = N.from_travelpayouts(item, "TPE", "NRT")
     assert o.route == "TPE-NRT" and o.source == "travelpayouts"
-    assert o.stops == 0 and o.duration == 190 and o.airline == ["IT"]
-    assert o.departure_time.startswith("2026-08-07") and o.depart_date == "2026-08-07"
-    assert o.raw_quality_score >= 0.9        # price+stops+duration+airline+time
+    assert o.stops == 0 and o.airline == ["IT"]
+    assert o.duration is None                 # cache duration NOT trusted
+    assert o.departure_time.startswith("2026-08-07")
     assert N.is_valid(o)
+
+
+def test_from_observation_drops_cache_duration_keeps_real():
+    class _Row(dict):
+        pass
+    cache = _Row(origin="KHH", destination="KIX", depart_date="2026-11-04",
+                 return_date="2026-11-08", price=8751, currency="TWD",
+                 carriers="AK", stops=0, duration="385", source="aviasales",
+                 observed_at="2026-07-04T00:00:00+00:00", link="")
+    real = _Row(cache); real["source"] = "google"; real["duration"] = "165"
+    assert N.from_observation(cache).duration is None      # cache 385min dropped
+    assert N.from_observation(real).duration == 165        # real kept
 
 
 def test_normalize_serpapi_itinerary_times_and_stops():

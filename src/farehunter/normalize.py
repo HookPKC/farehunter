@@ -21,6 +21,11 @@ from typing import Optional
 
 _ROUTE_RE = re.compile(r"^[A-Z]{3}-[A-Z]{3}$")
 
+# Cache aggregators return an unreliable 'duration' (often ~2x the real
+# single-flight time on these short-haul direct routes), so it must never be
+# shown or ranked as a real flight duration.
+CACHE_SOURCES = {"aviasales", "travelpayouts"}
+
 
 @dataclass
 class NormalizedOffer:
@@ -105,7 +110,7 @@ def from_travelpayouts(item: dict, origin: str, destination: str) -> NormalizedO
     return _build(
         item["price"], item.get("currency", "TWD"),
         f"{origin}-{destination}", "travelpayouts",
-        stops=item.get("transfers", 0), duration=item.get("duration"),
+        stops=item.get("transfers", 0), duration=None,   # cache duration unreliable
         airline=item.get("airline"), dep_time=dep_at or None,
         depart_date=dep_at[:10] or None,
         return_date=str(item.get("return_at", "") or "")[:10] or None,
@@ -147,10 +152,12 @@ def from_observation(row) -> NormalizedOffer:
     """A stored warehouse row (observations table / Offer) -> NormalizedOffer.
     source in the warehouse is 'aviasales' or 'google'; times are not stored."""
     g = row.__getitem__ if hasattr(row, "keys") else (lambda k: getattr(row, k))
+    src = g("source")
+    duration = None if src in CACHE_SOURCES else g("duration")
     return _build(
         g("price"), g("currency"),
-        f"{g('origin')}-{g('destination')}", g("source"),
-        stops=g("stops"), duration=g("duration"), airline=g("carriers"),
+        f"{g('origin')}-{g('destination')}", src,
+        stops=g("stops"), duration=duration, airline=g("carriers"),
         depart_date=g("depart_date"), return_date=g("return_date"),
         observed_at=g("observed_at"),
         link=(g("link") if _has(row, "link") else ""))
