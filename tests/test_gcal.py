@@ -99,3 +99,22 @@ def test_monthly_low_picks_cheapest_per_month(tmp_path):
     assert len([m for m in monthly]) == len({m["ym"] for m in monthly})
     cheapest = min(monthly, key=lambda m: m["price"])
     assert cheapest["source"] == "google"
+
+
+def test_sweep_windows_tile_six_months_no_gaps():
+    from farehunter.gcal_sweep import (sweep_windows, DEEP_POSITIONS,
+                                       CHUNK_DAYS, NEAR_CHUNKS)
+    import datetime as dt
+    base = dt.date(2026, 1, 5)
+    starts = set()
+    for wk in range(DEEP_POSITIONS):
+        wins = sweep_windows(base + dt.timedelta(weeks=wk))
+        assert len(wins) == NEAR_CHUNKS + 1          # 每次固定 2 窗 = 16/週
+        for s, e in wins:
+            assert (e - s).days == CHUNK_DAYS - 1
+            starts.add((s - (base + dt.timedelta(weeks=wk))).days)
+    # 近端 day1 + 深掃 day15,29,...：相鄰窗起點間距恰為 CHUNK_DAYS（無縫、無重疊）
+    deep = sorted(x for x in starts if x >= 15)
+    assert deep[0] == 15
+    assert all(b - a == CHUNK_DAYS for a, b in zip(deep, deep[1:]))
+    assert deep[-1] + CHUNK_DAYS >= 180              # 覆蓋達 6 個月

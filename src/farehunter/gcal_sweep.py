@@ -16,7 +16,22 @@ from .notify import notify, channels_configured
 log = logging.getLogger(__name__)
 
 CHUNK_DAYS = 14
-CHUNKS = 2            # 未來 2 個 14 天窗口（共 28 天真實價格）
+NEAR_CHUNKS = 1       # 未來 14 天：每週必掃（可訂票的迫近區）
+DEEP_POSITIONS = 13   # 深掃輪替位置（每週前進 14 天，約 6 個月一輪）
+
+
+def sweep_windows(today: date) -> list[tuple[date, date]]:
+    """本次掃描窗口：近端固定 + 一段隨週次前進的深掃窗，
+    使未來約 6 個月每個區段都會被真實價格輪到（額度不變，每次 2 窗）。"""
+    wins = []
+    for i in range(NEAR_CHUNKS):
+        start = today + timedelta(days=1 + CHUNK_DAYS * i)
+        wins.append((start, start + timedelta(days=CHUNK_DAYS - 1)))
+    week = today.isocalendar()[1]
+    deep_i = week % DEEP_POSITIONS
+    dstart = today + timedelta(days=1 + CHUNK_DAYS * (NEAR_CHUNKS + deep_i))
+    wins.append((dstart, dstart + timedelta(days=CHUNK_DAYS - 1)))
+    return wins
 
 
 def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
@@ -26,15 +41,14 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
     summary = {"searched": 0, "recorded": 0, "alerts": 0, "errors": 0}
     report = {"errors": [], "probe": None}
     today = date.today()
+    windows = sweep_windows(today)
     probed = False
     try:
         for route in cfg["routes"]:
             o, d = route["origin"], route["destination"]
             merged = {**defaults, **route}
             stats = store.route_stats(o, d)
-            for chunk in range(CHUNKS):
-                start = today + timedelta(days=1 + CHUNK_DAYS * chunk)
-                end = start + timedelta(days=CHUNK_DAYS - 1)
+            for start, end in windows:
                 summary["searched"] += 1
                 try:
                     payload = fetch_calendar(o, d, start, end,
