@@ -56,13 +56,13 @@ class Store:
         self.conn.execute(
             """INSERT INTO observations
                (origin, destination, depart_date, return_date, price,
-                currency, carriers, stops, duration, observed_at, fare_class)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                currency, carriers, stops, duration, observed_at, fare_class, source)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (offer.origin, offer.destination, offer.depart_date,
              offer.return_date, offer.price, offer.currency,
              offer.carriers, offer.stops, offer.duration,
              datetime.now(timezone.utc).isoformat(timespec="seconds"),
-             offer.fare_class),
+             offer.fare_class, offer.source),
         )
         self.conn.commit()
 

@@ -1,0 +1,40 @@
+name: Google Price Calendar Sweep
+
+on:
+  schedule:
+    - cron: "30 5 * * 1"      # 每週一 05:30 UTC（台灣 13:30）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: farehunter
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run calendar sweep
+        env:
+          SEARCHAPI_KEY: ${{ secrets.SEARCHAPI_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: PYTHONPATH=src python -m farehunter.gcal_sweep
+      - name: Export dashboard data
+        run: python src/farehunter/export_web.py prices.db docs/data.json
+      - name: Commit
+        run: |
+          git config user.name "farehunter-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add prices.db docs/data.json
+          git diff --cached --quiet || git commit -m "chore: gcal sweep $(date -u +'%Y-%m-%dT%H:%MZ')"
+          git pull --rebase
+          git push

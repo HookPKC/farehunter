@@ -30,14 +30,25 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
         mid = len(prices) // 2
         median = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
 
-        # fare calendar: most recent cheapest-overall per FUTURE departure date
+        # fare calendar: per FUTURE departure date, prefer a fresh (<=8d)
+        # google real price; otherwise the most recent aviasales cache price
         latest = [dict(r) for r in conn.execute(
-            """SELECT depart_date, return_date, price, currency, carriers, stops,
-                      MAX(observed_at) AS observed_at
-               FROM observations
-               WHERE origin=? AND destination=? AND depart_date >= date('now')
-                 AND fare_class='any'
-               GROUP BY depart_date ORDER BY depart_date LIMIT 16""", (o, d))]
+            """WITH ranked AS (
+                 SELECT depart_date, return_date, price, currency, carriers,
+                        stops, observed_at, source,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY depart_date
+                          ORDER BY (source='google'
+                                    AND observed_at >= datetime('now','-8 days')) DESC,
+                                   observed_at DESC) AS rk
+                 FROM observations
+                 WHERE origin=? AND destination=? AND fare_class='any'
+                   AND depart_date >= date('now'))
+               SELECT depart_date, return_date, price, currency, carriers,
+                      stops, observed_at, source
+               FROM ranked WHERE rk=1
+               ORDER BY depart_date LIMIT 24""", (o, d))]
+
         # full-service (華航/長榮等) cheapest per date, attached to the same calendar
         full = {r["depart_date"]: r for r in conn.execute(
             """SELECT depart_date, price, carriers, MAX(observed_at) AS observed_at

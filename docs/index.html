@@ -356,7 +356,8 @@ function render(data){
       const chips = r.latest.map(x=>{
         const dt = new Date(x.depart_date+"T00:00:00");
         const cls = x.price<=q1 ? "lo" : x.price>=q3 ? "hi" : "";
-        const aln = alFull((x.carriers||"").split(",")[0]);
+        const aln = x.source==="google" && !x.carriers
+          ? "Google 實價" : alFull((x.carriers||"").split(",")[0]);
         const nights = x.return_date
           ? Math.round((new Date(x.return_date)-new Date(x.depart_date))/864e5) : null;
         return `<a class="chip ${cls}" target="_blank" rel="noopener"
