@@ -352,7 +352,7 @@ function monthlyStrip(r){
   let cap;
   if(loReal != null){
     const c = real.find(x=>x.price===loReal);
-    cap = `全年每月最低 <b>${c.ym.slice(5)}月最便宜 ${fmt(loReal)}</b>`;
+    cap = `全年每月最低・實價最便宜 <b>${c.ym.slice(5)}月 ${fmt(loReal)}</b>`;
   } else {
     cap = `全年每月最低 <span class="mprog">實價累積中</span>`;
   }
