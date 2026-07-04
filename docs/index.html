@@ -286,8 +286,10 @@ function sparkline(hist, median){
   </svg>`;
 }
 
-function gfLink(o,d,dep){
-  return `https://www.google.com/travel/flights?q=Flights%20from%20${o}%20to%20${d}%20on%20${dep}`;
+function gfLink(o,d,dep,ret){
+  let q = `Flights from ${o} to ${d} on ${dep}`;
+  if(ret) q += ` through ${ret}`;
+  return "https://www.google.com/travel/flights?q=" + encodeURIComponent(q);
 }
 
 function render(data){
@@ -352,10 +354,12 @@ function render(data){
         const dt = new Date(x.depart_date+"T00:00:00");
         const cls = x.price<=q1 ? "lo" : x.price>=q3 ? "hi" : "";
         const aln = alFull((x.carriers||"").split(",")[0]);
+        const nights = x.return_date
+          ? Math.round((new Date(x.return_date)-new Date(x.depart_date))/864e5) : null;
         return `<a class="chip ${cls}" target="_blank" rel="noopener"
-          aria-label="${x.depart_date} 週${WD[dt.getDay()]} ${fmt(x.price)} 元 ${aln}"
-          href="${gfLink(r.origin,r.destination,x.depart_date)}">
-          <div class="d">${x.depart_date.slice(5).replace("-","/")} 週${WD[dt.getDay()]}</div>
+          aria-label="${x.depart_date} 週${WD[dt.getDay()]}${nights?` ${nights}天來回`:""} ${fmt(x.price)} 元 ${aln}"
+          href="${gfLink(r.origin,r.destination,x.depart_date,x.return_date)}">
+          <div class="d">${x.depart_date.slice(5).replace("-","/")} 週${WD[dt.getDay()]}${nights?` · ${nights}天`:""}</div>
           <div class="p">${fmt(x.price)}</div>
           <div class="al">${aln}</div>
           ${x.full_price ? `<div class="fs">${alZh((x.full_carriers||"").split(",")[0])} ${fmt(x.full_price)}</div>` : ""}</a>`;
