@@ -118,3 +118,23 @@ def test_sweep_windows_tile_six_months_no_gaps():
     assert deep[0] == 15
     assert all(b - a == CHUNK_DAYS for a, b in zip(deep, deep[1:]))
     assert deep[-1] + CHUNK_DAYS >= 180              # 覆蓋達 6 個月
+
+
+def test_monthly_real_price_beats_cheaper_cache_same_date(tmp_path):
+    """同一出發日：新鮮 google 實價應覆蓋更便宜但過時的快取價。"""
+    db = tmp_path / "t.db"
+    store = Store(str(db))
+    import datetime as dt
+    dep = (dt.date.today().replace(day=1) + dt.timedelta(days=40))
+    ret = dep + dt.timedelta(days=5)
+    # 快取價較低但只是快取；google 實價較高卻是現況真相
+    store.record(Offer("KHH", "KIX", dep.isoformat(), ret.isoformat(),
+                       7322, "TWD", "MM", 0, "", source="aviasales"))
+    store.record(Offer("KHH", "KIX", dep.isoformat(), ret.isoformat(),
+                       9135, "TWD", "", 0, "", source="google"))
+    store.close()
+    payload = export(str(db), str(tmp_path / "d.json"))
+    monthly = payload["routes"][0]["monthly"]
+    cell = [x for x in monthly if x["depart_date"] == dep.isoformat()][0]
+    assert cell["price"] == 9135 and cell["source"] == "google"   # 實價勝出
+    assert cell["return_date"] == ret.isoformat()                  # 帶回程日

@@ -112,25 +112,30 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
                FROM observations WHERE origin=? AND destination=? AND fare_class='any'
                GROUP BY day ORDER BY day""", (o, d))]
 
-        # monthly low across the whole planning horizon: cheapest DIRECT fare seen
-        # per departure month, so the cheapest travel period is visible at a glance.
-        # For each month keep the row with the lowest price and carry its source +
-        # carriers (verified google carrier wins the tie-break via source ordering).
+        # monthly low across the planning horizon. Two-stage so a stale cache low
+        # can't beat a current real price: (1) per departure date, take the most
+        # authoritative fare — a fresh (<=14d) google/verified real price wins over
+        # cache regardless of being higher; (2) per month, take the cheapest date.
         monthly = [dict(r) for r in conn.execute(
-            """WITH ranked AS (
-                 SELECT substr(depart_date, 1, 7) AS ym, depart_date, price,
-                        carriers, source,
+            """WITH per_date AS (
+                 SELECT depart_date, return_date, price, carriers, source,
                         ROW_NUMBER() OVER (
-                          PARTITION BY substr(depart_date, 1, 7)
-                          ORDER BY price ASC,
-                                   (source='google' AND carriers != '') DESC,
-                                   observed_at DESC) AS rk
+                          PARTITION BY depart_date
+                          ORDER BY (source='google'
+                                    AND observed_at >= datetime('now','-14 days')) DESC,
+                                   observed_at DESC, rowid DESC) AS rk
                  FROM observations
-                 WHERE origin=? AND destination=? AND fare_class='any'
-                   AND stops=0
-                   AND depart_date BETWEEN date('now') AND date('now','+330 days'))
-               SELECT ym, depart_date, price, carriers, source
-               FROM ranked WHERE rk=1 ORDER BY ym""", (o, d))]
+                 WHERE origin=? AND destination=? AND fare_class='any' AND stops=0
+                   AND depart_date BETWEEN date('now') AND date('now','+330 days')),
+               best_date AS (SELECT * FROM per_date WHERE rk=1),
+               per_month AS (
+                 SELECT substr(depart_date, 1, 7) AS ym, depart_date, return_date,
+                        price, carriers, source,
+                        ROW_NUMBER() OVER (PARTITION BY substr(depart_date, 1, 7)
+                                           ORDER BY price ASC) AS mrk
+                 FROM best_date)
+               SELECT ym, depart_date, return_date, price, carriers, source
+               FROM per_month WHERE mrk=1 ORDER BY ym""", (o, d))]
 
         routes.append({
             "origin": o, "destination": d,
