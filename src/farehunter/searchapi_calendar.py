@@ -103,3 +103,72 @@ def parse_calendar(payload: dict, origin: str, destination: str,
         except (KeyError, ValueError, TypeError) as exc:
             log.warning("Skipping malformed calendar row: %s", exc)
     return [best[k] for k in sorted(best)]
+
+
+def fetch_oneway_calendar(origin: str, destination: str,
+                          start: date, end: date,
+                          currency: str = "TWD",
+                          api_key: str | None = None,
+                          session: requests.Session | None = None) -> dict:
+    """One-way calendar: no date matrix, so a single request covers up to
+    ~200 departure days — the long-range engine."""
+    key = api_key or os.environ.get("SEARCHAPI_KEY", "")
+    if not key:
+        raise RuntimeError("Missing SEARCHAPI_KEY environment variable.")
+    if (end - start).days > 199:
+        end = start + timedelta(days=199)
+    s_ = session or requests
+    resp = s_.get(BASE_URL, params={
+        "engine": "google_flights_calendar",
+        "flight_type": "one_way",
+        "departure_id": origin,
+        "arrival_id": destination,
+        "outbound_date": (start + timedelta(days=7)).isoformat(),
+        "outbound_date_start": start.isoformat(),
+        "outbound_date_end": end.isoformat(),
+        "stops": "nonstop",
+        "currency": currency,
+        "api_key": key,
+    }, timeout=120)
+    payload = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    if resp.status_code != 200 or payload.get("error"):
+        raise SearchApiError(f"HTTP {resp.status_code}: {payload.get('error') or resp.text[:300]}")
+    return payload
+
+
+def parse_oneway_prices(payload: dict, today: date | None = None) -> dict[str, float]:
+    """calendar rows -> {departure_date: price}."""
+    today_iso = (today or date.today()).isoformat()
+    out: dict[str, float] = {}
+    for row in payload.get("calendar", []):
+        try:
+            if row.get("has_no_flights") or "price" not in row:
+                continue
+            dep = str(row["departure"])
+            if dep < today_iso:
+                continue
+            price = float(row["price"])
+            if dep not in out or price < out[dep]:
+                out[dep] = price
+        except (KeyError, ValueError, TypeError) as exc:
+            log.warning("Skipping malformed one-way row: %s", exc)
+    return out
+
+
+def combine_roundtrips(out_prices: dict[str, float],
+                       back_prices: dict[str, float],
+                       nights: tuple[int, ...] = TRIP_NIGHTS) -> list[dict]:
+    """Cheapest out+back sum per departure date（去回可不同航空，皆為可訂單程價）."""
+    combos = []
+    for dep, op in sorted(out_prices.items()):
+        d0 = date.fromisoformat(dep)
+        cands = []
+        for n in nights:
+            r = (d0 + timedelta(days=n)).isoformat()
+            if r in back_prices:
+                cands.append((op + back_prices[r], r, back_prices[r]))
+        if cands:
+            total, ret, rp = min(cands)
+            combos.append({"depart_date": dep, "return_date": ret,
+                           "total": total, "out_price": op, "ret_price": rp})
+    return combos

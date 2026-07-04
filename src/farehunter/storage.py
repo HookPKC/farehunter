@@ -106,6 +106,25 @@ class Store:
             return False
         return price > row["price"] * (1 - improvement_pct / 100.0)
 
+    def record_longrange(self, origin: str, destination: str, depart_date: str,
+                         return_date: str, total: float,
+                         out_price: float, ret_price: float) -> None:
+        """Long-horizon one-way-sum roundtrip estimates (upsert per date)."""
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS long_range (
+            origin TEXT NOT NULL, destination TEXT NOT NULL,
+            depart_date TEXT NOT NULL, return_date TEXT NOT NULL,
+            total REAL NOT NULL, out_price REAL NOT NULL, ret_price REAL NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (origin, destination, depart_date))""")
+        self.conn.execute(
+            """INSERT INTO long_range VALUES (?,?,?,?,?,?,?,datetime('now'))
+               ON CONFLICT(origin, destination, depart_date) DO UPDATE SET
+                 return_date=excluded.return_date, total=excluded.total,
+                 out_price=excluded.out_price, ret_price=excluded.ret_price,
+                 updated_at=excluded.updated_at""",
+            (origin, destination, depart_date, return_date, total, out_price, ret_price))
+        self.conn.commit()
+
     def record_insight(self, origin: str, destination: str, depart_date: str,
                        price_level: str, typical_low: float | None,
                        typical_high: float | None) -> None:

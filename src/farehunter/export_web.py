@@ -112,6 +112,26 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
                FROM observations WHERE origin=? AND destination=? AND fare_class='any'
                GROUP BY day ORDER BY day""", (o, d))]
 
+        # monthly low across the whole planning horizon: cheapest DIRECT fare seen
+        # per departure month, so the cheapest travel period is visible at a glance.
+        # For each month keep the row with the lowest price and carry its source +
+        # carriers (verified google carrier wins the tie-break via source ordering).
+        monthly = [dict(r) for r in conn.execute(
+            """WITH ranked AS (
+                 SELECT substr(depart_date, 1, 7) AS ym, depart_date, price,
+                        carriers, source,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY substr(depart_date, 1, 7)
+                          ORDER BY price ASC,
+                                   (source='google' AND carriers != '') DESC,
+                                   observed_at DESC) AS rk
+                 FROM observations
+                 WHERE origin=? AND destination=? AND fare_class='any'
+                   AND stops=0
+                   AND depart_date BETWEEN date('now') AND date('now','+330 days'))
+               SELECT ym, depart_date, price, carriers, source
+               FROM ranked WHERE rk=1 ORDER BY ym""", (o, d))]
+
         routes.append({
             "origin": o, "destination": d,
             "stats": {"n": srow["n"], "min": srow["mn"],
@@ -120,6 +140,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
             "latest": latest,
             "fsc_latest": dict(fsc_latest) if fsc_latest else None,
             "insight": _route_insight(conn, o, d),
+            "monthly": monthly,
             "history": history,
         })
 

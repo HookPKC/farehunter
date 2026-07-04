@@ -168,6 +168,25 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
 .chip.lo{border-color:rgba(63,214,143,.45)}
 .chip.lo .p{color:var(--pos)}
 .chip.hi .p{color:var(--ink3)}
+/* 全年每月最低 */
+.mrow{padding:0 var(--s5) var(--s3)}
+.mrow-cap{font-size:11px;color:var(--ink3);letter-spacing:.1em;text-transform:uppercase;
+  margin:0 0 var(--s2)}
+.mrow-cap b{color:var(--pos);font-weight:600}
+.mscroll{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.mscroll::-webkit-scrollbar{display:none}
+.mcell{flex:0 0 auto;text-decoration:none;text-align:center;min-width:64px;
+  border:1px solid var(--line1);border-radius:var(--r-s);padding:5px 6px;
+  background:var(--bg2);transition:border-color var(--t-fast),background var(--t-fast)}
+.mcell:hover{border-color:var(--line2);background:var(--bg3)}
+.mcell .mm{display:block;font-family:var(--mono);font-size:11px;color:var(--ink3)}
+.mcell .mm .yr{opacity:.6;font-size:9px}
+.mcell .mp{display:block;font-family:var(--mono);font-size:13.5px;font-weight:700;
+  color:var(--ink2);font-variant-numeric:tabular-nums;margin-top:2px}
+.mcell .mal{display:block;font-size:10px;color:var(--ink3);margin-top:2px;white-space:nowrap}
+.mcell.mlo{border-color:rgba(63,214,143,.5);background:var(--pos-soft)}
+.mcell.mlo .mp{color:var(--pos)}
+.mcell.mhi .mp{color:var(--ink3);opacity:.75}
 
 /* perforated stub */
 .stub{border-top:1.5px dashed var(--line2);padding:var(--s3) var(--s5);
@@ -300,6 +319,36 @@ function gfLink(o,d,dep,ret){
   return "https://www.google.com/travel/flights?q=" + encodeURIComponent(q);
 }
 
+// 全年每月最低：一眼看出哪個月份最便宜（規劃用）
+function monthlyStrip(r){
+  const m = r.monthly || [];
+  if(m.length < 2) return "";
+  const prices = m.map(x=>x.price);
+  const lo = Math.min(...prices), hi = Math.max(...prices), span = (hi-lo)||1;
+  const cells = m.map(x=>{
+    const mm = x.ym.slice(5);                       // "09"
+    const t = (parseInt(x.ym.slice(0,4))>new Date().getFullYear())
+      ? `${mm}<span class="yr">'${x.ym.slice(2,4)}</span>` : mm;
+    const isLo = x.price === lo;
+    // 顏色深淺依價位在區間中的位置（越低越綠、越高越淡）
+    const frac = (x.price - lo) / span;
+    const cls = isLo ? "mlo" : frac >= 0.66 ? "mhi" : "";
+    const al = x.carriers ? alZh(x.carriers.split(",")[0])
+             : (x.ref_carriers ? "≈"+alZh(x.ref_carriers.split(",")[0]) : "");
+    const href = gfLink(r.origin, r.destination, x.depart_date);
+    return `<a class="mcell ${cls}" href="${href}" target="_blank" rel="noopener"
+      aria-label="${x.ym} 最低 ${fmt(x.price)} 元${al?(" "+al):""}">
+      <span class="mm">${t}</span>
+      <span class="mp">${fmt(x.price)}</span>
+      ${al?`<span class="mal">${al}</span>`:""}</a>`;
+  }).join("");
+  const cheapest = m.find(x=>x.price===lo);
+  return `<div class="mrow">
+    <div class="mrow-cap">全年每月最低 <b>${cheapest.ym.slice(5)}月最便宜 ${fmt(lo)}</b></div>
+    <div class="mscroll">${cells}</div>
+  </div>`;
+}
+
 function render(data){
   const t = new Date(data.generated_at).toLocaleString("zh-TW",
     {timeZone:"Asia/Taipei", month:"2-digit", day:"2-digit",
@@ -394,6 +443,7 @@ function render(data){
             <span>每日最低價</span><span>${(r.history.at(-1)||{}).day||""}</span></div>
         </div>
         <div class="cal">${chips}</div>
+        ${monthlyStrip(r)}
         <div class="stub">
           <span>歷史低 <b>${fmt(r.stats.min)}</b></span>
           <span>中位 <b>${fmt(med)}</b></span>

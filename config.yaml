@@ -1,7 +1,7 @@
 # FareHunter v1.1 — 監控路線設定（資料來源：Travelpayouts / Aviasales 快取）
 defaults:
   currency: twd
-  months_ahead: 6           # 監控當月起共 6 個月
+  months_ahead: 10          # 監控當月起共 10 個月（涵蓋年底旺季＋明年春季賞櫻）
   one_way: false            # false = 來回票價
   non_stop: true            # 台日全直飛航線，轉機票不切實際
   drop_pct: 25              # 低於中位數 25% 觸發

@@ -22,7 +22,7 @@ def pick_candidates(store: Store, limit: int = VERIFICATIONS_PER_DAY) -> list[di
                                        ORDER BY observed_at DESC, rowid DESC) AS rk
              FROM observations
              WHERE source='google' AND fare_class='any'
-               AND depart_date BETWEEN date('now','+1 day') AND date('now','+28 days')),
+               AND depart_date BETWEEN date('now','+1 day') AND date('now','+330 days')),
            unverified AS (
              SELECT *, ROW_NUMBER() OVER (PARTITION BY origin, destination
                                           ORDER BY price ASC) AS pr

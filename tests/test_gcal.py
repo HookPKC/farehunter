@@ -74,3 +74,28 @@ def test_ref_carriers_falls_back_to_route_common(tmp_path):
     payload = export(str(db), str(tmp_path / "d.json"))
     chips = {c["depart_date"]: c for c in payload["routes"][0]["latest"]}
     assert chips["2099-08-01"]["ref_carriers"] == "IT"   # 航線常見航空退階
+
+
+def test_monthly_low_picks_cheapest_per_month(tmp_path):
+    db = tmp_path / "t.db"
+    store = Store(str(db))
+    import datetime as dt
+    base = dt.date.today().replace(day=1)
+    def d(month_offset, day, price, carriers="", source="aviasales"):
+        m = base.month - 1 + month_offset
+        y = base.year + m // 12
+        dep = dt.date(y, m % 12 + 1, day)
+        ret = dep + dt.timedelta(days=5)
+        store.record(Offer("TPE", "NRT", dep.isoformat(), ret.isoformat(),
+                           price, "TWD", carriers, 0, "", source=source))
+    d(1, 10, 12000); d(1, 20, 9500, "IT")      # 次月最低 9500
+    d(3, 5, 6800, "", "google"); d(3, 15, 7200) # 第3月最低 6800（google）
+    store.close()
+    payload = export(str(db), str(tmp_path / "d.json"))
+    monthly = payload["routes"][0]["monthly"]
+    prices = {m["ym"][-2:]: m["price"] for m in monthly}
+    assert min(m["price"] for m in monthly) == 6800   # 全期最低
+    # 每月只留一筆、取當月最低
+    assert len([m for m in monthly]) == len({m["ym"] for m in monthly})
+    cheapest = min(monthly, key=lambda m: m["price"])
+    assert cheapest["source"] == "google"

@@ -1,0 +1,38 @@
+name: Long Range Sweep
+
+on:
+  schedule:
+    - cron: "0 4 3,18 * *"    # 每月 3 日與 18 日 04:00 UTC（半月刷新）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: farehunter
+  cancel-in-progress: false
+
+jobs:
+  longrange:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run long-range sweep
+        env:
+          SEARCHAPI_KEY: ${{ secrets.SEARCHAPI_KEY }}
+        run: PYTHONPATH=src python -m farehunter.longrange_sweep
+      - name: Export dashboard data
+        run: python src/farehunter/export_web.py prices.db docs/data.json
+      - name: Commit
+        run: |
+          git config user.name "farehunter-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add prices.db docs/data.json docs/longrange-report.json
+          git diff --cached --quiet || git commit -m "chore: long-range sweep $(date -u +'%Y-%m-%dT%H:%MZ')"
+          git pull --rebase
+          git push
