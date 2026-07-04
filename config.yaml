@@ -3,7 +3,7 @@ defaults:
   currency: twd
   months_ahead: 6           # 監控當月起共 6 個月
   one_way: false            # false = 來回票價
-  non_stop: false
+  non_stop: true            # 台日全直飛航線，轉機票不切實際
   drop_pct: 25              # 低於中位數 25% 觸發
   min_history: 30           # 累積 30 筆觀察後才啟用統計規則
   pause_seconds: 0.6

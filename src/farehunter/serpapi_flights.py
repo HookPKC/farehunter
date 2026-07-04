@@ -48,6 +48,7 @@ def search_google_flights(origin: str, destination: str,
         "outbound_date": outbound,
         "return_date": ret,
         "currency": currency,
+        "stops": 1,                     # SerpAPI: 1 = 僅直飛
         "hl": "zh-TW",
         "api_key": key,
     }, timeout=90)
@@ -73,6 +74,8 @@ def parse_full_service(payload: dict, origin: str, destination: str,
         try:
             segs = it.get("flights") or []
             if not segs:
+                continue
+            if len(segs) > 1:           # 轉機行程不列入
                 continue
             codes = [_airline_code(s.get("flight_number", "")) for s in segs]
             if not all(c in FULL_SERVICE for c in codes):

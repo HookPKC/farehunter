@@ -15,8 +15,8 @@ FIXTURE = json.loads(
 
 def test_parse_picks_cheapest_all_full_service():
     offer = parse_full_service(FIXTURE, "TPE", "NRT", "2026-07-31", "2026-08-05")
-    # IT 8900 is LCC (excluded); BR+MM mixed itinerary excluded;
-    # cheapest all-FSC is BR 13540 (beats CI 14203)
+    # IT 8900 是廉航（排除）；BR+MM 混搭排除；CI+JL 轉機 11200 雖全傳統航空也排除（轉機）；
+    # 全直飛傳統航空最便宜是 BR 13540（勝過 CI 14203）
     assert offer is not None
     assert offer.price == 13540
     assert offer.carriers == "BR"

@@ -86,7 +86,7 @@ class TravelpayoutsClient:
 
 # ---- parsing (pure function, unit-testable without network) ----------------
 def parse_offers(payload: dict, origin: str, destination: str,
-                 currency: str = "TWD") -> list[Offer]:
+                 currency: str = "TWD", max_stops: int | None = None) -> list[Offer]:
     """Flatten a prices_for_dates response; keep the cheapest fare per
     departure date.
 
@@ -96,6 +96,8 @@ def parse_offers(payload: dict, origin: str, destination: str,
     best: dict[tuple, Offer] = {}   # (depart_date, fare_class) -> cheapest offer
     for item in payload.get("data", []):
         try:
+            if max_stops is not None and int(item.get("transfers", 0) or 0) > max_stops:
+                continue
             price = float(item["price"])
             depart_date = str(item["departure_at"])[:10]
             return_date = str(item["return_at"])[:10] if item.get("return_at") else None

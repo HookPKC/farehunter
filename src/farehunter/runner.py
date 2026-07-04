@@ -66,7 +66,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
                     summary["errors"] += 1
                     continue
 
-                offers = parse_offers(payload, origin, dest)
+                offers = parse_offers(payload, origin, dest,
+                    max_stops=0 if merged.get("non_stop") else None)
                 if not offers:
                     log.info("No cached fares %s→%s %s", origin, dest, month)
                     continue

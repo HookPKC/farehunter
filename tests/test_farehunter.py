@@ -26,6 +26,12 @@ def make_offer(price, origin="TPE", dest="NRT", dep="2099-09-18", link="", fc="a
 
 
 # ---- parsing ----------------------------------------------------------------
+def test_parse_direct_only_drops_transfers():
+    offers = parse_offers(FIXTURE, "TPE", "NRT", max_stops=0)
+    assert all(o.stops == 0 for o in offers)
+    assert "2099-09-25" not in [o.depart_date for o in offers]   # BR 轉機票被剔除
+
+
 def test_parse_keeps_cheapest_per_date_and_skips_malformed():
     offers = parse_offers(FIXTURE, "TPE", "NRT")
     by = {(o.depart_date, o.fare_class): o for o in offers}
