@@ -1,16 +1,34 @@
 {
- "errors": [
-  "TPE→NRT 2026-07-05: HTTP 400: The combination of outbound parameters (`outbound_date_start`: 2026-07-05, `outbound_date_end`: 2026-08-03) spanning 30 days and return parameters (`return_date_start`: 2026-07-09, `return_date_end`: 2026-08-09) spanning 32 days results in 960 unique combinations. This exceeds the maximum allowed limit of 200 combinations. Please adjust the date ranges accordingly.",
-  "TPE→NRT 2026-08-04: HTTP 400: The combination of outbound parameters (`outbound_date_start`: 2026-08-04, `outbound_date_end`: 2026-09-02) spanning 30 days and return parameters (`return_date_start`: 2026-08-08, `return_date_end`: 2026-09-08) spanning 32 days results in 960 unique combinations. This exceeds the maximum allowed limit of 200 combinations. Please adjust the date ranges accordingly.",
-  "TPE→KIX 2026-07-05: HTTP 400: The combination of outbound parameters (`outbound_date_start`: 2026-07-05, `outbound_date_end`: 2026-08-03) spanning 30 days and return parameters (`return_date_start`: 2026-07-09, `return_date_end`: 2026-08-09) spanning 32 days results in 960 unique combinations. This exceeds the maximum allowed limit of 200 combinations. Please adjust the date ranges accordingly.",
-  "TPE→KIX 2026-08-04: HTTP 400: The combination of outbound parameters (`outbound_date_start`: 2026-08-04, `outbound_date_end`: 2026-09-02) spanning 30 days and return parameters (`return_date_start`: 2026-08-08, `return_date_end`: 2026-09-08) spanning 32 days results in 960 unique combinations. This exceeds the maximum allowed limit of 200 combinations. Please adjust the date ranges accordingly.",
-  "KHH→NRT 2026-07-05: HTTP 400: The combination of outbound parameters (`outbound_date_start`: 2026-07-05, `outbound_date_end`: 2026-08-03) spanning 30 days and return parameters (`return_date_start`: 2026-07-09, `return_date_end`: 2026-08-09) spanning 32 days results in 960 unique combinations. This exceeds the maximum allowed limit of 200 combinations. Please adjust the date ranges accordingly."
- ],
- "probe": null,
+ "errors": [],
+ "probe": {
+  "keys": [
+   "calendar",
+   "search_metadata",
+   "search_parameters"
+  ],
+  "rows": 168,
+  "sample": [
+   {
+    "departure": "2026-07-18",
+    "return": "2026-07-18",
+    "price": 11679
+   },
+   {
+    "departure": "2026-07-18",
+    "return": "2026-07-19",
+    "price": 14797
+   },
+   {
+    "departure": "2026-07-18",
+    "return": "2026-07-20",
+    "price": 10104
+   }
+  ]
+ },
  "summary": {
   "searched": 16,
-  "recorded": 0,
+  "recorded": 203,
   "alerts": 0,
-  "errors": 16
+  "errors": 0
  }
 }
