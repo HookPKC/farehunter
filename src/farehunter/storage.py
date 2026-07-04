@@ -46,6 +46,10 @@ class Store:
         if "fare_class" not in cols:
             self.conn.execute(
                 "ALTER TABLE observations ADD COLUMN fare_class TEXT DEFAULT 'any'")
+        if "source" not in cols:
+            # migration: source distinguishes aviasales cache from google real prices
+            self.conn.execute(
+                "ALTER TABLE observations ADD COLUMN source TEXT NOT NULL DEFAULT 'aviasales'")
         self.conn.commit()
 
     def close(self):
