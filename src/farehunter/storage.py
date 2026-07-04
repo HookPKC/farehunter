@@ -106,6 +106,24 @@ class Store:
             return False
         return price > row["price"] * (1 - improvement_pct / 100.0)
 
+    def record_insight(self, origin: str, destination: str, depart_date: str,
+                       price_level: str, typical_low: float | None,
+                       typical_high: float | None) -> None:
+        """Google price_insights per route — latest wins (upsert)."""
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS route_insights (
+            origin TEXT NOT NULL, destination TEXT NOT NULL,
+            depart_date TEXT NOT NULL, price_level TEXT NOT NULL,
+            typical_low REAL, typical_high REAL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (origin, destination))""")
+        self.conn.execute(
+            """INSERT INTO route_insights VALUES (?,?,?,?,?,?,datetime('now'))
+               ON CONFLICT(origin, destination) DO UPDATE SET
+                 depart_date=excluded.depart_date, price_level=excluded.price_level,
+                 typical_low=excluded.typical_low, typical_high=excluded.typical_high,
+                 updated_at=excluded.updated_at""",
+            (origin, destination, depart_date, price_level, typical_low, typical_high))
+        self.conn.commit()
+
     def record_alert(self, origin: str, destination: str,
                      depart_date: str, price: float, reason: str) -> None:
         self.conn.execute(

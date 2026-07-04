@@ -46,3 +46,17 @@ def test_chip_prefers_fresh_google_price(tmp_path):
     assert chip["source"] == "google"
     assert chip["price"] == 9200
     assert chip["ref_carriers"] == "MM"     # 最近一筆快取所見航空作為參考
+
+
+def test_route_insight_upsert_and_export(tmp_path):
+    db = tmp_path / "t.db"
+    store = Store(str(db))
+    store.record(Offer("TPE", "NRT", "2099-08-01", "2099-08-06", 9200, "TWD",
+                       "IT", 0, "190"))
+    store.record_insight("TPE", "NRT", "2099-08-01", "high", 12000, 19000)
+    store.record_insight("TPE", "NRT", "2099-08-07", "low", 12000, 19000)  # 覆蓋
+    store.close()
+    payload = export(str(db), str(tmp_path / "d.json"))
+    ins = payload["routes"][0]["insight"]
+    assert ins["price_level"] == "low" and ins["depart_date"] == "2099-08-07"
+    assert ins["typical_low"] == 12000

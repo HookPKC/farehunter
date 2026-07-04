@@ -32,6 +32,11 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
                 log.error("Snapshot failed %s→%s: %s", o, d, exc)
                 summary["errors"] += 1
                 continue
+            pi = payload.get("price_insights") or {}
+            if pi.get("price_level"):
+                rng = pi.get("typical_price_range") or [None, None]
+                store.record_insight(o, d, dep, str(pi["price_level"]),
+                                     rng[0], rng[1])
             offer = parse_full_service(payload, o, d, dep, ret)
             if offer is None:
                 log.info("No all-full-service itinerary %s→%s %s", o, d, dep)

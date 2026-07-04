@@ -8,6 +8,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def _route_insight(conn, o, d):
+    try:
+        row = conn.execute(
+            """SELECT depart_date, price_level, typical_low, typical_high
+               FROM route_insights WHERE origin=? AND destination=?
+                 AND updated_at >= datetime('now','-14 days')""", (o, d)).fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None      # 表尚未建立（快照還沒跑過）
+
+
 def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -98,6 +109,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
                       "median": median},
             "latest": latest,
             "fsc_latest": dict(fsc_latest) if fsc_latest else None,
+            "insight": _route_insight(conn, o, d),
             "history": history,
         })
 

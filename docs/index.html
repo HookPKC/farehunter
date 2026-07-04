@@ -60,6 +60,9 @@ body{background:var(--bg0);color:var(--ink1);font-family:var(--sans);
         animation-delay:calc(var(--i)*50ms)}
   @keyframes flip{from{transform:rotateX(90deg);opacity:0}to{transform:rotateX(0);opacity:1}}
 }
+.byline{font-size:11px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--ink-3);margin:2px 0 6px}
+.byline strong{color:var(--ink-2);font-weight:600}
 .meta{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap;
   font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink3);
   letter-spacing:.08em;padding-bottom:var(--s4);border-bottom:1px solid var(--line1);
@@ -196,6 +199,7 @@ footer{margin-top:var(--s7);font-size:var(--fs-xs);color:var(--ink3);
 <body>
 <header>
   <div class="board" id="board" role="img" aria-label="FareHunter"></div>
+  <div class="byline">by <strong>Hook Li</strong></div>
   <div class="meta" id="statusline" role="status" aria-live="polite">
     <span class="skel" style="width:220px;height:14px"></span>
   </div>
@@ -389,6 +393,16 @@ function render(data){
           <span>歷史低 <b>${fmt(r.stats.min)}</b></span>
           <span>中位 <b>${fmt(med)}</b></span>
           <span>樣本 <b>${fmt(r.stats.n)}</b></span>
+          ${(() => {
+            const LV = {low:["Google 判定偏低","lo"], typical:["Google 判定正常",""],
+                        high:["Google 判定偏高","hi"]};
+            const i = r.insight;
+            if(!i || !LV[i.price_level]) return "";
+            const [t, c] = LV[i.price_level];
+            const rng = i.typical_low
+              ? `・常見 ${fmt(i.typical_low)}–${fmt(i.typical_high)}` : "";
+            return `<span class="gjudge ${c}">${t}${rng}</span>`;
+          })()}
         </div>
       </article>`;
     }).join("");
