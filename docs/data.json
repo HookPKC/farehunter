@@ -1,19 +1,19 @@
 {
- "generated_at": "2026-07-04T02:03:22+00:00",
+ "generated_at": "2026-07-04T06:03:57+00:00",
  "env": "aviasales",
  "totals": {
-  "observations": 1147,
+  "observations": 1312,
   "routes": 8,
-  "alerts_24h": 3
+  "alerts_24h": 4
  },
  "routes": [
   {
    "origin": "KHH",
    "destination": "CTS",
    "stats": {
-    "n": 30,
+    "n": 32,
     "min": 10765.0,
-    "avg": 20063.4,
+    "avg": 20141.6,
     "median": 19565.0
    },
    "latest": [
@@ -271,10 +271,10 @@
    "origin": "KHH",
    "destination": "FUK",
    "stats": {
-    "n": 46,
+    "n": 52,
     "min": 10375.0,
-    "avg": 19176.2,
-    "median": 17777.0
+    "avg": 19403.8,
+    "median": 18245.5
    },
    "latest": [
     {
@@ -537,9 +537,9 @@
    "origin": "KHH",
    "destination": "KIX",
    "stats": {
-    "n": 93,
+    "n": 110,
     "min": 7322.0,
-    "avg": 10441.5,
+    "avg": 10451.5,
     "median": 10516.0
    },
    "latest": [
@@ -591,7 +591,8 @@
      "carriers": "",
      "stops": 0,
      "observed_at": "2026-07-04T01:16:15+00:00",
-     "source": "google"
+     "source": "google",
+     "ref_carriers": "AK"
     },
     {
      "depart_date": "2026-07-10",
@@ -601,7 +602,8 @@
      "carriers": "",
      "stops": 0,
      "observed_at": "2026-07-04T01:16:15+00:00",
-     "source": "google"
+     "source": "google",
+     "ref_carriers": "IT"
     },
     {
      "depart_date": "2026-07-11",
@@ -642,7 +644,8 @@
      "carriers": "",
      "stops": 0,
      "observed_at": "2026-07-04T01:16:15+00:00",
-     "source": "google"
+     "source": "google",
+     "ref_carriers": "AK"
     },
     {
      "depart_date": "2026-07-15",
@@ -662,7 +665,8 @@
      "carriers": "",
      "stops": 0,
      "observed_at": "2026-07-04T01:16:15+00:00",
-     "source": "google"
+     "source": "google",
+     "ref_carriers": "MM"
     },
     {
      "depart_date": "2026-07-17",
@@ -722,7 +726,8 @@
      "carriers": "",
      "stops": 0,
      "observed_at": "2026-07-04T01:16:21+00:00",
-     "source": "google"
+     "source": "google",
+     "ref_carriers": "AK"
     },
     {
      "depart_date": "2026-07-23",
@@ -732,7 +737,8 @@
      "carriers": "",
      "stops": 0,
      "observed_at": "2026-07-04T01:16:21+00:00",
-     "source": "google"
+     "source": "google",
+     "ref_carriers": "AK"
     },
     {
      "depart_date": "2026-07-24",
@@ -930,10 +936,10 @@
    "origin": "KHH",
    "destination": "NRT",
    "stats": {
-    "n": 431,
+    "n": 500,
     "min": 8571.0,
-    "avg": 10732.3,
-    "median": 10437.0
+    "avg": 10777.2,
+    "median": 10492.0
    },
    "latest": [
     {
@@ -955,7 +961,7 @@
      "stops": 0,
      "observed_at": "2026-07-04T01:16:03+00:00",
      "source": "google",
-     "ref_carriers": "FD"
+     "ref_carriers": "GK"
     },
     {
      "depart_date": "2026-07-06",
@@ -1108,7 +1114,8 @@
      "carriers": "",
      "stops": 0,
      "observed_at": "2026-07-04T01:16:10+00:00",
-     "source": "google"
+     "source": "google",
+     "ref_carriers": "FD"
     },
     {
      "depart_date": "2026-07-20",
@@ -1196,7 +1203,7 @@
      "stops": 0,
      "observed_at": "2026-07-04T01:16:10+00:00",
      "source": "google",
-     "ref_carriers": "GK"
+     "ref_carriers": "IT"
     }
    ],
    "fsc_latest": null,
@@ -1215,9 +1222,9 @@
    "origin": "KHH",
    "destination": "OKA",
    "stats": {
-    "n": 52,
+    "n": 56,
     "min": 7342.0,
-    "avg": 11332.9,
+    "avg": 11405.7,
     "median": 10273.0
    },
    "latest": [
@@ -1480,9 +1487,9 @@
    "origin": "TPE",
    "destination": "KIX",
    "stats": {
-    "n": 167,
+    "n": 187,
     "min": 7029.0,
-    "avg": 9727.4,
+    "avg": 9707.4,
     "median": 9330.0
    },
    "latest": [
@@ -1756,9 +1763,9 @@
    "origin": "TPE",
    "destination": "NRT",
    "stats": {
-    "n": 303,
+    "n": 346,
     "min": 5713.0,
-    "avg": 10322.5,
+    "avg": 10336.1,
     "median": 9952.0
    },
    "latest": [
@@ -2037,7 +2044,23 @@
    "depart_date": "2026-11-04",
    "price": 7322.0,
    "reason": "absolute",
-   "sent_at": "2026-07-03 14:22:55"
+   "sent_at": "2026-07-04 06:03:49"
+  },
+  {
+   "origin": "TPE",
+   "destination": "NRT",
+   "depart_date": "2026-09-01",
+   "price": 5846.0,
+   "reason": "absolute",
+   "sent_at": "2026-07-04 06:03:35"
+  },
+  {
+   "origin": "TPE",
+   "destination": "NRT",
+   "depart_date": "2026-09-08",
+   "price": 5717.0,
+   "reason": "absolute",
+   "sent_at": "2026-07-04 06:03:35"
   },
   {
    "origin": "TPE",
@@ -2045,15 +2068,7 @@
    "depart_date": "2026-08-07",
    "price": 6825.0,
    "reason": "absolute",
-   "sent_at": "2026-07-03 14:22:39"
-  },
-  {
-   "origin": "TPE",
-   "destination": "NRT",
-   "depart_date": "2026-09-08",
-   "price": 5713.0,
-   "reason": "absolute",
-   "sent_at": "2026-07-03 14:22:39"
+   "sent_at": "2026-07-04 06:03:34"
   }
  ]
 }
