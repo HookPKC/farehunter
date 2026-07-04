@@ -46,7 +46,8 @@ def test_full_pipeline(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.count("低價警報") == 1
     assert "8,540 TWD" in out
-    assert "aviasales.com/search" in out       # deep link in the alert
+    assert "google.com/travel/flights" in out  # 統一 Google 查票連結（帶回程日）
+    assert "through%202099-09-23" in out
 
     store = Store(str(db))
     assert store.route_stats("TPE", "NRT")["n"] == 4   # stats only count fare_class='any'

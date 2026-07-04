@@ -130,11 +130,16 @@ def test_repo_config_is_valid():
 
 
 # ---- notify -----------------------------------------------------------------
-def test_format_alert_prefers_deep_link():
+def test_format_alert_uses_google_link_with_dates():
     from farehunter.analyzer import Verdict
     v = Verdict(True, "absolute", "6,800 TWD <= 門檻 7,000")
-    with_link = format_alert(make_offer(6800, link="https://www.aviasales.com/search/x"), v)
-    assert "訂票: https://www.aviasales.com/search/x" in with_link
-    without = format_alert(make_offer(6800), v)
-    assert "google.com/travel/flights" in without
-    assert "TPE→NRT" in without and "6,800 TWD" in without
+    # 即使來源附帶 aviasales 深連結，也統一用 Google Flights（帶去回日期）
+    text = format_alert(make_offer(6800, link="https://www.aviasales.com/search/x"), v)
+    assert "google.com/travel/flights" in text
+    assert "aviasales" not in text
+    assert "TPE⇄NRT" in text and "6,800 TWD" in text
+    assert "天來回" in text
+    # 無航空資訊（google 日曆來源）時優雅顯示
+    o2 = make_offer(6800)
+    o2.carriers = ""
+    assert "多家航空" in format_alert(o2, v)
