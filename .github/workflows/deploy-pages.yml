@@ -1,9 +1,16 @@
 name: Deploy Pages
 
+# 資料類 workflow 由內建 GITHUB_TOKEN commit，其 push 不會觸發 on:push；
+# 因此改用 workflow_run，在每個資料 workflow 完成後才發佈最新 docs/。
 on:
-  push:
-    branches: [main]
-    paths: ["docs/**"]
+  workflow_run:
+    workflows:
+      - "FareHunter Monitor"
+      - "FSC Snapshot"
+      - "Verify Airlines"
+      - "Google Price Calendar Sweep"
+      - "Long Range Sweep"
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +18,6 @@ permissions:
   pages: write
   id-token: write
 
-# 只允許一個部署進行中；新的部署取代舊的，避免頻繁 commit 造成部署互撞失敗
 concurrency:
   group: pages
   cancel-in-progress: true
