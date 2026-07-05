@@ -371,8 +371,11 @@ function sparkline(hist, median, routeId){
 }
 
 function gfLink(o,d,dep,ret){
+  // 帶入旅客數與艙等（與站上觀測條件一致：1 位成人、經濟艙），
+  // 降低點入後 Google 以不同條件計價造成的落差。
   let q = `Flights from ${o} to ${d} on ${dep}`;
   if(ret) q += ` through ${ret}`;
+  q += ` for 1 adult economy class`;
   return "https://www.google.com/travel/flights?q=" + encodeURIComponent(q);
 }
 
