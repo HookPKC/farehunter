@@ -445,11 +445,15 @@ function plainReason(o, median){
       parts.push("價格跟平常差不多");
     }
   }
-  const ts = o.provenance && o.provenance.observed_at;
-  if(ts){
-    const h = (Date.now() - new Date(ts)) / 36e5;
-    if(h <= 96) parts.push("為近期觀測價");
-    else parts.push("觀測較舊、建議點入比價");
+  if(isCacheSrc(o.source)){
+    parts.push("快取估價僅供參考");
+  } else {
+    const ts = o.provenance && o.provenance.observed_at;
+    if(ts){
+      const h = (Date.now() - new Date(ts)) / 36e5;
+      if(h <= 96) parts.push("為近期觀測價");
+      else parts.push("觀測較舊、建議點入比價");
+    }
   }
   return parts.join("、");
 }
@@ -461,7 +465,9 @@ function secTag(label, o){
 function detailBlock(fr){
   const b = fr.best_option, s = b.subscores || {};
   const src = isCacheSrc(b.source) ? "航空票價快取（估算）" : "Google Flights 觀測價";
-  const age = (b.provenance && b.provenance.observed_age) || "";
+  const ots = b.provenance && b.provenance.observed_at;
+  const age = ots ? new Date(ots).toLocaleString("zh-TW",
+    {timeZone:"Asia/Taipei",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}) + " 台灣時間" : "";
   const dd = b.depart_date ? b.depart_date.slice(5).replace("-","/") : "";
   const rr = b.return_date ? b.return_date.slice(5).replace("-","/") : "";
   const rows = [["價格",s.price],["資料新鮮度",s.freshness],["飛行時間",s.duration],
@@ -507,7 +513,7 @@ function render(data){
     {timeZone:"Asia/Taipei", month:"2-digit", day:"2-digit",
      hour:"2-digit", minute:"2-digit", hour12:false});
   $("statusline").innerHTML =
-    `資料觀測時間 <b>${t} 台灣時間</b><span class="badge ${data.env}">${data.env.toUpperCase()}</span>`;
+    `資料整理於 <b>${t} 台灣時間</b>・各價格觀測時間不同<span class="badge ${data.env}">${data.env.toUpperCase()}</span>`;
 
   $("strip").innerHTML = [
     ["價格紀錄", fmt(data.totals.observations)],
