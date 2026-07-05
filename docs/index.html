@@ -193,30 +193,45 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
   letter-spacing:0;text-transform:none;font-weight:400}
 
 /* FIE v2 智慧推薦列 */
-.rrow{padding:0 var(--s5) var(--s3)}
-.rrow-cap{font-size:11px;color:var(--ink3);letter-spacing:.1em;text-transform:uppercase;
-  margin:0 0 var(--s2)}
-.rnote{font-size:10px;color:var(--ink3);opacity:.6;margin-left:6px;
-  letter-spacing:0;text-transform:none;font-weight:400}
-.rscroll{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none}
-.rscroll::-webkit-scrollbar{display:none}
-.rcell{flex:0 0 auto;text-decoration:none;min-width:120px;
-  border:1px solid var(--line1);border-radius:var(--r-s);padding:8px 10px;
-  background:var(--bg2);transition:border-color var(--t-fast),background var(--t-fast)}
-.rcell:hover{border-color:var(--line2);background:var(--bg3)}
-.rtags{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px}
-.rtag{font-size:9.5px;letter-spacing:.04em;color:var(--ink3);
-  border:1px solid var(--line2);border-radius:4px;padding:1px 5px;white-space:nowrap}
-.rtag.rb{color:var(--pos);border-color:rgba(63,214,143,.5);background:var(--pos-soft)}
-.rcell .rp{font-family:var(--mono);font-size:16px;font-weight:700;
-  color:var(--ink1);font-variant-numeric:tabular-nums}
-.rcell .rmeta{font-size:10.5px;color:var(--ink3);margin-top:2px;white-space:nowrap}
-.rcell .rwhy{font-size:10px;color:var(--pos);margin-top:4px;white-space:nowrap;opacity:.9}
-.rcell.rest .rp{opacity:.72}
-.rcell-empty{flex:0 0 auto;min-width:120px;border:1px dashed var(--line1);
-  border-radius:var(--r-s);padding:8px 10px;background:var(--bg2)}
-.rcell-empty .rempty{font-size:11px;color:var(--ink3);font-family:var(--mono);
-  margin-top:10px}
+/* 最值得看 — 主推薦區（親友向，無分數/術語） */
+.pickwrap{padding:0 var(--s5) var(--s2)}
+.pick{display:block;text-decoration:none;border:1px solid rgba(255,179,0,.32);
+  background:linear-gradient(180deg,rgba(255,179,0,.07),rgba(255,179,0,.02));
+  border-radius:var(--r-m);padding:10px 12px;
+  transition:border-color var(--t-fast),background var(--t-fast)}
+.pick:hover{border-color:rgba(255,179,0,.55)}
+.pick-top{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.pick-tag{font-size:11px;font-weight:700;letter-spacing:.06em;color:#FFB300;
+  background:rgba(255,179,0,.12);border:1px solid rgba(255,179,0,.35);
+  border-radius:5px;padding:2px 8px}
+.conf{font-size:11px;font-weight:600;border-radius:5px;padding:2px 8px;
+  border:1px solid var(--line2)}
+.conf-high{color:var(--pos);border-color:rgba(63,214,143,.5);background:var(--pos-soft)}
+.conf-mid{color:#E7B24A;border-color:rgba(231,178,74,.45);background:rgba(231,178,74,.10)}
+.conf-low{color:var(--ink3);background:var(--bg2)}
+.pick-why{font-size:13.5px;color:var(--ink1);line-height:1.5;margin:2px 0 4px}
+.pick-sub{font-size:12px;color:var(--ink2)}
+.pick-go{color:#FFB300;font-weight:600;margin-left:2px}
+.sec-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.stag{font-size:11px;color:var(--ink3);border:1px solid var(--line1);
+  border-radius:5px;padding:2px 8px;background:var(--bg2);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.more{margin-top:7px}
+.more>summary{font-size:11px;color:var(--ink3);cursor:pointer;list-style:none;
+  display:inline-flex;align-items:center;gap:4px;padding:2px 0;user-select:none}
+.more>summary::-webkit-details-marker{display:none}
+.more>summary::before{content:"▸";font-size:9px;transition:transform var(--t-fast)}
+.more[open]>summary::before{transform:rotate(90deg)}
+.more>summary:hover{color:var(--ink2)}
+.dbody{margin-top:6px;padding:9px 11px;border:1px solid var(--line1);
+  border-radius:var(--r-s);background:var(--bg2)}
+.dmeta{font-size:11px;color:var(--ink2);margin-bottom:4px}
+.drow{display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--ink3);
+  margin-top:3px}
+.drow .dk{flex:0 0 64px}
+.drow .dbar{flex:1;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden}
+.drow .dbar i{display:block;height:100%;background:#8B97AD;border-radius:3px}
+.drow .dv{flex:0 0 26px;text-align:right;font-family:var(--mono)}
 .src-tag{display:inline-block;margin-left:8px;font-size:10px;color:var(--ink3);
   border:1px solid var(--line2);border-radius:4px;padding:1px 6px;vertical-align:middle}
 .chip.cest .p{opacity:.78}
@@ -392,59 +407,84 @@ function monthlyStrip(r){
   </div>`;
 }
 
-// FIE v2 智慧推薦：讀 ranked.json（若不存在則整段略過，前端不受影響）
-let FIE = {};   // route -> ranked route object (from ranked.json — the normalized/ranked source)
+// 最值得看：把 ranked.json 的引擎結果翻成親友看得懂的話（不顯示分數/術語）
+let FIE = {};   // route -> ranked route object (from ranked.json)
 const CACHE_SRC = ["aviasales","travelpayouts"];
-function bestReason(o, cheapestPrice, fastestO){
-  const sc = o.score_components||{};
-  const parts=[];
+const CN_TEN = ["","一","兩","三","四","五","六","七","八","九"];
+function confLabel(c){
+  return c==="High" ? ["高可信","conf-high"]
+       : c==="Medium" ? ["中等可信","conf-mid"]
+       : ["僅供參考","conf-low"];
+}
+function plainReason(o, median){
+  const parts = [];
   if(o.stops===0) parts.push("直飛");
-  if(o.price===cheapestPrice) parts.push("最低價");
-  else if(o.price<=cheapestPrice*1.05) parts.push("價格接近最低");
-  if(fastestO && o.depart_date===fastestO.depart_date && o.price===fastestO.price)
-    parts.push("飛行時間最短");
-  if((sc.freshness||0)>=0.75) parts.push("資料較新");
-  if((sc.reliability||0)>=0.80 && parts.length<3) parts.push("來源可靠");
-  return parts.slice(0,3).join("・") || "綜合評分最高";
+  else if(o.stops) parts.push("需轉機");
+  if(median && median>0){
+    const diff = (o.price-median)/median;
+    if(diff <= -0.05){
+      const t = Math.round(Math.abs(diff)*10);
+      parts.push(t>=5 ? "比平常便宜超過一半" : `比平常便宜約${CN_TEN[Math.max(1,t)]}成`);
+    } else if(diff >= 0.08){
+      parts.push("價格接近平常");
+    } else {
+      parts.push("價格跟平常差不多");
+    }
+  }
+  const ts = o.provenance && o.provenance.observed_at;
+  if(ts){
+    const h = (Date.now() - new Date(ts)) / 36e5;
+    if(h <= 24) parts.push("資料剛更新");
+    else if(h <= 96) parts.push("資料近期更新");
+    else parts.push("資料稍舊，建議點入確認");
+  }
+  return parts.join("、");
+}
+function secTag(label, o){
+  if(!o) return `<span class="stag">${label} · 時間累積中</span>`;
+  const dd = o.depart_date ? o.depart_date.slice(5).replace("-","/") : "";
+  return `<span class="stag">${label} ${fmt(o.price)}${dd?` · ${dd}`:""}</span>`;
+}
+function detailBlock(fr){
+  const b = fr.best_option, s = b.subscores || {};
+  const src = CACHE_SRC.includes(b.source) ? "航空票價快取（估算）" : "航班即時查詢";
+  const age = (b.provenance && b.provenance.observed_age) || "";
+  const dd = b.depart_date ? b.depart_date.slice(5).replace("-","/") : "";
+  const rr = b.return_date ? b.return_date.slice(5).replace("-","/") : "";
+  const rows = [["價格",s.price],["資料新鮮度",s.freshness],["飛行時間",s.duration],
+               ["來源可信度",s.source_reliability],["資料完整度",s.confidence]];
+  const bars = rows.map(([k,v])=>`<div class="drow"><span class="dk">${k}</span>
+      <span class="dbar"><i style="width:${Math.max(0,Math.min(100,v||0))}%"></i></span>
+      <span class="dv">${v??"—"}</span></div>`).join("");
+  return `<details class="more"><summary>詳細資料</summary>
+    <div class="dbody">
+      <div class="dmeta">資料來源：${src}${age?`｜更新於 ${age}`:""}</div>
+      <div class="dmeta">推薦航班：${dd} 出發${rr?`／${rr} 回`:""}${b.price!=null?`　約 ${fmt(b.price)} 起`:""}</div>
+      <div class="dmeta">綜合評估 ${b.decision_score}／100</div>
+      ${bars}
+    </div></details>`;
 }
 function recommendStrip(r){
   const fr = FIE[`${r.origin}-${r.destination}`];
   if(!fr || !fr.best_option) return "";
-  const cheapestPrice = fr.cheapest_option ? fr.cheapest_option.price : null;
-  const LABELS = [["best_option","最佳"],["value_option","高CP"],
-                  ["fastest_option","最快"],["cheapest_option","最便宜"]];
-  const bucket = new Map();                       // 依 offer 去重（同票合併標籤）
-  for(const [key,label] of LABELS){
-    const o = fr[key]; if(!o) continue;
-    const id = `${o.depart_date}|${o.price}|${(o.airline||[]).join(",")}`;
-    if(!bucket.has(id)) bucket.set(id, {o, labels:[]});
-    bucket.get(id).labels.push(label);
-  }
-  let cards = [...bucket.values()].map(({o,labels})=>{
-    const est = CACHE_SRC.includes(o.source);    // 快取估價 → 標示
-    const al = (o.airline&&o.airline.length) ? alZh(o.airline[0]) : "多家航空";
-    const dur = o.duration ? ` · ${Math.floor(o.duration/60)}h${o.duration%60}m` : "";
-    const dd = o.depart_date ? o.depart_date.slice(5).replace("-","/") : "";
-    const href = gfLink(r.origin,r.destination,o.depart_date,o.return_date);
-    const tags = labels.map(l=>`<span class="rtag ${l==='最佳'?'rb':''}">${l}</span>`).join("");
-    const why = labels.includes("最佳")
-      ? `<div class="rwhy">因為 ${bestReason(o, cheapestPrice, fr.fastest_option)}</div>` : "";
-    return `<a class="rcell ${est?'rest':''}" target="_blank" rel="noopener"
-      aria-label="${labels.join('、')} ${dd} ${est?'快取估價 ':''}${fmt(o.price)} 元 ${al}"
-      href="${href}">
-      <div class="rtags">${tags}</div>
-      <div class="rp">${est?'≈':''}${fmt(o.price)}</div>
-      <div class="rmeta">${dd}${dd?" · ":""}${al}${dur}${est?" · 快取估":""}</div>
-      ${why}</a>`;
-  }).join("");
-  if(!fr.fastest_option){                          // 時長資料不足 → 不留空
-    cards += `<div class="rcell rcell-empty">
-      <div class="rtags"><span class="rtag">最快</span></div>
-      <div class="rempty">飛行時間資料累積中</div></div>`;
-  }
-  return `<div class="rrow">
-    <div class="rrow-cap">智慧推薦 <span class="rnote">綜合價格·時間·轉機·航空·新鮮度·來源可靠度</span></div>
-    <div class="rscroll">${cards}</div>
+  const b = fr.best_option;
+  const median = fr.route_stats && fr.route_stats.median;
+  const [clab,ccls] = confLabel(b.confidence);
+  const al = (b.airline && b.airline.length) ? alZh(b.airline[0]) : "多家航空";
+  const dd = b.depart_date ? b.depart_date.slice(5).replace("-","/") : "";
+  const href = gfLink(r.origin,r.destination,b.depart_date,b.return_date);
+  const reason = plainReason(b, median);
+  const sec = secTag("最便宜", fr.cheapest_option) + secTag("最快", fr.fastest_option);
+  return `<div class="pickwrap">
+    <a class="pick" target="_blank" rel="noopener" href="${href}"
+       aria-label="最值得看 ${clab}。${reason}。${dd} 出發，${al}">
+      <div class="pick-top"><span class="pick-tag">最值得看</span>
+        <span class="conf ${ccls}">${clab}</span></div>
+      <div class="pick-why">${reason}</div>
+      <div class="pick-sub">${dd} 出發 · ${al}${b.price!=null?` · 約 ${fmt(b.price)} 起`:""} <span class="pick-go">開啟 →</span></div>
+    </a>
+    <div class="sec-tags">${sec}</div>
+    ${detailBlock(fr)}
   </div>`;
 }
 
@@ -502,9 +542,9 @@ function render(data){
         pill = `<span class="pill flat">樣本 ${r.stats.n}・統計累積中</span>`;
       } else if(cur!=null && med){
         const pct = (cur/med-1)*100;
-        pill = pct<=-3 ? `<span class="pill down">▼ ${Math.abs(pct).toFixed(0)}% vs 中位</span>`
-             : pct>= 3 ? `<span class="pill up">▲ ${pct.toFixed(0)}% vs 中位</span>`
-             : `<span class="pill flat">≈ 中位數</span>`;
+        pill = pct<=-3 ? `<span class="pill down">▼ 目前偏低</span>`
+             : pct>= 3 ? `<span class="pill up">▲ 目前偏高</span>`
+             : `<span class="pill flat">價格一般</span>`;
       }
       if(cur==null) pill = "";
       const all = [...new Set(r.latest.flatMap(x=>(x.carriers||"").split(",")))].filter(Boolean);
@@ -539,12 +579,12 @@ function render(data){
           </div>
           <div class="cur-al">${curAl}${bestFull && !(cur!=null && bestFull.full_price===cur)
             ? ` <span class="fsline">・傳統航空最低 ${fmt(bestFull.full_price)}（${alZh((bestFull.full_carriers||"").split(",")[0])}，${bestFull.depart_date.slice(5).replace("-","/")}）</span>` : ""}</div>
+          ${recommendStrip(r)}
           ${sparkline(r.history, med, r.origin+"-"+r.destination)}
           <div class="spark-cap"><span>${(r.history[0]||{}).day||""}</span>
             <span>每日最低價</span><span>${(r.history.at(-1)||{}).day||""}</span></div>
         </div>
         <div class="cal">${chips}</div>
-        ${recommendStrip(r)}
         ${monthlyStrip(r)}
         <div class="stub">
           <span>歷史低 <b>${fmt(r.stats.min)}</b></span>
