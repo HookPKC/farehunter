@@ -4,8 +4,15 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:                                    # works both as script and as package module
+    from farehunter.models import NEAR_TERM_DAYS
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from farehunter.models import NEAR_TERM_DAYS
 
 
 def _route_insight(conn, o, d):
@@ -41,26 +48,28 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
         mid = len(prices) // 2
         median = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
 
-        # fare calendar chips: skip departures that are too soon to realistically
-        # plan/book — start from next calendar month AND at least 21 days out
-        # (monitoring/alerts still cover the current month; this is display only).
+        # fare calendar chips: a genuine NEAR-TERM calendar. Same window + same
+        # per-date dedup ordering as intelligence._SELECT (see NEAR_TERM_DAYS) so
+        # Hero/Cheapest here == Recommended cheapest there, by construction. Far
+        # months live in the monthly strip, not here.
         latest = [dict(r) for r in conn.execute(
-            """WITH ranked AS (
+            f"""WITH ranked AS (
                  SELECT depart_date, return_date, price, currency, carriers,
                         stops, observed_at, source,
                         ROW_NUMBER() OVER (
                           PARTITION BY depart_date
                           ORDER BY (source='google'
-                                    AND observed_at >= datetime('now','-8 days')) DESC,
-                                   observed_at DESC) AS rk
+                                    AND observed_at >= datetime('now','-14 days')) DESC,
+                                   observed_at DESC, id DESC) AS rk
                  FROM observations
-                 WHERE origin=? AND destination=? AND fare_class='any'
+                 WHERE origin=? AND destination=? AND fare_class='any' AND stops=0
                    AND depart_date >= date('now','start of month','+1 month')
-                   AND depart_date >= date('now','+21 days'))
+                   AND depart_date >= date('now','+21 days')
+                   AND depart_date <= date('now','+{NEAR_TERM_DAYS} days'))
                SELECT depart_date, return_date, price, currency, carriers,
                       stops, observed_at, source
                FROM ranked WHERE rk=1
-               ORDER BY depart_date LIMIT 24""", (o, d))]
+               ORDER BY depart_date LIMIT 100""", (o, d))]
 
         # google-sourced chips carry no airline; attach the aviasales
         # reference airline seen for the same departure date (approximate)

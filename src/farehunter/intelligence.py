@@ -20,6 +20,7 @@ from pathlib import Path
 from .normalize import from_observation, is_valid
 from .ranking import rank, BALANCED
 from .reliability import ReliabilityStore
+from .models import NEAR_TERM_DAYS
 
 log = logging.getLogger(__name__)
 
@@ -37,12 +38,12 @@ WITH ranked AS (
   WHERE fare_class='any' AND stops=0
     AND depart_date >= date('now','start of month','+1 month')
     AND depart_date >= date('now','+21 days')
-    AND depart_date <= date('now','+330 days'))
+    AND depart_date <= date('now','+{near} days'))
 SELECT origin, destination, depart_date, return_date, price, currency,
        carriers, stops, duration, observed_at, source
 FROM ranked WHERE rk=1
 ORDER BY origin, destination, depart_date
-"""
+""".format(near=NEAR_TERM_DAYS)
 
 
 def build_ranked(db_path: str = "prices.db", weights=BALANCED) -> dict:

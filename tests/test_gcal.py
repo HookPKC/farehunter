@@ -31,14 +31,17 @@ def test_parse_calendar_min_per_departure_within_trip_window():
 
 
 def test_chip_prefers_fresh_google_price(tmp_path):
+    import datetime as dt
+    dep = ((dt.date.today().replace(day=1) + dt.timedelta(days=40)).replace(day=22)).isoformat()
+    ret = ((dt.date.today().replace(day=1) + dt.timedelta(days=40)).replace(day=27)).isoformat()
     db = tmp_path / "t.db"
     store = Store(str(db))
-    store.record(Offer("TPE", "NRT", "2099-08-01", "2099-08-06", 9999, "TWD",
+    store.record(Offer("TPE", "NRT", dep, ret, 9999, "TWD",
                        "IT", 0, "190", source="aviasales"))
-    store.record(Offer("TPE", "NRT", "2099-08-01", "2099-08-06", 9200, "TWD",
+    store.record(Offer("TPE", "NRT", dep, ret, 9200, "TWD",
                        "", 0, "", source="google"))
-    # aviasales 之後又寫入一筆（模擬每小時監控）——google 價 8 天內仍應優先
-    store.record(Offer("TPE", "NRT", "2099-08-01", "2099-08-06", 9950, "TWD",
+    # aviasales 之後又寫入一筆（模擬每小時監控）——google 價 14 天內仍應優先
+    store.record(Offer("TPE", "NRT", dep, ret, 9950, "TWD",
                        "MM", 0, "190", source="aviasales"))
     store.close()
     payload = export(str(db), str(tmp_path / "d.json"))
@@ -63,17 +66,21 @@ def test_route_insight_upsert_and_export(tmp_path):
 
 
 def test_ref_carriers_falls_back_to_route_common(tmp_path):
+    import datetime as dt
+    nm = dt.date.today().replace(day=1) + dt.timedelta(days=40)
+    d_far = nm.replace(day=27).isoformat()      # 同視窗內但與目標日差 >3 天
+    d_tgt = nm.replace(day=22).isoformat()
     db = tmp_path / "t.db"
     store = Store(str(db))
-    # 快取只有很遠的日期（>3 天差），但航線常見航空是 IT
-    store.record(Offer("KHH", "CTS", "2099-09-20", "2099-09-24", 12000, "TWD",
-                       "IT", 0, "250", source="aviasales"))
-    store.record(Offer("KHH", "CTS", "2099-08-01", "2099-08-05", 10765, "TWD",
-                       "", 0, "", source="google"))
+    # 快取只有較遠日期（>3 天差），但航線常見航空是 IT
+    store.record(Offer("KHH", "CTS", d_far, (nm.replace(day=28)).isoformat(), 12000,
+                       "TWD", "IT", 0, "250", source="aviasales"))
+    store.record(Offer("KHH", "CTS", d_tgt, (nm.replace(day=20)).isoformat(), 10765,
+                       "TWD", "", 0, "", source="google"))
     store.close()
     payload = export(str(db), str(tmp_path / "d.json"))
     chips = {c["depart_date"]: c for c in payload["routes"][0]["latest"]}
-    assert chips["2099-08-01"]["ref_carriers"] == "IT"   # 航線常見航空退階
+    assert chips[d_tgt]["ref_carriers"] == "IT"   # 航線常見航空退階
 
 
 def test_monthly_low_picks_cheapest_per_month(tmp_path):

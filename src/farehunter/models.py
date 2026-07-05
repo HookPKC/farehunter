@@ -4,6 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+# Near-term planning window (days ahead) shared by the fare calendar (export_web)
+# AND the intelligence ranking (intelligence.py) so Hero / Recommended / Cheapest
+# are computed over an IDENTICAL set of offers and can never diverge. Anything
+# beyond this window belongs to the year-view monthly strip, not the calendar.
+NEAR_TERM_DAYS = 90
+
 
 @dataclass
 class Offer:

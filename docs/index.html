@@ -211,6 +211,15 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
 .rcell .rp{font-family:var(--mono);font-size:16px;font-weight:700;
   color:var(--ink1);font-variant-numeric:tabular-nums}
 .rcell .rmeta{font-size:10.5px;color:var(--ink3);margin-top:2px;white-space:nowrap}
+.rcell .rwhy{font-size:10px;color:var(--pos);margin-top:4px;white-space:nowrap;opacity:.9}
+.rcell.rest .rp{opacity:.72}
+.rcell-empty{flex:0 0 auto;min-width:120px;border:1px dashed var(--line1);
+  border-radius:var(--r-s);padding:8px 10px;background:var(--bg2)}
+.rcell-empty .rempty{font-size:11px;color:var(--ink3);font-family:var(--mono);
+  margin-top:10px}
+.src-tag{display:inline-block;margin-left:8px;font-size:10px;color:var(--ink3);
+  border:1px solid var(--line2);border-radius:4px;padding:1px 6px;vertical-align:middle}
+.chip.cest .p{opacity:.78}
 
 /* perforated stub */
 .stub{border-top:1.5px dashed var(--line2);padding:var(--s3) var(--s5);
@@ -303,12 +312,12 @@ function flapTitle(){
   });
 }
 
-function sparkline(hist, median){
-  if(!hist || hist.length<2)
+function sparkline(hist, median, routeId){
+  if(!hist || hist.length<7)
     return `<div class="spark" style="display:flex;align-items:center;
       justify-content:center;color:var(--ink3);font-size:11px;
       font-family:var(--mono);border:1px dashed var(--line1);
-      border-radius:var(--r-s)">趨勢累積中 — 需要 2 天以上的資料</div>`;
+      border-radius:var(--r-s)">趨勢資料累積中 — 需 7 天以上的紀錄</div>`;
   const w=600,h=60,pad=5;
   const ps=hist.map(x=>x.min_price);
   const lo=Math.min(...ps), hi=Math.max(...ps), span=(hi-lo)||1;
@@ -321,14 +330,15 @@ function sparkline(hist, median){
     `<line x1="${pad}" x2="${w-pad}" y1="${Y(median).toFixed(1)}" y2="${Y(median).toFixed(1)}"
       stroke="#8B97AD" stroke-width="1" stroke-dasharray="3 4" opacity=".5"/>`:"";
   const iMin=ps.indexOf(lo), last=ps.length-1;
+  const gid = `g-${routeId||iMin+"-"+last}`;
   return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"
     role="img" aria-label="每日最低價趨勢，區間 ${fmt(lo)} 至 ${fmt(hi)}">
-    <defs><linearGradient id="g${iMin}${last}" x1="0" y1="0" x2="0" y2="1">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#FFB300" stop-opacity=".18"/>
       <stop offset="1" stop-color="#FFB300" stop-opacity="0"/>
     </linearGradient></defs>
     ${medY}
-    <path d="${area}" fill="url(#g${iMin}${last})"/>
+    <path d="${area}" fill="url(#${gid})"/>
     <path d="${line}" fill="none" stroke="#FFB300" stroke-width="2"
       stroke-linejoin="round" stroke-linecap="round"/>
     <circle cx="${X(iMin).toFixed(1)}" cy="${Y(lo).toFixed(1)}" r="3.5"
@@ -383,33 +393,55 @@ function monthlyStrip(r){
 }
 
 // FIE v2 智慧推薦：讀 ranked.json（若不存在則整段略過，前端不受影響）
-let FIE = {};   // route -> ranked route object
+let FIE = {};   // route -> ranked route object (from ranked.json — the normalized/ranked source)
+const CACHE_SRC = ["aviasales","travelpayouts"];
+function bestReason(o, cheapestPrice, fastestO){
+  const sc = o.score_components||{};
+  const parts=[];
+  if(o.stops===0) parts.push("直飛");
+  if(o.price===cheapestPrice) parts.push("最低價");
+  else if(o.price<=cheapestPrice*1.05) parts.push("價格接近最低");
+  if(fastestO && o.depart_date===fastestO.depart_date && o.price===fastestO.price)
+    parts.push("飛行時間最短");
+  if((sc.freshness||0)>=0.75) parts.push("資料較新");
+  if((sc.reliability||0)>=0.80 && parts.length<3) parts.push("來源可靠");
+  return parts.slice(0,3).join("・") || "綜合評分最高";
+}
 function recommendStrip(r){
   const fr = FIE[`${r.origin}-${r.destination}`];
   if(!fr || !fr.best_option) return "";
-  const LABELS = [["best_option","最佳","b"],["value_option","高CP","v"],
-                  ["fastest_option","最快","f"],["cheapest_option","最便宜","c"]];
-  // 依 offer 去重（同一張票合併標籤）
-  const bucket = new Map();
+  const cheapestPrice = fr.cheapest_option ? fr.cheapest_option.price : null;
+  const LABELS = [["best_option","最佳"],["value_option","高CP"],
+                  ["fastest_option","最快"],["cheapest_option","最便宜"]];
+  const bucket = new Map();                       // 依 offer 去重（同票合併標籤）
   for(const [key,label] of LABELS){
     const o = fr[key]; if(!o) continue;
     const id = `${o.depart_date}|${o.price}|${(o.airline||[]).join(",")}`;
     if(!bucket.has(id)) bucket.set(id, {o, labels:[]});
     bucket.get(id).labels.push(label);
   }
-  const cards = [...bucket.values()].map(({o,labels})=>{
+  let cards = [...bucket.values()].map(({o,labels})=>{
+    const est = CACHE_SRC.includes(o.source);    // 快取估價 → 標示
     const al = (o.airline&&o.airline.length) ? alZh(o.airline[0]) : "多家航空";
     const dur = o.duration ? ` · ${Math.floor(o.duration/60)}h${o.duration%60}m` : "";
     const dd = o.depart_date ? o.depart_date.slice(5).replace("-","/") : "";
     const href = gfLink(r.origin,r.destination,o.depart_date,o.return_date);
     const tags = labels.map(l=>`<span class="rtag ${l==='最佳'?'rb':''}">${l}</span>`).join("");
-    return `<a class="rcell" target="_blank" rel="noopener"
-      aria-label="${labels.join('、')} ${dd} ${fmt(o.price)} 元 ${al}"
+    const why = labels.includes("最佳")
+      ? `<div class="rwhy">因為 ${bestReason(o, cheapestPrice, fr.fastest_option)}</div>` : "";
+    return `<a class="rcell ${est?'rest':''}" target="_blank" rel="noopener"
+      aria-label="${labels.join('、')} ${dd} ${est?'快取估價 ':''}${fmt(o.price)} 元 ${al}"
       href="${href}">
       <div class="rtags">${tags}</div>
-      <div class="rp">${fmt(o.price)}</div>
-      <div class="rmeta">${dd}${dd?" · ":""}${al}${dur}</div></a>`;
+      <div class="rp">${est?'≈':''}${fmt(o.price)}</div>
+      <div class="rmeta">${dd}${dd?" · ":""}${al}${dur}${est?" · 快取估":""}</div>
+      ${why}</a>`;
   }).join("");
+  if(!fr.fastest_option){                          // 時長資料不足 → 不留空
+    cards += `<div class="rcell rcell-empty">
+      <div class="rtags"><span class="rtag">最快</span></div>
+      <div class="rempty">飛行時間資料累積中</div></div>`;
+  }
   return `<div class="rrow">
     <div class="rrow-cap">智慧推薦 <span class="rnote">綜合價格·時間·轉機·航空·新鮮度·來源可靠度</span></div>
     <div class="rscroll">${cards}</div>
@@ -457,6 +489,7 @@ function render(data){
       const curOffer = r.latest.length
         ? r.latest.reduce((a,b)=>a.price<=b.price?a:b) : null;
       const cur = curOffer ? curOffer.price : null;
+      const curEst = curOffer && ["aviasales","travelpayouts"].includes(curOffer.source);
       const curAl = curOffer ? alFull((curOffer.carriers||"").split(",")[0]) : "";
       const fulls = r.latest.filter(x=>x.full_price);
       let bestFull = fulls.length ? fulls.reduce((a,b)=>a.full_price<=b.full_price?a:b) : null;
@@ -482,17 +515,18 @@ function render(data){
       const chips = r.latest.map(x=>{
         const dt = new Date(x.depart_date+"T00:00:00");
         const cls = x.price<=q1 ? "lo" : x.price>=q3 ? "hi" : "";
+        const cest = ["aviasales","travelpayouts"].includes(x.source);
         const aln = x.source==="google" && !x.carriers
           ? (x.ref_carriers ? `≈ ${alFull(x.ref_carriers.split(",")[0])}` : "點入看航空")
           : alFull((x.carriers||"").split(",")[0]);
         const nights = x.return_date
           ? Math.round((new Date(x.return_date)-new Date(x.depart_date))/864e5) : null;
-        return `<a class="chip ${cls}" target="_blank" rel="noopener"
-          aria-label="${x.depart_date} 週${WD[dt.getDay()]}${nights?` ${nights}天來回`:""} ${fmt(x.price)} 元 ${aln}"
+        return `<a class="chip ${cls} ${cest?'cest':''}" target="_blank" rel="noopener"
+          aria-label="${x.depart_date} 週${WD[dt.getDay()]}${nights?` ${nights}天來回`:""} ${cest?'快取估價 ':''}${fmt(x.price)} 元 ${aln}"
           href="${gfLink(r.origin,r.destination,x.depart_date,x.return_date)}">
           <div class="d">${x.depart_date.slice(5).replace("-","/")} 週${WD[dt.getDay()]}${nights?` · ${nights}天`:""}</div>
-          <div class="p">${fmt(x.price)}</div>
-          <div class="al">${aln}</div>
+          <div class="p">${cest?'≈':''}${fmt(x.price)}</div>
+          <div class="al">${aln}${cest?' · 快取':''}</div>
           ${x.full_price && (x.full_price !== x.price || x.full_carriers !== x.carriers)
             ? `<div class="fs">${alZh((x.full_carriers||"").split(",")[0])} ${fmt(x.full_price)}</div>` : ""}</a>`;
       }).join("");
@@ -501,11 +535,11 @@ function render(data){
           <div class="route"><span class="codes">${r.origin}<span class="arr">⇄</span>${r.destination}</span>
             <span class="carriers">${carriers}</span></div>
           <div class="price-row">
-            <span class="big-price">${cur!=null?fmt(cur):"—"}<small>TWD 來回起</small></span>${pill}
+            <span class="big-price">${cur!=null?fmt(cur):"—"}<small>TWD 來回起</small></span>${pill}${curEst?`<span class="src-tag">快取估價</span>`:""}
           </div>
           <div class="cur-al">${curAl}${bestFull && !(cur!=null && bestFull.full_price===cur)
             ? ` <span class="fsline">・傳統航空最低 ${fmt(bestFull.full_price)}（${alZh((bestFull.full_carriers||"").split(",")[0])}，${bestFull.depart_date.slice(5).replace("-","/")}）</span>` : ""}</div>
-          ${sparkline(r.history, med)}
+          ${sparkline(r.history, med, r.origin+"-"+r.destination)}
           <div class="spark-cap"><span>${(r.history[0]||{}).day||""}</span>
             <span>每日最低價</span><span>${(r.history.at(-1)||{}).day||""}</span></div>
         </div>

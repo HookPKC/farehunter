@@ -10,12 +10,15 @@ from farehunter.export_web import export
 
 
 def test_export_shapes_and_future_filter(tmp_path):
+    import datetime as dt
+    nm = dt.date.today().replace(day=1) + dt.timedelta(days=40)   # 次月
+    f1, f2 = nm.replace(day=22).isoformat(), nm.replace(day=27).isoformat()
     db = tmp_path / "t.db"
     store = Store(str(db))
-    # one past departure (must be excluded from calendar) + two future
-    for dep, price in [("2020-01-01", 5000), ("2099-01-01", 9000), ("2099-02-01", 8000)]:
+    # one past departure (must be excluded from calendar) + two near-term future
+    for dep, price in [("2020-01-01", 5000), (f1, 9000), (f2, 8000)]:
         store.record(Offer("TPE", "NRT", dep, None, price, "TWD", "CI", 0, "PT3H"))
-    store.record_alert("TPE", "NRT", "2099-02-01", 8000, "absolute")
+    store.record_alert("TPE", "NRT", f2, 8000, "absolute")
     store.close()
 
     out = tmp_path / "docs" / "data.json"
@@ -28,7 +31,7 @@ def test_export_shapes_and_future_filter(tmp_path):
     r = payload["routes"][0]
     assert r["stats"]["n"] == 3 and r["stats"]["min"] == 5000
     cal_dates = [x["depart_date"] for x in r["latest"]]
-    assert cal_dates == ["2099-01-01", "2099-02-01"]      # past date excluded
+    assert cal_dates == [f1, f2]                           # past date excluded, near-term kept
     assert len(r["history"]) == 1                          # all observed today
     assert payload["alerts"][0]["reason"] == "absolute"
 
