@@ -111,6 +111,7 @@ def parse_offers(payload: dict, origin: str, destination: str,
                 stops=int(item.get("transfers", 0) or 0),
                 duration=str(item.get("duration", "") or ""),
                 link=(AVIASALES_WEB + link) if link.startswith("/") else link,
+                provider="travelpayouts",
             )
             classes = ["any"]
             if offer.carriers in FULL_SERVICE:

@@ -26,3 +26,4 @@ class Offer:
     link: str = ""            # booking deep link, if the source provides one
     fare_class: str = "any"   # "any" = cheapest overall, "full" = full-service carriers
     source: str = "aviasales" # "aviasales" cache | "google" real-price calendar
+    provider: Optional[str] = None  # exact API: serpapi|scrapedo|searchapi|travelpayouts

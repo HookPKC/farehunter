@@ -42,6 +42,7 @@ class NormalizedOffer:
     return_date: Optional[str] = None
     observed_at: Optional[str] = None      # ISO 8601 UTC
     link: str = ""
+    provider: Optional[str] = None         # exact API behind the row (serpapi|scrapedo|searchapi|travelpayouts)
     raw_quality_score: float = 0.0
 
     def to_dict(self) -> dict:
@@ -89,7 +90,7 @@ def _quality(price, stops, duration, airline, dep_time) -> float:
 
 def _build(price, currency, route, source, *, stops=None, duration=None,
            airline=None, dep_time=None, arr_time=None, depart_date=None,
-           return_date=None, observed_at=None, link="") -> NormalizedOffer:
+           return_date=None, observed_at=None, link="", provider=None) -> NormalizedOffer:
     airline = _codes(airline)
     stops = _int_or_none(stops)
     duration = _int_or_none(duration)
@@ -99,7 +100,7 @@ def _build(price, currency, route, source, *, stops=None, duration=None,
         airline=airline, departure_time=dep_time, arrival_time=arr_time,
         depart_date=depart_date, return_date=return_date,
         observed_at=observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        link=link,
+        link=link, provider=provider,
         raw_quality_score=_quality(price, stops, duration, airline, dep_time))
 
 
@@ -160,6 +161,7 @@ def from_observation(row) -> NormalizedOffer:
         stops=g("stops"), duration=duration, airline=g("carriers"),
         depart_date=g("depart_date"), return_date=g("return_date"),
         observed_at=g("observed_at"),
+        provider=(g("provider") if _has(row, "provider") else None),
         link=(g("link") if _has(row, "link") else ""))
 
 

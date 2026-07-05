@@ -50,6 +50,11 @@ class Store:
             # migration: source distinguishes aviasales cache from google real prices
             self.conn.execute(
                 "ALTER TABLE observations ADD COLUMN source TEXT NOT NULL DEFAULT 'aviasales'")
+        if "provider" not in cols:
+            # migration: provider records the EXACT API behind each row so every
+            # recommendation is traceable to serpapi/scrapedo/searchapi/travelpayouts
+            self.conn.execute(
+                "ALTER TABLE observations ADD COLUMN provider TEXT")
         self.conn.commit()
 
     def close(self):
@@ -60,13 +65,14 @@ class Store:
         self.conn.execute(
             """INSERT INTO observations
                (origin, destination, depart_date, return_date, price,
-                currency, carriers, stops, duration, observed_at, fare_class, source)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                currency, carriers, stops, duration, observed_at, fare_class,
+                source, provider)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (offer.origin, offer.destination, offer.depart_date,
              offer.return_date, offer.price, offer.currency,
              offer.carriers, offer.stops, offer.duration,
              datetime.now(timezone.utc).isoformat(timespec="seconds"),
-             offer.fare_class, offer.source),
+             offer.fare_class, offer.source, offer.provider),
         )
         self.conn.commit()
 

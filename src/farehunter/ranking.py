@@ -17,6 +17,7 @@ from typing import Optional
 
 from .normalize import NormalizedOffer
 from .freshness import freshness_score
+from .decision import RouteContext, evaluate, value_total, Decision
 
 # Airline service-quality prior (0..1). Full-service > LCC; unknown -> neutral.
 AIRLINE_QUALITY = {
@@ -59,11 +60,19 @@ class ScoredOffer:
     offer: NormalizedOffer
     total: float
     components: dict = field(default_factory=dict)
+    decision: Optional[Decision] = None       # FIE v1 explainable decision
 
-    def to_dict(self) -> dict:
+    def to_dict(self, rule: Optional[str] = None, full: bool = True) -> dict:
         d = self.offer.to_dict()
-        d["score"] = round(self.total, 4)
+        d["score"] = round(self.total, 4)      # kept for backward compatibility
         d["score_components"] = {k: round(v, 4) for k, v in self.components.items()}
+        if self.decision:
+            if full:                           # named picks: full explainability + provenance
+                self.decision.merge_into(d, rule=rule)
+            else:                              # ranked_results: keep it lean
+                d["decision_score"] = self.decision.total
+                d["stars"] = self.decision.stars
+                d["confidence"] = self.decision.confidence
         return d
 
 
@@ -125,25 +134,39 @@ class RankedResults:
     cheapest_option: Optional[ScoredOffer]
 
     def to_dict(self) -> dict:
-        def s(x): return x.to_dict() if x else None
+        def s(x, rule): return x.to_dict(rule=rule) if x else None
         return {
-            "best_option": s(self.best_option),
-            "value_option": s(self.value_option),
-            "fastest_option": s(self.fastest_option),
-            "cheapest_option": s(self.cheapest_option),
-            "ranked_results": [x.to_dict() for x in self.ranked_results],
+            "best_option": s(self.best_option, "BEST · 綜合最高分"),
+            "value_option": s(self.value_option, "VALUE · 高CP值"),
+            "fastest_option": s(self.fastest_option, "FASTEST · 飛行時間最短"),
+            "cheapest_option": s(self.cheapest_option, "CHEAPEST · 價格最低"),
+            "ranked_results": [x.to_dict(full=False) for x in self.ranked_results],
         }
 
 
 def rank(offers: list[NormalizedOffer], weights: WeightConfig = BALANCED,
-         reliability_of=None, now=None) -> RankedResults:
+         reliability_of=None, now=None, ctx: RouteContext = None) -> RankedResults:
     scored = score_offers(offers, weights, reliability_of, now)
     if not scored:
         return RankedResults([], None, None, None, None)
-    best = scored[0]
+
+    # FIE v1: attach the explainable Decision Score to every offer and make it
+    # the primary ranking signal. Without ctx (older callers/tests) fall back to
+    # the legacy weighted score so behaviour is unchanged.
+    if ctx is not None:
+        durs = [o.duration for o in offers if o.duration]
+        for s in scored:
+            s.decision = evaluate(s.offer, ctx, durs)
+        scored.sort(key=lambda s: (s.decision.total, -s.offer.price), reverse=True)
+        best = scored[0]
+        value = max(scored, key=lambda s: (value_total(s.offer, ctx, durs),
+                                           -s.offer.price))
+    else:
+        best = scored[0]
+        value_scored = score_offers(offers, VALUE, reliability_of, now)
+        value = value_scored[0] if value_scored else None
+
     cheapest = min(scored, key=lambda s: s.offer.price)
     with_dur = [s for s in scored if s.offer.duration]
     fastest = min(with_dur, key=lambda s: s.offer.duration) if with_dur else None
-    value_scored = score_offers(offers, VALUE, reliability_of, now)
-    value = value_scored[0] if value_scored else None
     return RankedResults(scored, best, value, fastest, cheapest)

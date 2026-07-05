@@ -97,4 +97,4 @@ def parse_cheapest_direct(payload: dict, origin: str, destination: str,
                  depart_date=outbound, return_date=ret,
                  price=price, currency=currency, carriers=code,
                  stops=0, duration=str(total_dur or ""), link=link,
-                 fare_class="any", source="google")
+                 fare_class="any", source="google", provider="scrapedo")

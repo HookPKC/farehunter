@@ -95,7 +95,7 @@ def parse_full_service(payload: dict, origin: str, destination: str,
                  price=price, currency="TWD",
                  carriers=",".join(codes), stops=0,
                  duration=str(total_dur or ""), link=link,
-                 fare_class="full", source="google")
+                 fare_class="full", source="google", provider="serpapi")
 
 
 def parse_cheapest_direct(payload: dict, origin: str, destination: str,
@@ -126,7 +126,7 @@ def parse_cheapest_direct(payload: dict, origin: str, destination: str,
                  depart_date=outbound, return_date=ret,
                  price=price, currency="TWD", carriers=code, stops=0,
                  duration=str(total_dur or ""), link=link,
-                 fare_class="any", source="google")
+                 fare_class="any", source="google", provider="serpapi")
 
 
 def pick_routes_for_today(routes: list[dict], today: date | None = None,

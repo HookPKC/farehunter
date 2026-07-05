@@ -99,7 +99,7 @@ def parse_calendar(payload: dict, origin: str, destination: str,
                                   price=price, currency=currency,
                                   carriers="", stops=0, duration="",
                                   link=link, fare_class="any",
-                                  source="google")
+                                  source="google", provider="searchapi")
         except (KeyError, ValueError, TypeError) as exc:
             log.warning("Skipping malformed calendar row: %s", exc)
     return [best[k] for k in sorted(best)]
