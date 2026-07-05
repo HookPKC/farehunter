@@ -44,9 +44,10 @@ def test_full_pipeline(tmp_path, monkeypatch, capsys):
     assert summary["errors"] == 0
     assert summary["alerts"] == 1              # any-class 8540 fires once; rest deduped/above
     out = capsys.readouterr().out
-    assert out.count("低價警報") == 1
-    assert "8,540 TWD" in out
-    assert "google.com/travel/flights" in out  # 統一 Google 查票連結（帶回程日）
+    assert out.count("曾出現低價") == 1
+    assert "約 8,500 TWD" in out          # 快取來源 → 約值百位化
+    assert "google.com/travel/flights" in out  # 統一 Google 比價連結（帶回程日）
+    assert "非即時報價" in out                 # 免責聲明
     assert "through%202099-09-23" in out
 
     store = Store(str(db))

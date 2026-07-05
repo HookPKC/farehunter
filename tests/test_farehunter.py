@@ -137,9 +137,17 @@ def test_format_alert_uses_google_link_with_dates():
     text = format_alert(make_offer(6800, link="https://www.aviasales.com/search/x"), v)
     assert "google.com/travel/flights" in text
     assert "aviasales" not in text
-    assert "TPE⇄NRT" in text and "6,800 TWD" in text
+    assert "TPE⇄NRT" in text and "約 6,800 TWD" in text   # 快取來源 → 約值
+    assert "曾出現低價" in text and "偵測於" in text and "台灣時間" in text
+    assert "比價:" in text and "非即時報價" in text
+    assert "Aviasales 快取估價" in text
     assert "天來回" in text
     # 無航空資訊（google 日曆來源）時優雅顯示
     o2 = make_offer(6800)
     o2.carriers = ""
     assert "多家航空" in format_alert(o2, v)
+    # google 觀測價 → 保留精確數字、來源標觀測價
+    o3 = make_offer(6814); o3.source = "google"
+    t3 = format_alert(o3, v)
+    assert "6,814 TWD" in t3 and "約" not in t3.split("觀測到:")[1].split("\n")[0]
+    assert "Google Flights 觀測價" in t3

@@ -19,6 +19,22 @@ log = logging.getLogger(__name__)
 
 WEEKDAYS = "一二三四五六日"
 
+# 通知價格語意（與看板統一原則一致）：
+# 快取/估價來源 → 「約 NT$X」百位四捨五入；google 觀測價 → 精確數字。
+_CACHE_SOURCES = {"aviasales", "travelpayouts"}
+_SOURCE_LABEL = {
+    "aviasales": "Aviasales 快取估價",
+    "travelpayouts": "Travelpayouts 快取估價",
+    "google": "Google Flights 觀測價",
+}
+
+
+def _tw_now() -> str:
+    """Current time formatted for Taiwan (detection ≈ send time, same run)."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8)))
+    return now.strftime("%m/%d %H:%M") + " 台灣時間"
+
 
 def format_alert(offer: Offer, verdict: Verdict) -> str:
     from datetime import date as _d
@@ -33,12 +49,25 @@ def format_alert(offer: Offer, verdict: Verdict) -> str:
         q += f" through {offer.return_date}"
     from urllib.parse import quote
     booking = "https://www.google.com/travel/flights?q=" + quote(q)
+
+    is_cache = (offer.source or "").lower() in _CACHE_SOURCES
+    if is_cache:
+        shown = f"約 {round(offer.price / 100) * 100:,.0f}"
+        kind = "快取估價"
+    else:
+        shown = f"{offer.price:,.0f}"
+        kind = "觀測價"
+    src = _SOURCE_LABEL.get((offer.source or "").lower(), offer.source or "未知來源")
+
     return (
-        f"✈️ 低價警報 {offer.origin}⇄{offer.destination}\n"
+        f"✈️ 曾出現低價 {offer.origin}⇄{offer.destination}\n"
         f"日期: {day}\n"
-        f"價格: {offer.price:,.0f} {offer.currency}（{who}, 直飛）\n"
-        f"原因: {verdict.detail}\n"
-        f"查票: {booking}"
+        f"觀測到: {shown} {offer.currency}（{who}, 直飛）\n"
+        f"來源: {src}・偵測於 {_tw_now()}\n"
+        f"觸發: {verdict.detail}\n"
+        f"比價: {booking}\n"
+        f"（此為監控時觀測到的{kind}，非即時報價；"
+        f"實際價格以 Google Flights／航空公司為準，低價可能已消失）"
     )
 
 
