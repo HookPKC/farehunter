@@ -371,8 +371,12 @@ function sparkline(hist, median, routeId){
 }
 
 function gfLink(o,d,dep,ret){
-  // 注意：僅帶航線與日期。曾嘗試附加 "for 1 adult economy class"（P1-1），
-  // 但實測 Google 會解析失敗（目的地與日期落空），故回退為此可正常解析格式。
+  // Google Flights 深連結備註（勿刪）：
+  // 1) `q=` 為自然語言查詢——可用但脆弱，Google 可能只解析部分條件。
+  // 2) 曾嘗試附加 "for 1 adult economy class"（P1-1），實測造成落地頁解析退化
+  //    （目的地與日期落空），已回退。
+  // 3) 未來若要精準控制旅客數/艙等，必須另開任務研究結構化參數（如 tfs=），
+  //    不要再直接往 `q=` 加自然語言。
   let q = `Flights from ${o} to ${d} on ${dep}`;
   if(ret) q += ` through ${ret}`;
   return "https://www.google.com/travel/flights?q=" + encodeURIComponent(q);
