@@ -512,6 +512,19 @@ function recommendStrip(r){
 }
 
 function render(data){
+  // 首頁顯示層排序（僅影響本頁卡片與導覽膠囊順序；資料檔/引擎/通知不動）：
+  // KHH 東京→大阪→名古屋 置頂；其餘 KHH 維持原相對順序；KHH-CTS 置底於 KHH 群；TPE 全部最後。
+  const ROUTE_PRIORITY = ["KHH-NRT","KHH-HND","KHH-KIX","KHH-ITM","KHH-NGO"];
+  const _rank = r => {
+    const id = `${r.origin}-${r.destination}`;
+    const p = ROUTE_PRIORITY.indexOf(id);
+    if(p >= 0) return p;                 // 0–4 置頂偏好序
+    if(id === "KHH-CTS") return 20;      // KHH 群置底
+    if(r.origin !== "KHH") return 30;    // TPE 等其他出發地最後
+    return 10;                            // 其餘 KHH 維持原相對順序
+  };
+  data.routes = data.routes.map((r,i)=>[_rank(r),i,r])
+    .sort((a,b)=>a[0]-b[0] || a[1]-b[1]).map(x=>x[2]);
   const t = new Date(data.generated_at).toLocaleString("zh-TW",
     {timeZone:"Asia/Taipei", month:"2-digit", day:"2-digit",
      hour:"2-digit", minute:"2-digit", hour12:false});
