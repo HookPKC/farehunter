@@ -77,6 +77,7 @@ body{background:var(--bg0);color:var(--ink1);font-family:var(--sans);
 .badge.sample{color:var(--fare);border-color:rgba(255,179,0,.4)}
 
 /* ============ Summary strip ============ */
+.howto{margin:2px 0 0;font-size:12px;color:var(--ink3);line-height:1.6}
 .strip{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s2);
   margin-bottom:var(--s6)}
 .stat{background:var(--bg1);border:1px solid var(--line1);border-radius:var(--r-m);
@@ -277,6 +278,8 @@ footer{margin-top:var(--s7);font-size:var(--fs-xs);color:var(--ink3);
   </div>
 </header>
 
+<p class="howto">大字＝近期觀測到的最低來回價；黃框＝我們推薦先看哪張；點任何價格可到 Google Flights 比價。</p>
+
 <div class="strip" id="strip" aria-label="總覽">
   <div class="skel" style="height:64px"></div>
   <div class="skel" style="height:64px"></div>
@@ -310,7 +313,7 @@ const RND100 = n => Math.round(n/100)*100;
 // 依來源回傳顯示字串：google→精確；快取→「約 X」(百位)
 const priceDisp = (n, src) => isCacheSrc(src) ? `約 ${fmt(RND100(n))}` : fmt(n);
 const WD = ["日","一","二","三","四","五","六"];
-const REASONS = {absolute:"低於門檻", new_low:"歷史新低", big_drop:"暴跌"};
+const REASONS = {absolute:"低於設定門檻", new_low:"監控以來最低", big_drop:"比常見價低 25%+"};
 const AIRLINES = {IT:["台灣虎航","Tigerair Taiwan"],TR:["酷航","Scoot"],
   MM:["樂桃","Peach"],GK:["捷星日本","Jetstar Japan"],"7C":["濟州航空","Jeju Air"],
   TW:["德威航空","T'way Air"],LJ:["真航空","Jin Air"],RS:["首爾航空","Air Seoul"],
