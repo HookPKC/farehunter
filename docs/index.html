@@ -107,6 +107,13 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
 .empty{padding:var(--s5) var(--s4);color:var(--ink3);font-size:var(--fs-m);
   background:var(--bg1);line-height:1.6}
 .empty b{color:var(--ink2)}
+/* 手機版警報列：允許換行成兩行——第一行 航線/價格/出發日、第二行 理由·日期整行靠右。
+   僅窄螢幕生效，桌面(≥560px)維持單列原樣。 */
+@media (max-width:559px){
+  .alert-row{flex-wrap:wrap;row-gap:2px}
+  .alert-row span:nth-child(3){white-space:nowrap}   /* 出發日不再內部斷行 */
+  .alert-row .why{flex-basis:100%;white-space:normal;text-align:right;margin-left:0}
+}
 
 /* ============ Route quick-nav ============ */
 .routenav{display:flex;gap:var(--s2);overflow-x:auto;padding-bottom:var(--s1);
