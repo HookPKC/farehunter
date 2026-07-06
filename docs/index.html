@@ -75,6 +75,11 @@ body{background:var(--bg0);color:var(--ink1);font-family:var(--sans);
   color:var(--ink2);letter-spacing:.12em}
 .badge.aviasales{color:var(--pos);border-color:rgba(63,214,143,.4)}
 .badge.sample{color:var(--fare);border-color:rgba(255,179,0,.4)}
+/* 資料新鮮度提示（statusline 正下方；hidden 時零占位） */
+.fresh{margin-top:var(--s2);padding:var(--s2) var(--s3);border-radius:var(--r-s);
+  font-size:var(--fs-s);line-height:1.55}
+.fresh.note{color:var(--fare);background:var(--fare-soft)}
+.fresh.warn{color:var(--neg);background:var(--neg-soft)}
 
 /* ============ Summary strip ============ */
 .howto{margin:2px 0 0;font-size:12px;color:var(--ink3);line-height:1.6}
@@ -290,6 +295,7 @@ footer{margin-top:var(--s7);font-size:var(--fs-xs);color:var(--ink3);
   <div class="meta" id="statusline" role="status" aria-live="polite">
     <span class="skel" style="width:220px;height:14px"></span>
   </div>
+  <div id="freshness" class="fresh" role="alert" hidden></div>
 </header>
 
 <p class="howto">大字＝近期觀測到的最低來回價；黃框＝我們推薦先看哪張；點任何價格可到 Google Flights 比價。</p>
@@ -549,6 +555,29 @@ $("navsort").addEventListener("click", ()=>{
   renderNav();
 });
 
+// —— 資料新鮮度提示（兩級：90 分–3 小時＝注意；>3 小時＝警告）——
+// 只讀既有 generated_at，不動任何價格/時間語意。60 秒 interval 只重算本提示條，
+// 頁面久開仍誠實（PLAYBOOK 1-4：禁止凍結相對時間字串）。env=sample 一律不顯示。
+const twTime = iso => new Date(iso).toLocaleString("zh-TW",
+  {timeZone:"Asia/Taipei", month:"2-digit", day:"2-digit",
+   hour:"2-digit", minute:"2-digit", hour12:false});
+const FRESH_NOTE_MIN = 90, FRESH_WARN_MIN = 180;
+let FRESH_GEN = null, FRESH_ENV = null, FRESH_TIMER = null;
+function renderFreshness(){
+  const el = $("freshness");
+  const mins = FRESH_GEN ? (Date.now() - Date.parse(FRESH_GEN)) / 60000 : NaN;
+  if(FRESH_ENV === "sample" || !(mins >= FRESH_NOTE_MIN)){ el.hidden = true; return; }
+  const at = `（最後整理：${twTime(FRESH_GEN)} 台灣時間）`;
+  if(mins > FRESH_WARN_MIN){
+    el.className = "fresh warn";
+    el.textContent = `⚠ 資料已超過 ${Math.floor(mins/60)} 小時未更新${at}。排程可能異常，請以 Google Flights 為準。`;
+  }else{
+    el.className = "fresh note";
+    el.textContent = `資料已約 ${Math.round(mins/30)/2} 小時未更新${at}。近期價格可能已變動，請比價前再確認。`;
+  }
+  el.hidden = false;
+}
+
 function render(data){
   // 首頁顯示層排序（僅影響本頁卡片與導覽膠囊順序；資料檔/引擎/通知不動）：
   // KHH 東京→大阪→名古屋 置頂；其餘 KHH 維持原相對順序；KHH-CTS 置底於 KHH 群；TPE 全部最後。
@@ -563,11 +592,12 @@ function render(data){
   };
   data.routes = data.routes.map((r,i)=>[_rank(r),i,r])
     .sort((a,b)=>a[0]-b[0] || a[1]-b[1]).map(x=>x[2]);
-  const t = new Date(data.generated_at).toLocaleString("zh-TW",
-    {timeZone:"Asia/Taipei", month:"2-digit", day:"2-digit",
-     hour:"2-digit", minute:"2-digit", hour12:false});
+  const t = twTime(data.generated_at);
   $("statusline").innerHTML =
     `資料整理於 <b>${t} 台灣時間</b>・各價格觀測時間不同<span class="badge ${data.env}">${data.env.toUpperCase()}</span>`;
+  FRESH_GEN = data.generated_at; FRESH_ENV = data.env;
+  renderFreshness();
+  if(!FRESH_TIMER) FRESH_TIMER = setInterval(renderFreshness, 60000);
 
   $("strip").innerHTML = [
     ["價格紀錄", fmt(data.totals.observations)],
