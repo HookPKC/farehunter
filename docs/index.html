@@ -126,6 +126,13 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
 .routenav a b{color:var(--fare);font-weight:700}
 .routenav a:hover{border-color:var(--line2);color:var(--ink1)}
 .routenav a:active{transform:scale(.97)}
+/* 膠囊列排序切換按鈕（位於「監控航線」標題列右側，不佔膠囊捲動列） */
+h2 .sortbtn{margin-left:auto;flex:0 0 auto;white-space:nowrap;cursor:pointer;
+  font-family:var(--mono);font-size:var(--fs-xs);font-weight:600;letter-spacing:0;
+  color:var(--ink2);background:var(--bg2);border:1px solid var(--line1);
+  border-radius:999px;padding:3px 10px}
+h2 .sortbtn:hover{border-color:var(--line2);color:var(--ink1)}
+h2 .sortbtn:active{transform:scale(.97)}
 
 /* ============ Route cards ============ */
 .card{background:var(--bg1);border:1px solid var(--line1);border-radius:var(--r-l);
@@ -298,7 +305,9 @@ footer{margin-top:var(--s7);font-size:var(--fs-xs);color:var(--ink3);
   <div class="skel" style="height:40px;border-radius:0"></div>
 </div>
 
-<h2 id="h-routes">監控航線 <span class="count" id="route-count"></span></h2>
+<h2 id="h-routes">監控航線 <span class="count" id="route-count"></span>
+  <button id="navsort" class="sortbtn" type="button" hidden
+    aria-label="切換下方導覽膠囊排序方式">排序：推薦序</button></h2>
 <nav class="routenav" id="routenav" aria-label="航線快速跳轉"></nav>
 <div id="routes" aria-labelledby="h-routes">
   <div class="skel" style="height:220px;margin-bottom:16px"></div>
@@ -518,6 +527,28 @@ function recommendStrip(r){
   </div>`;
 }
 
+// —— 膠囊列排序切換（僅影響 #routenav 導覽膠囊；下方卡片列表順序不變）——
+// 模式只存在記憶體：重新整理即回到預設「推薦序」。刻意不使用 localStorage。
+let NAV_ROUTES = [];          // render() 存入已排好推薦序的 routes，切換時重用
+let NAV_MODE = "rec";         // "rec"=推薦序（預設）| "low"=低價序
+const navLo = r => r.latest.length ? Math.min(...r.latest.map(x=>x.price)) : null;
+function renderNav(){
+  const rs = NAV_MODE === "low"
+    ? NAV_ROUTES.map((r,i)=>[navLo(r) ?? Infinity, i, r])  // map 產生新陣列再排序，
+        .sort((a,b)=>a[0]-b[0] || a[1]-b[1]).map(x=>x[2])  // 絕不 in-place 動原 routes
+    : NAV_ROUTES;
+  $("routenav").innerHTML = rs.map(r=>{
+    const lo = navLo(r);
+    return `<a href="#${r.origin}-${r.destination}">${r.origin}→${r.destination}
+      ${lo!=null?`<b>${fmt(lo)}</b>`:""}</a>`;
+  }).join("");
+  $("navsort").textContent = NAV_MODE === "low" ? "排序：低價序" : "排序：推薦序";
+}
+$("navsort").addEventListener("click", ()=>{
+  NAV_MODE = NAV_MODE === "low" ? "rec" : "low";
+  renderNav();
+});
+
 function render(data){
   // 首頁顯示層排序（僅影響本頁卡片與導覽膠囊順序；資料檔/引擎/通知不動）：
   // KHH 東京→大阪→名古屋 置頂；其餘 KHH 維持原相對順序；KHH-CTS 置底於 KHH 群；TPE 全部最後。
@@ -562,11 +593,9 @@ function render(data){
       border-radius:var(--r-m)"><b>尚無航線資料。</b><br>
       監控首次執行後，各航線的價格與趨勢會出現在這裡。</div>`;
   } else {
-    $("routenav").innerHTML = data.routes.map(r=>{
-      const lo = r.latest.length ? Math.min(...r.latest.map(x=>x.price)) : null;
-      return `<a href="#${r.origin}-${r.destination}">${r.origin}→${r.destination}
-        ${lo!=null?`<b>${fmt(lo)}</b>`:""}</a>`;
-    }).join("");
+    NAV_ROUTES = data.routes;   // 已是 ROUTE_PRIORITY 推薦序；renderNav 不會改動它
+    $("navsort").hidden = false;
+    renderNav();
 
     $("routes").innerHTML = data.routes.map(r=>{
       const curOffer = r.latest.length
