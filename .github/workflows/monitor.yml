@@ -2,7 +2,7 @@ name: FareHunter Monitor
 
 on:
   schedule:
-    - cron: "0 * * * *"       # 每小時（UTC）
+    - cron: "7 * * * *"       # 每小時第 7 分（UTC）——避開整點高峰；官方文件：整點為最高負載時段，排程可能被延遲或丟棄
   workflow_dispatch:            # 允許手動觸發
 
 permissions:

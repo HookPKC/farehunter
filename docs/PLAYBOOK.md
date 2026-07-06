@@ -6,7 +6,7 @@
 
 ---
 
-## 1. 最容易出錯的 5 類問題（含真實案例）
+## 1. 最容易出錯的 6 類問題（含真實案例）
 
 ### 1-1 「部署成功」≠「線上是新版」
 - **問題**：repo 有新 code、deploy 顯示 success，但 Pages 實際 serve 舊 commit。
@@ -57,6 +57,26 @@
 - **下次怎麼避免**：探針報 ✗ 先驗探針（印原始字串/charCode/grep 元素 id）；
   文案改動同輪盤點並更新鎖字串的測試。
 - **禁用做法**：看到 ✗ 直接改產品碼；憑記憶猜元素 id 寫探針。
+
+### 1-6 GitHub 排程無聲停擺：零 run ≠ failed run
+- **問題**：資料停止更新，但 Actions 一片綠、沒有任何 failure——因為排程事件根本
+  沒被投遞，run 從未產生。監控「失敗」抓不到「沒發生」。
+- **真實案例**（2026-07-06）：live「資料整理於」停在 04:21；monitor 自 7/5 20:20Z
+  的 run #30 後連續 16+ 個整點零排程 run，同期每日 fsc-snapshot、每週 gcal-sweep
+  也全缺席（＝repo 級投遞問題，非單一 workflow）；手動 dispatch 卻一切正常。所有
+  workflow `state=active`、無停用告示、設定期間零變更。GitHub 官方文件明載整點是
+  最高負載時段、排程可能被延遲甚至丟棄，且官方已承認排程丟棄量持續成長。
+- **根因判斷法（由源頭往下，每層排除再走下一層）**：①`git log` 看最後 `chore:`
+  commit 時間 → ②Actions 看「Scheduled run 是否存在」（不是看 run 有沒有失敗）→
+  ③workflow `state` 是否 active → ④其他排程 workflow 是否同時缺席 → ⑤手動
+  dispatch 是否正常（區分觸發層 vs 執行層）。
+- **復原 SOP**：手動 Run workflow 補資料 → Deploy Pages 若暫時性失敗就 Re-run
+  （本案 `deploy-pages@v4` 一次性掛掉、artifact 無恙）→ Disable/Enable workflow
+  強制重註冊 → 觀察兩個整點仍死，才改 workflow 檔（改 cron 本身也會重註冊）。
+- **防復發**：cron 避開整點（本 repo 已改 `7 * * * *`）；後續可考慮外部 watchdog
+  （勿與被監控者同失效域）與前端資料新鮮度警示。
+- **禁用做法**：只看 Actions 有無紅字就斷定排程健康；把資料停更直覺歸因於快取或
+  部署而不先查源頭；用另一個 GitHub 排程 workflow 監控排程本身。
 
 ---
 
