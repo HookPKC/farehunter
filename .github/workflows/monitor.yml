@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "7 * * * *"       # 每小時第 7 分（UTC）——避開整點高峰；官方文件：整點為最高負載時段，排程可能被延遲或丟棄
   workflow_dispatch:            # 允許手動觸發
+    inputs:
+      force:
+        description: "強制執行（略過 55 分鐘防重複 guard）"
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: write               # 允許把 prices.db 提交回 repo
@@ -30,20 +36,28 @@ jobs:
         run: pip install pytest && python -m pytest tests/ -q
 
       - name: Run monitor
+        id: monitor
         env:
           TRAVELPAYOUTS_TOKEN: ${{ secrets.TRAVELPAYOUTS_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          FAREHUNTER_FORCE: ${{ inputs.force && '1' || '' }}
         run: python run.py
 
+      # guard 跳過時（steps.monitor.outputs.skip == 'true'）以下全部不執行：
+      # 若讓 export 照跑，generated_at 會被「現在」重寫——沒抓新價卻重置
+      # 新鮮度時鐘，違反全站誠實語意（PLAYBOOK 1-4）。
       - name: Export dashboard data
+        if: steps.monitor.outputs.skip != 'true'
         run: python src/farehunter/export_web.py prices.db docs/data.json
       - name: Export FIE v2 ranked intelligence (additive, non-blocking)
+        if: steps.monitor.outputs.skip != 'true'
         run: PYTHONPATH=src python -m farehunter.intelligence prices.db docs/ranked.json || echo "ranked export skipped"
 
       - name: Commit price history
+        if: steps.monitor.outputs.skip != 'true'
         run: |
           git config user.name "farehunter-bot"
           git config user.email "bot@users.noreply.github.com"
@@ -51,3 +65,18 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: price observations $(date -u +'%Y-%m-%dT%H:%MZ')"
           git pull --rebase
           git push
+
+      # 心跳（dead-man switch）：HC_PING_URL secret 未設定時自動跳過，
+      # ping 失敗也不影響主流程。guard skip 屬健康狀態，照樣 ping。
+      # 前面任何步驟失敗時本步驟不執行（預設 if: success()）→ healthchecks
+      # 收不到 ping 就會在 grace 期後通知 Hook。
+      - name: Heartbeat（HC_PING_URL 未設定時自動跳過）
+        env:
+          HC_PING_URL: ${{ secrets.HC_PING_URL }}
+        run: |
+          if [ -n "$HC_PING_URL" ]; then
+            curl -fsS -m 10 --retry 3 "$HC_PING_URL" \
+              || echo "heartbeat ping 失敗（不影響主流程）"
+          else
+            echo "HC_PING_URL 未設定，跳過心跳"
+          fi

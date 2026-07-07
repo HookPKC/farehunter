@@ -77,6 +77,14 @@
   （勿與被監控者同失效域）與前端資料新鮮度警示。
 - **禁用做法**：只看 Actions 有無紅字就斷定排程健康；把資料停更直覺歸因於快取或
   部署而不先查源頭；用另一個 GitHub 排程 workflow 監控排程本身。
+- **後續強化（2026-07-07，命中率實測僅 ~7% 後定案）**：①`runner.guard_decision`
+  55 分鐘防重複 guard——**fail-open 鐵律**：任何讀取/解析錯誤一律照常執行，寧可
+  重複、不可讓 guard 成為新停擺點；skip 時必寫 GITHUB_OUTPUT 讓 export/commit
+  一併跳過，否則 export 會用「現在」重寫 generated_at＝沒抓新價卻重置新鮮度時鐘
+  （1-4 的變形）。②外部排程 cron-job.org `:17` 與 GitHub `:07` 雙獨立失效域互為
+  備援，GitHub schedule 永不停用。③monitor 尾端 optional 心跳（secret 未設即
+  休眠）；guard skip 屬健康、照 ping；步驟失敗則不 ping → dead-man 觸發。
+  ④人類復原路徑見 `RUNBOOK_HOOK.md`（含 cron-job.org / healthchecks 設定卡）。
 
 ---
 
