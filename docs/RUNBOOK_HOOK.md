@@ -40,6 +40,8 @@
 Pages 偶爾一次性抽風（歷史上發生過，artifact 都建好了最後一步掛掉）。
 Actions → **Deploy Pages** → 點進紅色那筆 → 右上 **Re-run all jobs**。重跑幾乎必過。
 
+若紅的是 **FareHunter Monitor** 本身：點進 log 看第一個紅色步驟——若是「Run monitor」且訊息提到 401/token，多半是 Travelpayouts token 過期，到 repo Settings → Secrets 更新 `TRAVELPAYOUTS_TOKEN`。
+
 ## 4. 設定卡：cron-job.org 外部排程（讓更新不再依賴 GitHub 排程器）
 
 **什麼時候需要**：GitHub 排程命中率持續很差（首頁常掛黃/紅條）。2026-07 實測

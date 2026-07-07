@@ -1,5 +1,9 @@
 """防重複 guard 測試：fail-open 是鐵律——guard 只能跳過，絕不能擋路。"""
 import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from datetime import datetime, timedelta, timezone
 
 from farehunter.runner import GUARD_MINUTES, guard_decision, _emit_skip_output, run
@@ -79,6 +83,7 @@ def test_force_bypasses_guard(tmp_path, monkeypatch):
 def test_run_short_circuits_before_any_side_effect(tmp_path, monkeypatch):
     """run() 在建立 client/store 之前就短路：無網路、無 DB、無 config 也能跳過。"""
     monkeypatch.delenv("FAREHUNTER_FORCE", raising=False)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "gh_out"))  # 隔離，避免污染 CI 測試步驟
     p = tmp_path / "data.json"
     _write_export(p, minutes_ago=10)
     summary = run(config_path=str(tmp_path / "no.yaml"),

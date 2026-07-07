@@ -37,7 +37,7 @@ def test_full_pipeline(tmp_path, monkeypatch, capsys):
     db = tmp_path / "prices.db"
     monkeypatch.setattr(runner_mod, "TravelpayoutsClient", FakeClient)
 
-    summary = runner_mod.run(str(cfg), str(db))
+    summary = runner_mod.run(str(cfg), str(db), web_export_path=str(tmp_path / "no_export.json"))
 
     assert summary["searched"] == 2            # 2 months, 1 route
     assert summary["recorded"] == 8            # 2 dates x (any+full) x 2 months
@@ -55,5 +55,5 @@ def test_full_pipeline(tmp_path, monkeypatch, capsys):
     store.close()
 
     # second run within 24h: same prices -> dedup suppresses the alert
-    summary2 = runner_mod.run(str(cfg), str(db))
+    summary2 = runner_mod.run(str(cfg), str(db), web_export_path=str(tmp_path / "no_export.json"))
     assert summary2["alerts"] == 0
