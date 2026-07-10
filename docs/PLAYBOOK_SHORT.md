@@ -1,8 +1,8 @@
 # FareHunter Playbook（短版・開工前 60 秒速讀）
 
-完整版：`PLAYBOOK.md`｜Prompt 模板：`PROMPT_TEMPLATES.md`｜人類復原手冊：`RUNBOOK_HOOK.md`
+完整版：`PLAYBOOK.md`｜Prompt 模板：`PROMPT_TEMPLATES.md`｜人類復原手冊：`RUNBOOK_HOOK.md`｜AI 接手指令：`HANDOFF_AI.md`
 
-## 12 條守則
+## 13 條守則
 
 1. 部署驗收看 deploy run 的 `head_sha == main HEAD` ＋ deployment 環境 SHA；不看 success、不看 repo 檔案。
 2. push 後等 ≥30 秒才 dispatch deploy（或等 workflow_run 自動觸發）。
@@ -19,6 +19,10 @@
 12. 觸發源可以有多個，抓價入口只有一個 guard：55 分鐘內跳過、**fail-open**
     （guard 壞掉寧可重複，絕不停擺）；skip 必須連 export/commit 一起跳過，
     否則會空轉重寫 generated_at。人類復原流程一律指向 `RUNBOOK_HOOK.md`。
+13. 缺一筆 hourly commit ≠ 故障：先分辨 guard 跳過／concurrency 排隊補跑／
+    平台單次取消（判讀表見 `HANDOFF_AI.md` §4）；連續 ≥2 小時無新 commit 才
+    升級。**排程表 ≠ 實際執行**——修任何「撞車」前，先用 run 紀錄證明它真的
+    發生過（完整版 1-7）。
 
 ## 5 個高風險區（未授權不碰）
 

@@ -86,6 +86,31 @@
   休眠）；guard skip 屬健康、照 ping；步驟失敗則不 ping → dead-man 觸發。
   ④人類復原路徑見 `RUNBOOK_HOOK.md`（含 cron-job.org / healthchecks 設定卡）。
 
+### 1-7 排程表上的撞車 vs 現實執行：一次完整誤診（2026-07-09/10）
+- **表面現象**：7/9 06:17（UTC）的 monitor 收到「All jobs were cancelled」；
+  排程表上 fsc-snapshot 每日 06:10、monitor 每小時 :17，兩者只差 7 分鐘。
+- **當時的（錯誤）診斷**：「fsc 每天 06:10 必撞 monitor 06:17，concurrency 讓
+  monitor 讓位」——推論完全合乎排程表，甚至一度提案把 fsc cron 挪到 05:40。
+- **實查推翻（三個資料點）**：①7/9 當天 fsc/verify 實際漂移到 **16:13/16:17**
+  才跑，06:17 當下 `farehunter` 群組根本無人佔用→該次 cancelled 是**平台端
+  偶發**，與撞車無關；②7/8 12:17「缺一筆 commit」實為 fsc 漂移到 12:05 跑完
+  並 export 了 `data.json`，12:17 monitor 被 **guard 正常跳過**（資料齡 12 分）；
+  ③7/9 16:17 verify 與 monitor **真的同場**，結果 concurrency 排隊、兩者都成功
+  （16:17 與 16:18 各一筆 commit）。三種樣態的判讀表整理於 `HANDOFF_AI.md` §4。
+- **教訓（制度規範）**：
+  1. **排程表 ≠ 實際執行**。本 repo 的 GitHub 排程漂移以小時計，「表定時間相近」
+     不構成撞車證據。
+  2. **修排程前，先證明撞車存在**：先寫下「若假設為真，run 紀錄應該長什麼樣」
+     （例：cancelled 當下群組內應有另一個 in-progress run），再撈實際紀錄比對。
+     對不上就撤案——本次「fsc 挪 05:40」提案即因此撤回，避免了改 workflow、
+     多要 Workflows 權限 token 去修一個不存在的病。
+  3. **缺一筆 hourly commit 有三種正常原因**（guard 跳過／排隊補跑／平台單次
+     取消），單次異常＋下一班正常＝忽略；連續 ≥2 小時無 commit 才升級。
+  4. 誤診本身要留檔：把推翻過程寫進文件，未來接手者才不會用同一條「合理但
+     未驗證」的推論再走一遍冤枉路。
+- **禁用做法**：看著 cron 表推撞車就動手改排程；把每一封 cancelled email 當
+  故障處理；用「下一班正常」以外的複雜方法判斷單次取消是否需要介入。
+
 ---
 
 ## 2. 「先驗證再實作」規則
