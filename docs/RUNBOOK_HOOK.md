@@ -43,6 +43,8 @@ Actions → **Deploy Pages** → 點進紅色那筆 → 右上 **Re-run all jobs
 
 若紅的是 **FareHunter Monitor** 本身：點進 log 看第一個紅色步驟——若是「Run monitor」且訊息提到 401/token，多半是 Travelpayouts token 過期，到 repo Settings → Secrets 更新 `TRAVELPAYOUTS_TOKEN`。
 
+若紅的是 **FSC Snapshot**（或其 log 出現 401 / quota / Invalid API key）：到 SerpAPI dashboard 確認本月額度與 key 狀態（每日 3 次、月約 93 次，方案額度見 dashboard），必要時產生新 key → repo Settings → Secrets 更新 `SERPAPI_KEY` → 舊 key 到 SerpAPI 端撤銷。key 一律不要貼進對話、文件或截圖。
+
 ## 4. 設定卡：cron-job.org 外部排程（讓更新不再依賴 GitHub 排程器）
 
 > ✅ **狀態：已於 2026-07-07 完成上線**（每小時 `:17`，時區 Asia/Taipei，
