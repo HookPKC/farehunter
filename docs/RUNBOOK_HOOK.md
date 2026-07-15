@@ -43,7 +43,15 @@ Actions → **Deploy Pages** → 點進紅色那筆 → 右上 **Re-run all jobs
 
 若紅的是 **FareHunter Monitor** 本身：點進 log 看第一個紅色步驟——若是「Run monitor」且訊息提到 401/token，多半是 Travelpayouts token 過期，到 repo Settings → Secrets 更新 `TRAVELPAYOUTS_TOKEN`。
 
-若紅的是 **FSC Snapshot**（或其 log 出現 401 / quota / Invalid API key）：到 SerpAPI dashboard 確認本月額度與 key 狀態（每日 3 次、月約 93 次，方案額度見 dashboard），必要時產生新 key → repo Settings → Secrets 更新 `SERPAPI_KEY` → 舊 key 到 SerpAPI 端撤銷。key 一律不要貼進對話、文件或截圖。
+若紅的是 **FSC Snapshot**（或其 log 出現 401 / quota / Invalid API key）：到 SerpAPI dashboard 確認本月額度與 key 狀態（每日最多 6 次、月理論最多約 186 次，方案額度 250，見 dashboard），必要時產生新 key → repo Settings → Secrets 更新 `SERPAPI_KEY` → 舊 key 到 SerpAPI 端撤銷。key 一律不要貼進對話、文件或截圖。
+
+**FSC 每日槽位（每日最多 6 次 SerpAPI）**：固定 3 個輪替槽（Rotation）＋ 最多 3 個實價驗證槽（Verification：Alert 最強低價警報／CTA 首頁推薦按鈕／Hero 首頁大字）。候選不足時驗證槽會少於 3、當天總查詢可能低於 6，屬正常，不是故障。看 log 末行「快照完成」那行的計數：`輪替 3/驗證 N`、`alert/cta/hero` 各幾槽、`API 成功/錯誤/成功無航班`。
+
+**FSC 紅燈 vs 綠燈 warning 判讀**：
+- 紅燈（run failed）：只有在「當天所有查詢都失敗」時才會發生（通常是 key 失效 401、額度用盡 quota、或網路問題）——照上一段換 key。
+- 綠燈但 log 有 `API OK but no matching flight` warning：API 有成功、只是那天那條航線剛好沒有直飛航班可記錄——**這不是故障**，不需處理。
+
+**手動重跑 FSC 注意**：每手動 dispatch 一次最多消耗 6 次額度。偶爾為之無妨（月餘裕約 64 次），但**避免連續多天手動重跑**，以免壓線。若擔心用量，到 SerpAPI dashboard 看當月累計即可。
 
 ## 4. 設定卡：cron-job.org 外部排程（讓更新不再依賴 GitHub 排程器）
 

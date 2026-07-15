@@ -15,6 +15,44 @@ except ImportError:
     from farehunter.models import NEAR_TERM_DAYS
 
 
+# 首頁「權威近期價格日曆」的單一真相來源(SSOT)。每個 depart_date 一格,
+# 排序規則:14 天內的 fresh google 無條件優先,其次最新觀測。Hero 大字 =
+# 本清單價格最低那格(前端 index.html reduce 同義)。FSC 的 Hero 驗證候選
+# 必須呼叫本 helper,不得複製另一份 SQL,以免與首頁顯示漂移。
+# 視窗與排序若要修改,改這裡一處即可,export 與 FSC 同步生效。
+_AUTHORITATIVE_LATEST_SQL = """WITH ranked AS (
+                 SELECT depart_date, return_date, price, currency, carriers,
+                        stops, observed_at, source,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY depart_date
+                          ORDER BY (source='google'
+                                    AND observed_at >= datetime('now','-14 days')) DESC,
+                                   observed_at DESC, id DESC) AS rk
+                 FROM observations
+                 WHERE origin=? AND destination=? AND fare_class='any' AND stops=0
+                   AND depart_date >= date('now','start of month','+1 month')
+                   AND depart_date >= date('now','+21 days')
+                   AND depart_date <= date('now','+{near_term_days} days'))
+               SELECT depart_date, return_date, price, currency, carriers,
+                      stops, observed_at, source
+               FROM ranked WHERE rk=1
+               ORDER BY depart_date LIMIT 100"""
+
+
+def authoritative_latest(conn, o: str, d: str,
+                         near_term_days: int = NEAR_TERM_DAYS) -> list[dict]:
+    """回傳某航線近期價格日曆:每個 depart_date 一格權威價(dict list)。
+    這是 Hero/chips 的單一真相來源;export 與 FSC 共用此函式。"""
+    return [dict(r) for r in conn.execute(
+        _AUTHORITATIVE_LATEST_SQL.format(near_term_days=near_term_days), (o, d))]
+
+
+def hero_from_latest(latest: list[dict]) -> dict | None:
+    """從權威日曆取 Hero 那一格:價格最低者。對應前端 index.html 的
+    `latest.reduce((a,b)=>a.price<=b.price?a:b)`。空清單回 None。"""
+    return min(latest, key=lambda x: x["price"]) if latest else None
+
+
 def _route_insight(conn, o, d):
     try:
         row = conn.execute(
@@ -52,24 +90,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
         # per-date dedup ordering as intelligence._SELECT (see NEAR_TERM_DAYS) so
         # Hero/Cheapest here == Recommended cheapest there, by construction. Far
         # months live in the monthly strip, not here.
-        latest = [dict(r) for r in conn.execute(
-            f"""WITH ranked AS (
-                 SELECT depart_date, return_date, price, currency, carriers,
-                        stops, observed_at, source,
-                        ROW_NUMBER() OVER (
-                          PARTITION BY depart_date
-                          ORDER BY (source='google'
-                                    AND observed_at >= datetime('now','-14 days')) DESC,
-                                   observed_at DESC, id DESC) AS rk
-                 FROM observations
-                 WHERE origin=? AND destination=? AND fare_class='any' AND stops=0
-                   AND depart_date >= date('now','start of month','+1 month')
-                   AND depart_date >= date('now','+21 days')
-                   AND depart_date <= date('now','+{NEAR_TERM_DAYS} days'))
-               SELECT depart_date, return_date, price, currency, carriers,
-                      stops, observed_at, source
-               FROM ranked WHERE rk=1
-               ORDER BY depart_date LIMIT 100""", (o, d))]
+        latest = authoritative_latest(conn, o, d)
 
         # google-sourced chips carry no airline; attach the aviasales
         # reference airline seen for the same departure date (approximate)
