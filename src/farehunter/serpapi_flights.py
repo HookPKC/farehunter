@@ -171,15 +171,16 @@ VERIFY_MAX_AHEAD_DAYS = 270
 
 
 def _is_cooled(conn, o: str, d: str, dep_s: str,
-               cooldown_hours: int = VERIFY_COOLDOWN_HOURS) -> bool:
+               cooldown_hours: int = VERIFY_COOLDOWN_HOURS,
+               now_ref: str = "now") -> bool:
     """True 若 (o,d,dep) 於 cooldown_hours 內已有 source='google' 觀測。
-    julianday() 比較,對混合時間字串格式安全。"""
+    julianday() 比較,對混合時間字串格式安全。now_ref 為時間基準（見 _now_ref）。"""
     return conn.execute(
         """SELECT 1 FROM observations
            WHERE origin=? AND destination=? AND depart_date=?
              AND source='google'
-             AND julianday(observed_at) >= julianday('now') - ?/24.0
-           LIMIT 1""", (o, d, dep_s, cooldown_hours)).fetchone() is not None
+             AND julianday(observed_at) >= julianday(?) - ?/24.0
+           LIMIT 1""", (o, d, dep_s, now_ref, cooldown_hours)).fetchone() is not None
 
 
 def _valid_horizon(dep_s: str, today: date) -> bool:
@@ -193,22 +194,27 @@ def _valid_horizon(dep_s: str, today: date) -> bool:
 
 def alert_candidates(conn, thresholds: dict[tuple[str, str], float | None],
                      today: date | None = None,
-                     window_hours: int = VERIFY_WINDOW_HOURS) -> list[dict]:
+                     window_hours: int = VERIFY_WINDOW_HOURS,
+                     now_ref: str | None = None) -> list[dict]:
     """回傳最近 window_hours 的 alert 驗證候選,依偏好排序(強者先)。
     每筆含 origin/destination/depart_date/return_date/price/reason。
     不套用冷卻與 claimed(由 build_verification_plans 統一處理);配不到
     return_date 的 alert 直接剔除(不猜)。純 DB 讀取、零 API。
 
+    today 為日期窗口基準;now_ref 為 SQL julianday 時間基準(單一時間來源:
+    由呼叫端一併傳入,預設 'now' 即 production 真實時鐘)。
+
     排序:reason(new_low>absolute>big_drop)→ price/threshold 升冪 →
     出發日近 → sent_at 新。不寫死任何航線。
     """
     today = today or date.today()
+    now_ref = now_ref or "now"
     rows = conn.execute(
         """SELECT origin, destination, depart_date, price, reason, sent_at,
                   julianday(sent_at) AS sent_j
            FROM alerts
-           WHERE julianday(sent_at) >= julianday('now') - ?/24.0
-           ORDER BY sent_j DESC""", (window_hours,)).fetchall()
+           WHERE julianday(sent_at) >= julianday(?) - ?/24.0
+           ORDER BY sent_j DESC""", (now_ref, window_hours)).fetchall()
     seen: set[tuple[str, str, str]] = set()
     ranked = []
     for r in rows:
@@ -246,12 +252,14 @@ def alert_candidates(conn, thresholds: dict[tuple[str, str], float | None],
 
 def pick_verification_candidate(conn, thresholds, today=None,
                                 window_hours: int = VERIFY_WINDOW_HOURS,
-                                cooldown_hours: int = VERIFY_COOLDOWN_HOURS):
+                                cooldown_hours: int = VERIFY_COOLDOWN_HOURS,
+                                now_ref: str | None = None):
     """相容包裝(純 C′ 行為 / rollback 用):回傳最強且未冷卻的單一 alert
     候選或 None。新的多槽路徑走 build_verification_plans。"""
-    for c in alert_candidates(conn, thresholds, today, window_hours):
+    now_ref = now_ref or "now"
+    for c in alert_candidates(conn, thresholds, today, window_hours, now_ref):
         if not _is_cooled(conn, c["origin"], c["destination"],
-                          c["depart_date"], cooldown_hours):
+                          c["depart_date"], cooldown_hours, now_ref):
             return c
     return None
 
@@ -323,20 +331,26 @@ def build_verification_plans(conn, thresholds, routes,
                              today: date | None = None,
                              claimed_trips: set | None = None,
                              max_slots: int = 3,
-                             cooldown_hours: int = VERIFY_COOLDOWN_HOURS) -> list[dict]:
+                             cooldown_hours: int = VERIFY_COOLDOWN_HOURS,
+                             now_ref: str | None = None) -> list[dict]:
     """統籌三個決策面(Alert→CTA→Hero)產生最多 max_slots 個驗證 plan。
 
     固定順序處理三個 pool;每 pool 先試「換 route」(route 未被 claimed),
     補位時才允許同 route 不同日期;某 pool 用罄由後續 pool 遞補。全程套用
     72h 冷卻與跨槽 claimed 去重。線性可讀、無遞迴、無 Priority Score。
 
+    單一時間來源:today 為日期窗口基準,now_ref 為 SQL julianday 基準,兩者
+    由此函式一次決定並貫穿所有 pool 與冷卻查詢,不讓下游各自取 date.today()。
+    production 傳 now_ref=None → 'now'(真實時鐘),測試傳固定字串。
+
     claimed_trips: (o,d,depart,return) 已被 rotation/前槽占用的行程,就地更新。
     候選不足時回傳少於 max_slots 個(不硬湊、不浪費額度)。
     """
     today = today or date.today()
+    now_ref = now_ref or "now"
     claimed_trips = claimed_trips if claimed_trips is not None else set()
     claimed_routes = {(o, d) for (o, d, _dep, _ret) in claimed_trips}
-    pools = [alert_candidates(conn, thresholds, today),
+    pools = [alert_candidates(conn, thresholds, today, now_ref=now_ref),
              cta_candidates(ranked_path, today),
              hero_candidates(conn, routes, today)]
     plans: list[dict] = []
@@ -349,7 +363,7 @@ def build_verification_plans(conn, thresholds, routes,
                 continue
             if not allow_same_route and (o, d) in claimed_routes:
                 continue
-            if _is_cooled(conn, o, d, c["depart_date"], cooldown_hours):
+            if _is_cooled(conn, o, d, c["depart_date"], cooldown_hours, now_ref):
                 continue
             return c
         return None

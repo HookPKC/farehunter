@@ -29,12 +29,16 @@ ROTATION_SLOTS = 3   # 固定保留,與 verification 完全解耦
 
 
 def build_plans(cfg: dict, store: Store, today: _date,
-                ranked_path: str = "docs/ranked.json") -> list[dict]:
+                ranked_path: str = "docs/ranked.json",
+                now_ref: str | None = None) -> list[dict]:
     """先建計畫、後執行。純 DB/JSON 讀取,零 API。
 
     3 個 rotation 先加入 claimed_trips;verification 最多 3 個且不得與
     rotation 或彼此重複 trip(見 build_verification_plans)。plans 總長以
     assert 鎖死 ≤ SEARCHES_PER_DAY。
+
+    now_ref: SQL julianday 時間基準,與 today 構成單一時間來源。production
+    的 run() 不傳(=None → 'now' 真實時鐘,行為不變);測試傳固定字串。
     """
     routes = cfg["routes"]
     thresholds = {(r["origin"], r["destination"]): r.get("absolute_threshold")
@@ -53,7 +57,7 @@ def build_plans(cfg: dict, store: Store, today: _date,
     for v in build_verification_plans(store.conn, thresholds, routes,
                                       ranked_path=ranked_path, today=today,
                                       claimed_trips=claimed_trips,
-                                      max_slots=verify_budget):
+                                      max_slots=verify_budget, now_ref=now_ref):
         plans.append({**v, "kind": "verify"})
 
     assert len(plans) <= SEARCHES_PER_DAY, "SerpAPI 每日上限保護:plans 超額"
@@ -61,16 +65,18 @@ def build_plans(cfg: dict, store: Store, today: _date,
 
 
 def run(config_path: str = "config.yaml", db_path: str = "prices.db",
-        ranked_path: str = "docs/ranked.json") -> dict:
+        ranked_path: str = "docs/ranked.json",
+        today: _date | None = None, now_ref: str | None = None) -> dict:
     cfg = load_config(config_path)
-    today = _date.today()
+    today = today or _date.today()   # production 不傳 → 真實今天,行為不變
     store = Store(db_path)
     summary = {"planned": 0, "api_ok": 0, "api_errors": 0, "api_ok_no_match": 0,
                "recorded": 0, "real": 0, "insights": 0,
                "rotation": 0, "verify": 0,
                "slot_alert": 0, "slot_cta": 0, "slot_hero": 0}
     try:
-        plans = build_plans(cfg, store, today, ranked_path=ranked_path)
+        plans = build_plans(cfg, store, today, ranked_path=ranked_path,
+                            now_ref=now_ref)
         summary["planned"] = len(plans)
         for plan in plans:
             o, d = plan["origin"], plan["destination"]

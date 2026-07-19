@@ -25,19 +25,28 @@ ROUTES = [{"origin": "TPE", "destination": "NRT", "absolute_threshold": 7000},
 CFG = {"routes": ROUTES}
 THRESH = {(r["origin"], r["destination"]): r["absolute_threshold"] for r in ROUTES}
 
+# ---- 單一測試時間基準 -------------------------------------------------------
+# 所有測試錨定這個虛構「今天」,與執行機器的真實 date.today() 完全無關,消除
+# 跨日/時區/日期窗口漂移。TEST_NOW_REF 傳給 build_plans/build_verification_plans
+# 作為 SQL julianday 基準;TEST_NOW 供 _iso/_sqlite 產生相對時間戳;TEST_TODAY
+# 供 _future/_hero_window_dep 產生候選日期。三者同源,不再雙時間源裂開。
+TEST_TODAY = date(2026, 7, 15)
+TEST_NOW = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
+TEST_NOW_REF = "2026-07-15 12:00:00"
+
 
 def _store(tmp_path):
     return Store(str(tmp_path / "prices.db"))
 
 
 def _iso(hours_ago: float) -> str:
-    return (datetime.now(timezone.utc)
-            - timedelta(hours=hours_ago)).isoformat(timespec="seconds")
+    """相對 TEST_NOW 的 ISO-T+00:00 時間戳(observations.observed_at 格式)。"""
+    return (TEST_NOW - timedelta(hours=hours_ago)).isoformat(timespec="seconds")
 
 
 def _sqlite(hours_ago: float) -> str:
-    return (datetime.now(timezone.utc)
-            - timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
+    """相對 TEST_NOW 的空格分隔時間戳(alerts.sent_at 格式)。"""
+    return (TEST_NOW - timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _obs(store, o, d, dep, ret, price, observed_at,
@@ -58,8 +67,9 @@ def _alert(store, o, d, dep, price, reason, sent_at):
     store.conn.commit()
 
 
-def _future(days: int) -> str:
-    return (date.today() + timedelta(days=days)).isoformat()
+def _future(days: int, base: date = TEST_TODAY) -> str:
+    """相對測試基準日的出發/回程日,不依賴真實今天。"""
+    return (base + timedelta(days=days)).isoformat()
 
 
 def _seed_alert(store, o="TPE", d="NRT", dep=None, ret=None,
@@ -73,10 +83,9 @@ def _seed_alert(store, o="TPE", d="NRT", dep=None, ret=None,
 
 
 def _hero_window_dep(offset_days=40):
-    """落在 Hero 視窗(次月1日 ~ now+90d、且 >= now+21d)的出發日。"""
-    d = date.today() + timedelta(days=offset_days)
-    # 確保 >= 次月一日
-    nm = (date.today().replace(day=1) + timedelta(days=32)).replace(day=1)
+    """落在 Hero 視窗(次月1日 ~ TEST_TODAY+90d、且 >= +21d)的出發日。"""
+    d = TEST_TODAY + timedelta(days=offset_days)
+    nm = (TEST_TODAY.replace(day=1) + timedelta(days=32)).replace(day=1)
     if d < nm:
         d = nm + timedelta(days=7)
     return d.isoformat()
@@ -103,7 +112,8 @@ def _no_ranked(tmp_path):
 # 3. 三個 Rotation 固定保留
 def test_three_rotation_slots_always_present(tmp_path):
     store = _store(tmp_path)
-    plans = build_plans(CFG, store, date(2026, 7, 15), ranked_path=_no_ranked(tmp_path))
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path),
+                        now_ref=TEST_NOW_REF)
     rot = [p for p in plans if p["kind"] == "rotation"]
     assert len(rot) == 3
 
@@ -111,8 +121,9 @@ def test_three_rotation_slots_always_present(tmp_path):
 # 既有意圖轉譯:無候選時三輪替與 legacy 完全一致
 def test_no_candidate_rotation_matches_legacy(tmp_path):
     store = _store(tmp_path)
-    today = date(2026, 7, 15)
-    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path))
+    today = TEST_TODAY
+    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path),
+                        now_ref=TEST_NOW_REF)
     assert all(p["kind"] == "rotation" for p in plans) and len(plans) == 3
     legacy = []
     for slot, route in enumerate(pick_routes_for_today(ROUTES, today=today,
@@ -129,11 +140,12 @@ def test_no_candidate_rotation_matches_legacy(tmp_path):
 def test_rotation_deterministic_regardless_of_verification(tmp_path):
     store = _store(tmp_path)
     _seed_alert(store)
-    today = date(2026, 7, 15)
+    today = TEST_TODAY
     expected = [(r["origin"], r["destination"])
                 for r in pick_routes_for_today(ROUTES, today=today,
                                                per_day=ROTATION_PER_DAY)]
-    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path))
+    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path),
+                        now_ref=TEST_NOW_REF)
     rot = [p for p in plans if p["kind"] == "rotation"]
     assert [(p["origin"], p["destination"]) for p in rot] == expected
 
@@ -145,7 +157,8 @@ def test_alert_candidate_creates_verification(tmp_path):
     store = _store(tmp_path)
     _seed_alert(store, o="KHH", d="KIX", dep=_future(60), ret=_future(65))
     plans = build_verification_plans(store.conn, THRESH, ROUTES,
-                                     ranked_path=_no_ranked(tmp_path))
+                                     ranked_path=_no_ranked(tmp_path),
+                                     today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert any(p["slot_kind"] == "alert" for p in plans)
 
 
@@ -154,7 +167,7 @@ def test_cta_candidate_from_ranked_best(tmp_path):
     store = _store(tmp_path)
     rp = _ranked_file(tmp_path, [
         ("KHH", "FUK", _future(40), _future(45), 12000, _iso(300))])
-    cands = cta_candidates(rp)
+    cands = cta_candidates(rp, today=TEST_TODAY)
     assert len(cands) == 1
     c = cands[0]
     assert (c["origin"], c["destination"]) == ("KHH", "FUK")
@@ -173,7 +186,7 @@ def test_hero_candidate_matches_frontend_authoritative(tmp_path):
     _obs(store, "KHH", "NRT", dep_lo, _future(45), 8000, _iso(50))
     latest = authoritative_latest(store.conn, "KHH", "NRT")
     hero = hero_from_latest(latest)
-    cands = hero_candidates(store.conn, [{"origin": "KHH", "destination": "NRT"}])
+    cands = hero_candidates(store.conn, [{"origin": "KHH", "destination": "NRT"}], today=TEST_TODAY)
     assert cands and cands[0]["depart_date"] == hero["depart_date"]
     assert cands[0]["price"] == hero["price"] == 8000
 
@@ -207,7 +220,8 @@ def test_cta_missing_fields_failsoft(tmp_path):
 def test_build_plans_survives_missing_ranked(tmp_path):
     store = _store(tmp_path)
     _seed_alert(store)
-    plans = build_plans(CFG, store, date.today(), ranked_path=_no_ranked(tmp_path))
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path),
+                        now_ref=TEST_NOW_REF)
     assert len(plans) >= 3            # 至少三輪替,不崩
 
 
@@ -223,7 +237,8 @@ def test_same_trip_across_pools_verified_once(tmp_path):
     _obs(store, "TPE", "NRT", dep, ret, 6100, _iso(50))
     plans = build_verification_plans(store.conn, THRESH,
                                      [{"origin": "TPE", "destination": "NRT"}],
-                                     ranked_path=rp)
+                                     ranked_path=rp,
+                                     today=TEST_TODAY, now_ref=TEST_NOW_REF)
     trips = [(p["origin"], p["destination"], p["depart_date"], p["return_date"])
              for p in plans]
     assert trips.count(("TPE", "NRT", dep, ret)) == 1
@@ -239,7 +254,8 @@ def test_claimed_key_includes_return_date(tmp_path):
     plans = build_verification_plans(store.conn, THRESH,
                                      [{"origin": "TPE", "destination": "NRT"}],
                                      ranked_path=_no_ranked(tmp_path),
-                                     claimed_trips=claimed)
+                                     claimed_trips=claimed,
+                                     today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert any(p["return_date"] == _future(47) for p in plans)
 
 
@@ -256,7 +272,8 @@ def test_verification_prefers_route_diversity(tmp_path):
     dep_h = _hero_window_dep(42)
     _obs(store, "KHH", "FUK", dep_h, _future(47), 11000, _iso(50))
     plans = build_verification_plans(store.conn, THRESH, [
-        {"origin": "KHH", "destination": "FUK"}], ranked_path=rp)
+        {"origin": "KHH", "destination": "FUK"}], ranked_path=rp,
+        today=TEST_TODAY, now_ref=TEST_NOW_REF)
     routes_used = [(p["origin"], p["destination"]) for p in plans]
     assert len(set(routes_used)) == len(routes_used)   # 全不同 route
 
@@ -267,7 +284,8 @@ def test_insufficient_candidates_fewer_than_three(tmp_path):
     _seed_alert(store, o="TPE", d="NRT", dep=_future(40), ret=_future(45))
     # 無 CTA、無 Hero 候選
     plans = build_verification_plans(store.conn, THRESH, [],
-                                     ranked_path=_no_ranked(tmp_path))
+                                     ranked_path=_no_ranked(tmp_path),
+                                     today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert len(plans) == 1 and plans[0]["slot_kind"] == "alert"
 
 
@@ -279,7 +297,8 @@ def test_pool_shortfall_backfilled_by_others(tmp_path):
         ("KHH", "FUK", _future(40), _future(45), 12000, _iso(300)),
         ("KHH", "OKA", _future(50), _future(55), 9000, _iso(200))])
     plans = build_verification_plans(store.conn, THRESH, [],
-                                     ranked_path=rp, max_slots=3)
+                                     ranked_path=rp, max_slots=3,
+                                     today=TEST_TODAY, now_ref=TEST_NOW_REF)
     kinds = [p["slot_kind"] for p in plans]
     assert "cta" in kinds and "alert" not in kinds
 
@@ -292,7 +311,8 @@ def test_cooldown_alert(tmp_path):
     dep, ret = _seed_alert(store, o="TPE", d="NRT", dep=_future(40), ret=_future(45))
     _obs(store, "TPE", "NRT", dep, ret, 9000, _iso(10), source="google")
     plans = build_verification_plans(store.conn, THRESH, [],
-                                     ranked_path=_no_ranked(tmp_path))
+                                     ranked_path=_no_ranked(tmp_path),
+                                     today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert not any(p["slot_kind"] == "alert" for p in plans)
 
 
@@ -302,7 +322,8 @@ def test_cooldown_cta(tmp_path):
     dep, ret = _future(40), _future(45)
     rp = _ranked_file(tmp_path, [("KHH", "FUK", dep, ret, 12000, _iso(300))])
     _obs(store, "KHH", "FUK", dep, ret, 12000, _iso(10), source="google")
-    plans = build_verification_plans(store.conn, THRESH, [], ranked_path=rp)
+    plans = build_verification_plans(store.conn, THRESH, [], ranked_path=rp,
+                                     today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert not any(p["slot_kind"] == "cta" for p in plans)
 
 
@@ -314,7 +335,8 @@ def test_cooldown_hero(tmp_path):
     _obs(store, "KHH", "NRT", dep, _future(47), 8000, _iso(10), source="google")
     plans = build_verification_plans(store.conn, THRESH,
                                      [{"origin": "KHH", "destination": "NRT"}],
-                                     ranked_path=_no_ranked(tmp_path))
+                                     ranked_path=_no_ranked(tmp_path),
+                                     today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert not any(p["slot_kind"] == "hero" for p in plans)
 
 
@@ -323,11 +345,11 @@ def test_cooldown_boundary_71h_73h(tmp_path):
     store = _store(tmp_path)
     dep, ret = _seed_alert(store, o="TPE", d="NRT", dep=_future(40), ret=_future(45))
     _obs(store, "TPE", "NRT", dep, ret, 9000, _iso(71), source="google")
-    assert pick_verification_candidate(store.conn, THRESH) is None
+    assert pick_verification_candidate(store.conn, THRESH, today=TEST_TODAY, now_ref=TEST_NOW_REF) is None
     store.conn.execute("DELETE FROM observations WHERE source='google'")
     store.conn.commit()
     _obs(store, "TPE", "NRT", dep, ret, 9000, _iso(73), source="google")
-    assert pick_verification_candidate(store.conn, THRESH) is not None
+    assert pick_verification_candidate(store.conn, THRESH, today=TEST_TODAY, now_ref=TEST_NOW_REF) is not None
 
 
 # 混格式 julianday 24h 窗(沿用 C′)
@@ -336,10 +358,10 @@ def test_julianday_window_mixed_formats(tmp_path):
     dep = _future(40)
     _obs(store, "TPE", "NRT", dep, _future(45), 6100, _iso(23))
     _alert(store, "TPE", "NRT", dep, 6100, "new_low", _sqlite(23))
-    assert alert_candidates(store.conn, THRESH)
+    assert alert_candidates(store.conn, THRESH, today=TEST_TODAY, now_ref=TEST_NOW_REF)
     store.conn.execute("DELETE FROM alerts")
     _alert(store, "TPE", "NRT", dep, 6100, "new_low", _sqlite(25))
-    assert not alert_candidates(store.conn, THRESH)
+    assert not alert_candidates(store.conn, THRESH, today=TEST_TODAY, now_ref=TEST_NOW_REF)
 
 
 # ============ Rotation vs Verification 不重複 ===============================
@@ -347,14 +369,15 @@ def test_julianday_window_mixed_formats(tmp_path):
 # 13. rotation 佔用的 trip 不會被 verification 選中
 def test_rotation_trip_not_reused_by_verification(tmp_path):
     store = _store(tmp_path)
-    today = date(2026, 7, 15)
+    today = TEST_TODAY
     # 找出 rotation 會選的第一個 trip,做成 alert 候選
     r0 = pick_routes_for_today(ROUTES, today=today, per_day=ROTATION_PER_DAY)[0]
     w = horizon_for_slot(len(ROUTES), today, 0, per_day=ROTATION_PER_DAY)
     dep, ret = snapshot_dates(today, horizon_weeks=w)
     _obs(store, r0["origin"], r0["destination"], dep, ret, 6000, _iso(2))
     _alert(store, r0["origin"], r0["destination"], dep, 6000, "new_low", _sqlite(1))
-    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path))
+    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path),
+                        now_ref=TEST_NOW_REF)
     verify = [p for p in plans if p["kind"] == "verify"]
     assert not any((p["origin"], p["destination"], p["depart_date"],
                     p["return_date"]) == (r0["origin"], r0["destination"], dep, ret)
@@ -375,7 +398,7 @@ def test_full_candidates_yield_six_plans(tmp_path):
     cfg = {"routes": ROUTES + [
         {"origin": "KHH", "destination": "FUK", "absolute_threshold": 12000},
         {"origin": "KHH", "destination": "OKA", "absolute_threshold": 9000}]}
-    plans = build_plans(cfg, store, date(2026, 7, 15), ranked_path=rp)
+    plans = build_plans(cfg, store, TEST_TODAY, ranked_path=rp, now_ref=TEST_NOW_REF)
     assert len(plans) == 6
     assert sum(p["kind"] == "rotation" for p in plans) == 3
     assert sum(p["kind"] == "verify" for p in plans) == 3
@@ -391,7 +414,7 @@ def test_many_candidates_api_calls_capped_six(tmp_path, monkeypatch):
                     price=5500 + i, sent_hours_ago=1 + i * 0.05)
     rp = _ranked_file(tmp_path, [("KHH", "FUK", _future(200), _future(205),
                                   12000, _iso(300))])
-    plans = build_plans(CFG, store, date.today(), ranked_path=rp)
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=rp, now_ref=TEST_NOW_REF)
     assert len(plans) <= SEARCHES_PER_DAY == 6
     store.conn.close()
 
@@ -401,7 +424,8 @@ def test_many_candidates_api_calls_capped_six(tmp_path, monkeypatch):
                         {"best_flights": [], "other_flights": []})
     monkeypatch.setattr(fsc_mod, "load_config", lambda p: CFG)
     monkeypatch.setattr(fsc_mod.time, "sleep", lambda s: None)
-    summary = fsc_run("x.yaml", str(tmp_path / "prices.db"), ranked_path=rp)
+    summary = fsc_run("x.yaml", str(tmp_path / "prices.db"), ranked_path=rp,
+                      today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert len(calls) <= 6 and summary["planned"] == len(calls)
 
 
@@ -413,7 +437,8 @@ def test_plans_never_exceed_daily_cap(tmp_path):
         _seed_alert(store, o=rt["origin"], d=rt["destination"],
                     dep=_future(30 + i), ret=_future(35 + i),
                     price=5000 + i, sent_hours_ago=1 + i * 0.1)
-    plans = build_plans(CFG, store, date.today(), ranked_path=_no_ranked(tmp_path))
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path),
+                        now_ref=TEST_NOW_REF)
     assert len(plans) <= SEARCHES_PER_DAY
 
 
@@ -485,7 +510,8 @@ def test_summary_counts_accurate(tmp_path, monkeypatch):
                                                 "other_flights": []})
     monkeypatch.setattr(fsc_mod, "load_config", lambda p: CFG)
     monkeypatch.setattr(fsc_mod.time, "sleep", lambda s: None)
-    summary = fsc_run("x.yaml", str(tmp_path / "prices.db"), ranked_path=rp)
+    summary = fsc_run("x.yaml", str(tmp_path / "prices.db"), ranked_path=rp,
+                      today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert summary["rotation"] == 3
     assert summary["slot_alert"] >= 1
     assert summary["rotation"] + summary["verify"] == summary["planned"]
@@ -493,3 +519,136 @@ def test_summary_counts_accurate(tmp_path, monkeypatch):
 
 
 # ============ 19/20:零真實 API + 無回歸(結構性,由全檔 mock 保證)========
+
+
+# ============ 單一時間來源 / 日期邊界(2026-07 CI 一致性修正)==============
+
+def _seed_six(store, base, rp_dir):
+    """在給定基準日 base 種下足以產生 6 plans 的候選(alert+cta+hero)。"""
+    _obs(store, "TPE", "NRT", (base + timedelta(days=40)).isoformat(),
+         (base + timedelta(days=45)).isoformat(), 6100,
+         (TEST_NOW - timedelta(hours=2.01)).isoformat(timespec="seconds"))
+    _alert(store, "TPE", "NRT", (base + timedelta(days=40)).isoformat(), 6100,
+           "new_low", (TEST_NOW - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S"))
+    # hero: KHH-OKA 落在視窗
+    hd = base + timedelta(days=42)
+    nm = (base.replace(day=1) + timedelta(days=32)).replace(day=1)
+    if hd < nm:
+        hd = nm + timedelta(days=7)
+    _obs(store, "KHH", "OKA", hd.isoformat(),
+         (base + timedelta(days=47)).isoformat(), 9000,
+         (TEST_NOW - timedelta(hours=50)).isoformat(timespec="seconds"))
+    rp = rp_dir / "ranked.json"
+    rp.write_text(json.dumps({"routes": [
+        {"origin": "KHH", "destination": "FUK",
+         "best_option": {"depart_date": (base + timedelta(days=50)).isoformat(),
+                         "return_date": (base + timedelta(days=55)).isoformat(),
+                         "price": 12000,
+                         "observed_at": (TEST_NOW - timedelta(hours=300)).isoformat()}}]}),
+        encoding="utf-8")
+    return str(rp)
+
+
+# 固定 today 下候選充足時恰好 6 plans(原始 flaky 測試的根治版)
+def test_fixed_today_yields_exactly_six(tmp_path):
+    store = _store(tmp_path)
+    rp = _seed_six(store, TEST_TODAY, tmp_path)
+    cfg = {"routes": ROUTES + [
+        {"origin": "KHH", "destination": "FUK", "absolute_threshold": 12000},
+        {"origin": "KHH", "destination": "OKA", "absolute_threshold": 9000}]}
+    plans = build_plans(cfg, store, TEST_TODAY, ranked_path=rp,
+                        now_ref=TEST_NOW_REF)
+    assert len(plans) == 6
+    assert sum(p["kind"] == "verify" for p in plans) == 3
+
+
+# today 前進 1 天:仍用一致時間來源,結果穩定(不因日期絕對值改變槽數)
+def test_today_plus_one_day_consistent(tmp_path):
+    store = _store(tmp_path)
+    base = TEST_TODAY + timedelta(days=1)
+    now = TEST_NOW + timedelta(days=1)
+    now_ref = now.strftime("%Y-%m-%d %H:%M:%S")
+    # 直接以 base/now 種資料(不動全域 TEST_NOW)
+    _obs(store, "TPE", "NRT", (base + timedelta(days=40)).isoformat(),
+         (base + timedelta(days=45)).isoformat(), 6100,
+         (now - timedelta(hours=2.01)).isoformat(timespec="seconds"))
+    _alert(store, "TPE", "NRT", (base + timedelta(days=40)).isoformat(), 6100,
+           "new_low", (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S"))
+    hd = base + timedelta(days=42)
+    nm = (base.replace(day=1) + timedelta(days=32)).replace(day=1)
+    if hd < nm:
+        hd = nm + timedelta(days=7)
+    _obs(store, "KHH", "OKA", hd.isoformat(),
+         (base + timedelta(days=47)).isoformat(), 9000,
+         (now - timedelta(hours=50)).isoformat(timespec="seconds"))
+    rp = tmp_path / "ranked.json"
+    rp.write_text(json.dumps({"routes": [
+        {"origin": "KHH", "destination": "FUK",
+         "best_option": {"depart_date": (base + timedelta(days=50)).isoformat(),
+                         "return_date": (base + timedelta(days=55)).isoformat(),
+                         "price": 12000,
+                         "observed_at": (now - timedelta(hours=300)).isoformat()}}]}),
+        encoding="utf-8")
+    cfg = {"routes": ROUTES + [
+        {"origin": "KHH", "destination": "FUK", "absolute_threshold": 12000},
+        {"origin": "KHH", "destination": "OKA", "absolute_threshold": 9000}]}
+    plans = build_plans(cfg, store, base, ranked_path=str(rp), now_ref=now_ref)
+    assert len(plans) == 6
+
+
+# 月底/跨月基準日:Hero 視窗(次月一日)仍正確,不崩
+def test_month_end_boundary(tmp_path):
+    store = _store(tmp_path)
+    base = date(2026, 7, 31)                     # 月底
+    now_ref = "2026-07-31 12:00:00"
+    dep = date(2026, 9, 5).isoformat()           # 次月之後,落在視窗
+    _obs(store, "KHH", "NRT", dep, date(2026, 9, 10).isoformat(), 8000,
+         (TEST_NOW - timedelta(hours=50)).isoformat(timespec="seconds"))
+    cands = hero_candidates(store.conn,
+                            [{"origin": "KHH", "destination": "NRT"}], today=base)
+    assert cands and cands[0]["depart_date"] == dep
+
+
+# 72h cooling 邊界在固定 now_ref 下決定性(71h 冷卻中 / 73h 已過)
+def test_cooldown_boundary_fixed_nowref(tmp_path):
+    store = _store(tmp_path)
+    dep = _future(40)
+    # 71h 前的 google 觀測 → 相對 TEST_NOW_REF 仍在 72h 內 → 冷卻中
+    _obs(store, "TPE", "NRT", dep, _future(45), 9000,
+         (TEST_NOW - timedelta(hours=71)).isoformat(timespec="seconds"),
+         source="google")
+    from farehunter.serpapi_flights import _is_cooled
+    assert _is_cooled(store.conn, "TPE", "NRT", dep, now_ref=TEST_NOW_REF) is True
+    store.conn.execute("DELETE FROM observations WHERE source='google'")
+    store.conn.commit()
+    _obs(store, "TPE", "NRT", dep, _future(45), 9000,
+         (TEST_NOW - timedelta(hours=73)).isoformat(timespec="seconds"),
+         source="google")
+    assert _is_cooled(store.conn, "TPE", "NRT", dep, now_ref=TEST_NOW_REF) is False
+
+
+# Rotation 與 Verification 使用同一 today(rotation 日期以 today 為基準)
+def test_rotation_and_verification_share_today(tmp_path):
+    store = _store(tmp_path)
+    _seed_alert(store, o="TPE", d="NRT", dep=_future(40), ret=_future(45))
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path),
+                        now_ref=TEST_NOW_REF)
+    rot = [p for p in plans if p["kind"] == "rotation"]
+    # rotation 的出發日必為 TEST_TODAY + horizon,不含真實今天的痕跡
+    for p in rot:
+        dep = date.fromisoformat(p["depart_date"])
+        assert dep > TEST_TODAY
+
+
+# 不因執行機器真實日期改變結果:同輸入兩次呼叫結果全等
+def test_result_independent_of_wall_clock(tmp_path):
+    store = _store(tmp_path)
+    rp = _seed_six(store, TEST_TODAY, tmp_path)
+    cfg = {"routes": ROUTES + [
+        {"origin": "KHH", "destination": "FUK", "absolute_threshold": 12000},
+        {"origin": "KHH", "destination": "OKA", "absolute_threshold": 9000}]}
+    a = build_plans(cfg, store, TEST_TODAY, ranked_path=rp, now_ref=TEST_NOW_REF)
+    b = build_plans(cfg, store, TEST_TODAY, ranked_path=rp, now_ref=TEST_NOW_REF)
+    key = lambda ps: [(p["origin"], p["destination"], p["depart_date"],
+                       p["return_date"], p["kind"]) for p in ps]
+    assert key(a) == key(b)
