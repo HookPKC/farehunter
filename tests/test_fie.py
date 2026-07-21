@@ -238,7 +238,13 @@ def test_intelligence_end_to_end(tmp_path):
     db = tmp_path / "t.db"
     store = Store(str(db))
     import datetime as dt
-    d1 = (dt.date.today().replace(day=1) + dt.timedelta(days=40)).replace(day=10)
+    # build_ranked 的過濾窗以 SQLite 真實 date('now') 為基準(見 intelligence._SELECT_TMPL:
+    # depart 需 >= 次月一日、>= now+21d、<= now+90d),production 不接受注入時鐘。因此測試
+    # 日期必須相對「同一個真實今天」建構,且用固定偏移確保任何執行日都穩定落在窗內——
+    # offset=45 對全年 366 天皆滿足三邊界(離次月一日/21d 下界與 90d 上界各留約 10 天緩衝),
+    # 使結果與執行日期無關。原本 `.replace(day=10)` 把日子釘在 10 號,與滑動的 now+21d 相對
+    # 距離不穩,7 月時 d1 落在 now+21d 前一天被剔除,只剩 9000 入選導致 cheapest 誤為 9000。
+    d1 = dt.date.today() + dt.timedelta(days=45)
     d2 = d1 + dt.timedelta(days=7)
     # date1: cheap LCC (real); date2: pricier full-service (real), both fresh
     store.record(Offer("KHH", "KIX", d1.isoformat(), (d1+dt.timedelta(days=5)).isoformat(),
