@@ -11,6 +11,7 @@ permissions:
 concurrency:
   group: farehunter
   cancel-in-progress: false
+  queue: max
 
 jobs:
   verify:
@@ -18,6 +19,29 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Sync to latest main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --prune --depth=1 origin \
+            +refs/heads/main:refs/remotes/origin/main
+          git checkout -B main refs/remotes/origin/main
+          git reset --hard refs/remotes/origin/main
+          test -z "$(git status --porcelain)" || {
+            echo "Working tree is not clean before data collection"
+            git status --short
+            exit 1
+          }
+          LOCAL_SHA="$(git rev-parse HEAD)"
+          REMOTE_SHA="$(git rev-parse refs/remotes/origin/main)"
+          echo "Synced main: ${LOCAL_SHA}"
+          test "${LOCAL_SHA}" = "${REMOTE_SHA}" || {
+            echo "HEAD is not equal to origin/main before API execution"
+            exit 1
+          }
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -32,7 +56,35 @@ jobs:
         run: |
           git config user.name "farehunter-bot"
           git config user.email "bot@users.noreply.github.com"
+          set -euo pipefail
+          BASE_SHA="$(git rev-parse refs/remotes/origin/main)"
           git add prices.db docs/data.json docs/verify-report.json
-          git diff --cached --quiet || git commit -m "chore: airline verify $(date -u +'%Y-%m-%dT%H:%MZ')"
-          git pull --rebase
-          git push
+          if git diff --cached --quiet; then
+            echo "No data changes to commit"
+            exit 0
+          fi
+          git commit -m "chore: airline verify $(date -u +'%Y-%m-%dT%H:%MZ')"
+          LOCAL_SHA="$(git rev-parse HEAD)"
+          if git push origin HEAD:main; then
+            echo "Push succeeded: ${LOCAL_SHA}"
+          else
+            echo "Initial push did not return success; checking remote state"
+            git fetch --no-tags --prune --depth=1 origin \
+              +refs/heads/main:refs/remotes/origin/main
+            REMOTE_SHA="$(git rev-parse refs/remotes/origin/main)"
+            if [ "${REMOTE_SHA}" = "${LOCAL_SHA}" ]; then
+              echo "Push already reached remote; treating run as successful"
+            elif [ "${REMOTE_SHA}" = "${BASE_SHA}" ]; then
+              echo "Remote did not advance; retrying the same push once after backoff"
+              sleep 5
+              git push origin HEAD:main
+            else
+              echo "NON-FAST-FORWARD: refusing to merge binary prices.db"
+              echo "workflow=${GITHUB_WORKFLOW}"
+              echo "run_id=${GITHUB_RUN_ID}"
+              echo "base=${BASE_SHA}"
+              echo "local=${LOCAL_SHA}"
+              echo "remote=${REMOTE_SHA}"
+              exit 1
+            fi
+          fi
