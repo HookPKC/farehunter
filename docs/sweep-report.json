@@ -1,5 +1,11 @@
 {
- "errors": [],
+ "errors": [
+  "TPE→NRT 2026-07-28: HTTP 200: Google Flights Calendar didn't return any results.",
+  "KHH→NRT 2026-07-28: HTTP 429: You have used all of the searches for the month. Please upgrade your plan on SearchApi.io.",
+  "KHH→NRT 2027-01-26: HTTP 429: You have used all of the searches for the month. Please upgrade your plan on SearchApi.io.",
+  "KHH→KIX 2026-07-28: HTTP 429: You have used all of the searches for the month. Please upgrade your plan on SearchApi.io.",
+  "KHH→KIX 2027-01-26: HTTP 429: You have used all of the searches for the month. Please upgrade your plan on SearchApi.io."
+ ],
  "probe": {
   "keys": [
    "calendar",
@@ -9,26 +15,26 @@
   "rows": 168,
   "sample": [
    {
-    "departure": "2026-07-21",
-    "return": "2026-07-21",
-    "price": 12928
+    "departure": "2027-02-03",
+    "return": "2027-02-03",
+    "price": 12155
    },
    {
-    "departure": "2026-07-21",
-    "return": "2026-07-22",
-    "price": 13430
+    "departure": "2027-02-03",
+    "return": "2027-02-04",
+    "price": 11984
    },
    {
-    "departure": "2026-07-21",
-    "return": "2026-07-23",
-    "price": 12630
+    "departure": "2027-02-03",
+    "return": "2027-02-05",
+    "price": 13158
    }
   ]
  },
  "summary": {
   "searched": 16,
-  "recorded": 199,
-  "alerts": 10,
-  "errors": 0
+  "recorded": 42,
+  "alerts": 0,
+  "errors": 13
  }
 }
