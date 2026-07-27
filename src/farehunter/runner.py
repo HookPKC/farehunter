@@ -188,15 +188,31 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     )
                     if not pstate.eligible_for_alert:
                         continue          # candidate 過舊：不發主動通知
+                    csig = price_state.carrier_signature(offer.carriers)
                     if verdict.is_deal and not store.recently_alerted(
-                            origin, dest, offer.depart_date, offer.price):
+                            origin, dest, offer.depart_date,
+                            pstate.selected_price,
+                            return_date=offer.return_date,
+                            carrier_signature=csig,
+                            price_status=pstate.state,
+                            reference_price=pstate.reference_price):
                         sent = notify(eval_offer, verdict, pstate)
                         if not sent and channels_configured():
                             log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",
                                       origin, dest, offer.depart_date)
                             continue
-                        store.record_alert(origin, dest, offer.depart_date,
-                                           pstate.selected_price, verdict.reason)
+                        store.record_alert(
+                            origin, dest, offer.depart_date,
+                            pstate.selected_price, verdict.reason,
+                            return_date=offer.return_date,
+                            carrier_signature=csig,
+                            price_source=pstate.selected_source,
+                            price_status=pstate.state,
+                            reference_price=pstate.reference_price,
+                            reference_observed_at=(
+                                pstate.reference_observed_at.isoformat(
+                                    timespec="seconds")
+                                if pstate.reference_observed_at else None))
                         summary["alerts"] += 1
 
                 time.sleep(merged.get("pause_seconds", 0.6))

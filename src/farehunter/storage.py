@@ -55,6 +55,23 @@ class Store:
             # recommendation is traceable to serpapi/scrapedo/searchapi/travelpayouts
             self.conn.execute(
                 "ALTER TABLE observations ADD COLUMN provider TEXT")
+        # migration: alert trip identity。原本 dedup 只用 (route, depart),實測
+        # 已有 6 個 (route, depart) 擁有 2–4 個不同回程日,不同行程會互相阻擋。
+        # 全部允許 NULL:歷史列沒有這些資訊,且不得猜測回填。
+        acols = [r[1] for r in self.conn.execute("PRAGMA table_info(alerts)")]
+        for col, ddl in (
+            ("return_date", "ALTER TABLE alerts ADD COLUMN return_date TEXT"),
+            ("carrier_signature",
+             "ALTER TABLE alerts ADD COLUMN carrier_signature TEXT"),
+            ("price_source", "ALTER TABLE alerts ADD COLUMN price_source TEXT"),
+            ("price_status", "ALTER TABLE alerts ADD COLUMN price_status TEXT"),
+            ("reference_price",
+             "ALTER TABLE alerts ADD COLUMN reference_price REAL"),
+            ("reference_observed_at",
+             "ALTER TABLE alerts ADD COLUMN reference_observed_at TEXT"),
+        ):
+            if col not in acols:
+                self.conn.execute(ddl)
         self.conn.commit()
 
     def close(self):
@@ -123,22 +140,50 @@ class Store:
              currency, not_after),
         ).fetchone()
 
+    #: 各價格狀態的 dedup 窗。CONFLICT 較長,避免同一個未變化的落差每天重複騷擾。
+    DEDUP_HOURS = {"verified": 24, "conflict": 72, "unverified": 24}
+
     def recently_alerted(self, origin: str, destination: str,
                          depart_date: str, price: float,
                          within_hours: int = 24,
-                         improvement_pct: float = 5.0) -> bool:
-        """True if we already alerted this route+date in the window,
-        unless the new price improves on the alerted price by >= improvement_pct."""
+                         improvement_pct: float = 10.0,
+                         *, return_date: str | None = None,
+                         carrier_signature: str | None = None,
+                         price_status: str | None = None,
+                         reference_price: float | None = None) -> bool:
+        """True 表示「近期已通知過同一行程且無顯著變化」,應跳過。
+
+        identity 至少為 (origin, destination, depart_date, return_date,
+        carrier_signature, price_status)。不同回程日、不同 carrier、不同狀態
+        各自獨立 dedup,不互相阻擋。
+
+        向後相容:歷史列的 return_date / carrier_signature 為 NULL,SQL 等值
+        比對自然不會匹配帶有明確行程的新 alert——即舊資料不會錯誤抑制新的明確
+        行程(規格要求)。不猜測回填舊列。
+
+        允許重新通知:價格改善 >= improvement_pct、狀態改變(例如升級為
+        verified)、或 CONFLICT 的參考價出現同等幅度的變化。
+        """
+        hours = self.DEDUP_HOURS.get((price_status or "").lower(), within_hours)
         row = self.conn.execute(
-            """SELECT price FROM alerts
+            """SELECT price, reference_price FROM alerts
                WHERE origin=? AND destination=? AND depart_date=?
+                 AND return_date IS ? AND carrier_signature IS ?
+                 AND price_status IS ?
                  AND sent_at >= datetime('now', ?)
                ORDER BY sent_at DESC LIMIT 1""",
-            (origin, destination, depart_date, f"-{within_hours} hours"),
+            (origin, destination, depart_date, return_date, carrier_signature,
+             price_status, f"-{hours} hours"),
         ).fetchone()
         if row is None:
             return False
-        return price > row["price"] * (1 - improvement_pct / 100.0)
+        if price <= row["price"] * (1 - improvement_pct / 100.0):
+            return False                      # 顯著更便宜 → 重新通知
+        prev_ref, new_ref = row["reference_price"], reference_price
+        if prev_ref and new_ref and \
+                abs(new_ref - prev_ref) >= prev_ref * (improvement_pct / 100.0):
+            return False                      # 參考價有意義變化 → 重新通知
+        return True
 
     def record_longrange(self, origin: str, destination: str, depart_date: str,
                          return_date: str, total: float,
@@ -178,10 +223,26 @@ class Store:
         self.conn.commit()
 
     def record_alert(self, origin: str, destination: str,
-                     depart_date: str, price: float, reason: str) -> None:
+                     depart_date: str, price: float, reason: str,
+                     *, return_date: str | None = None,
+                     carrier_signature: str | None = None,
+                     price_source: str | None = None,
+                     price_status: str | None = None,
+                     reference_price: float | None = None,
+                     reference_observed_at: str | None = None) -> None:
+        """寫入 alert 事件。
+
+        新增欄位皆為選填,呼叫端未提供時寫入 NULL,與歷史列語意一致。
+        不保存 reference_carrier_signature——同航程比對要求兩側 carrier
+        signature 相等,故它恆等於 carrier_signature 欄位,無稽核價值。
+        """
         self.conn.execute(
-            "INSERT INTO alerts (origin, destination, depart_date, price, reason, sent_at)"
-            " VALUES (?,?,?,?,?,datetime('now'))",
-            (origin, destination, depart_date, price, reason),
+            "INSERT INTO alerts (origin, destination, depart_date, price, reason,"
+            " sent_at, return_date, carrier_signature, price_source, price_status,"
+            " reference_price, reference_observed_at)"
+            " VALUES (?,?,?,?,?,datetime('now'),?,?,?,?,?,?)",
+            (origin, destination, depart_date, price, reason, return_date,
+             carrier_signature, price_source, price_status, reference_price,
+             reference_observed_at),
         )
         self.conn.commit()
