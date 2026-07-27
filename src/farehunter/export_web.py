@@ -14,6 +14,11 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from farehunter.models import NEAR_TERM_DAYS
 
+try:
+    from farehunter.current_price import resolve_current_price
+except ImportError:                     # pragma: no cover
+    from .current_price import resolve_current_price
+
 
 # 首頁「權威近期價格日曆」的單一真相來源(SSOT)。每個 depart_date 一格,
 # 排序規則:14 天內的 fresh google 無條件優先,其次最新觀測。Hero 大字 =
@@ -37,6 +42,53 @@ _AUTHORITATIVE_LATEST_SQL = """WITH ranked AS (
                       stops, observed_at, source
                FROM ranked WHERE rk=1
                ORDER BY depart_date LIMIT 100"""
+
+
+# ---- Current-surface 專用查詢(Commit 3)------------------------------------
+# 刻意與 _AUTHORITATIVE_LATEST_SQL 分開:那一份給 C″ planner 用,含「14 天內
+# google 無條件優先」;current surface 不能讓 2–14 天前的 google 蓋掉剛觀測到
+# 的快取價,所以這裡純粹依 observed_at 取最新,再由 current_price 純函式判定
+# 狀態與 eligibility。兩份查詢共用同一組視窗條件,確保比較基礎一致。
+_CURRENT_WINDOW = """WHERE origin=? AND destination=? AND fare_class='any' AND stops=0
+                   AND depart_date >= date('now','start of month','+1 month')
+                   AND depart_date >= date('now','+21 days')
+                   AND depart_date <= date('now','+{near_term_days} days')"""
+
+_LATEST_ANY_SQL = """WITH ranked AS (
+                 SELECT depart_date, return_date, price, currency, carriers,
+                        stops, observed_at, source,
+                        ROW_NUMBER() OVER (PARTITION BY depart_date
+                          ORDER BY observed_at DESC, id DESC) AS rk
+                 FROM observations
+                 {window})
+               SELECT depart_date, return_date, price, currency, carriers,
+                      stops, observed_at, source
+               FROM ranked WHERE rk=1 ORDER BY depart_date LIMIT 100"""
+
+_LATEST_GOOGLE_SQL = """WITH ranked AS (
+                 SELECT depart_date, return_date, price, currency, carriers,
+                        stops, observed_at, source,
+                        ROW_NUMBER() OVER (PARTITION BY depart_date
+                          ORDER BY observed_at DESC, id DESC) AS rk
+                 FROM observations
+                 {window} AND source='google')
+               SELECT depart_date, return_date, price, currency, carriers,
+                      stops, observed_at, source
+               FROM ranked WHERE rk=1 ORDER BY depart_date LIMIT 100"""
+
+
+def latest_any(conn, o: str, d: str, near_term_days: int = NEAR_TERM_DAYS) -> list[dict]:
+    """每個 depart_date 一筆最新觀測,不給任何來源優先權。"""
+    sql = _LATEST_ANY_SQL.format(
+        window=_CURRENT_WINDOW.format(near_term_days=near_term_days))
+    return [dict(r) for r in conn.execute(sql, (o, d))]
+
+
+def latest_google(conn, o: str, d: str, near_term_days: int = NEAR_TERM_DAYS) -> list[dict]:
+    """每個 depart_date 一筆最新 google 觀測(供衝突參考)。"""
+    sql = _LATEST_GOOGLE_SQL.format(
+        window=_CURRENT_WINDOW.format(near_term_days=near_term_days))
+    return [dict(r) for r in conn.execute(sql, (o, d))]
 
 
 def authoritative_latest(conn, o: str, d: str,
@@ -64,7 +116,9 @@ def _route_insight(conn, o, d):
         return None      # 表尚未建立（快照還沒跑過）
 
 
-def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict:
+def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
+           now: datetime | None = None) -> dict:
+    _now = now or datetime.now(timezone.utc)   # 可注入,供測試固定時鐘
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
@@ -175,6 +229,9 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
                       "avg": round(srow["av"], 1) if srow["av"] else None,
                       "median": median},
             "latest": latest,
+            "current": resolve_current_price(
+                latest_any(conn, o, d), latest_google(conn, o, d),
+                _now).to_dict(),
             "fsc_latest": dict(fsc_latest) if fsc_latest else None,
             "insight": _route_insight(conn, o, d),
             "monthly": monthly,
@@ -191,7 +248,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json") -> dict
     conn.close()
 
     payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": _now.isoformat(timespec="seconds"),
         "env": os.environ.get("DATA_SOURCE_LABEL", "aviasales"),
         "totals": {"observations": total_obs, "routes": len(routes),
                    "alerts_24h": alerts_24h},
