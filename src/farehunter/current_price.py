@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
-from .freshness import age_hours
+from .freshness import _parse as _parse_ts
 from .price_state import carrier_signature
 
 FRESH_VERIFIED = "fresh_verified"
@@ -68,12 +68,23 @@ def _cheapest(rows: list[dict]) -> dict | None:
     return min(rows, key=lambda r: r["price"]) if rows else None
 
 
-def _same_trip(a: dict, b: dict) -> bool:
-    """current 與 reference 是否為同一行程。
+#: same-itinerary key 中「若任一側出現就必須兩側都有且相等」的欄位。
+#: 這些欄位目前由 export 的 SQL 視窗保證(origin/destination 為查詢參數、
+#: fare_class='any' 與 stops=0 為字面量),但 resolver 不能依賴看不見的呼叫端
+#: 不變式——SQL 一旦放寬就會靜默產生跨產品比較。因此在此顯式比對:兩側都有
+#: 才比,只有一側有就 fail closed。
+_OPTIONAL_KEYS = ("origin", "destination", "stops", "fare_class", "passengers")
 
-    兩者都來自同一組視窗查詢(已固定 fare_class='any' 且 stops=0),因此這裡
-    只需再確認出發日、回程日、幣別與 carrier signature 相符。任何一項缺失或
-    不同即回 False——寧可不標 conflict,也不要拿不同行程互相比較。
+
+def _same_trip(a: dict, b: dict) -> bool:
+    """current 與 reference 是否為同一行程(保守、fail closed)。
+
+    必要欄位(兩側都必須存在且相等):depart_date、return_date、currency、
+    normalized carrier signature。任一缺失即回 False。
+
+    條件欄位(_OPTIONAL_KEYS):只要任一側提供就必須兩側都提供且相等。
+    passenger count 目前未存於 observations——全站為單人查詢,兩側皆無此欄位
+    時視為同一前提;但只要有一側開始提供,就必須相符,避免未來擴充時靜默錯配。
     """
     sig_a = carrier_signature(a.get("carriers"))
     sig_b = carrier_signature(b.get("carriers"))
@@ -81,10 +92,18 @@ def _same_trip(a: dict, b: dict) -> bool:
         return False
     if a.get("return_date") is None or b.get("return_date") is None:
         return False
-    return (a.get("depart_date") == b.get("depart_date")
+    if not (a.get("depart_date") == b.get("depart_date")
             and a.get("return_date") == b.get("return_date")
             and (a.get("currency") or "").upper() == (b.get("currency") or "").upper()
-            and sig_a == sig_b)
+            and sig_a == sig_b):
+        return False
+    for key in _OPTIONAL_KEYS:
+        in_a, in_b = key in a, key in b
+        if in_a != in_b:
+            return False              # 只有一側有該欄位 → 無法確認 → fail closed
+        if in_a and a.get(key) != b.get(key):
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -130,8 +149,25 @@ def resolve_current_price(latest_any: list[dict],
 
     max_sla = max(policy.hero_sla_hours, policy.cta_sla_hours,
                   policy.route_primary_sla_hours)
+    def _usable_age(row) -> float | None:
+        """回傳可用於 current 判定的 age(小時);不可用時回 None。
+
+        age 恰為 0.0(觀測與 export 同一秒)是**合法的最新資料**,必須視為
+        fresh。因此一律以 `is None` 判斷缺失,不得使用 `age or fallback`
+        這類會把 0.0 當成缺失值的寫法。
+
+        這裡不直接用 freshness.age_hours,因為它會把未來時間 clamp 成 0.0,
+        導致「observation 在未來」(時鐘或資料異常)被誤判成剛剛觀測。改以
+        共用的 _parse 取得有號差值,負值一律保守排除於 current candidate。
+        """
+        dt = _parse_ts(row.get("observed_at"))
+        if dt is None:
+            return None
+        a = (now - dt).total_seconds() / 3600.0
+        return None if a < 0 else a
+
     fresh = [r for r in _valid
-             if (age_hours(r["observed_at"], now) or 1e9) <= max_sla]
+             if (lambda a: a is not None and a <= max_sla)(_usable_age(r))]
     pick = _cheapest(fresh)
 
     if pick is None:
@@ -145,11 +181,11 @@ def resolve_current_price(latest_any: list[dict],
             last_observed_price=last["price"] if last else None,
             last_observed_at=last["observed_at"] if last else None)
 
-    age = age_hours(pick["observed_at"], now) or 0.0
+    age = _usable_age(pick)          # 已通過 fresh 過濾,必為非 None 且 >= 0
     ref = gmap.get(pick["depart_date"])
     if ref is not None and not (_valid_price(ref) and _same_trip(pick, ref)):
         ref = None            # 不同行程/無效價 → 不得作為衝突參考
-    ref_age = age_hours(ref["observed_at"], now) if ref else None
+    ref_age = _usable_age(ref) if ref else None   # None/負數 → 不作為參考
 
     state = FRESH_VERIFIED if not _is_cache(pick["source"]) else FRESH_ESTIMATE
     ref_price = ref_source = ref_at = pct = None

@@ -55,25 +55,25 @@ _CURRENT_WINDOW = """WHERE origin=? AND destination=? AND fare_class='any' AND s
                    AND depart_date <= date('now','+{near_term_days} days')"""
 
 _LATEST_ANY_SQL = """WITH ranked AS (
-                 SELECT depart_date, return_date, price, currency, carriers,
-                        stops, observed_at, source,
+                 SELECT origin, destination, depart_date, return_date, price,
+                        currency, carriers, stops, fare_class, observed_at, source,
                         ROW_NUMBER() OVER (PARTITION BY depart_date
                           ORDER BY observed_at DESC, id DESC) AS rk
                  FROM observations
                  {window})
-               SELECT depart_date, return_date, price, currency, carriers,
-                      stops, observed_at, source
+               SELECT origin, destination, depart_date, return_date, price,
+                      currency, carriers, stops, fare_class, observed_at, source
                FROM ranked WHERE rk=1 ORDER BY depart_date LIMIT 100"""
 
 _LATEST_GOOGLE_SQL = """WITH ranked AS (
-                 SELECT depart_date, return_date, price, currency, carriers,
-                        stops, observed_at, source,
+                 SELECT origin, destination, depart_date, return_date, price,
+                        currency, carriers, stops, fare_class, observed_at, source,
                         ROW_NUMBER() OVER (PARTITION BY depart_date
                           ORDER BY observed_at DESC, id DESC) AS rk
                  FROM observations
                  {window} AND source='google')
-               SELECT depart_date, return_date, price, currency, carriers,
-                      stops, observed_at, source
+               SELECT origin, destination, depart_date, return_date, price,
+                      currency, carriers, stops, fare_class, observed_at, source
                FROM ranked WHERE rk=1 ORDER BY depart_date LIMIT 100"""
 
 
