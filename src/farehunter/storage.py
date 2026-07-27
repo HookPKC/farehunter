@@ -95,6 +95,34 @@ class Store:
                 "avg": row["avg_price"], "median": median}
 
     # ---- alert dedup ---------------------------------------------------------
+    def latest_itinerary_google(self, *, origin: str, destination: str,
+                                depart_date: str, return_date: str | None,
+                                stops: int, fare_class: str, currency: str,
+                                not_after: str):
+        """同航程、observed_at 不晚於 not_after 的最新一筆 google 觀測。
+
+        供 Alert 的價格狀態解析使用（見 price_state）。比對鍵刻意保守:
+        route + 去回程日 + stops + fare_class + currency 全等,carrier 由
+        呼叫端以 carrier_signature 再比一次(本查詢不做 carrier 過濾,因為
+        carriers 欄位可能是逗號組合,字串比對不可靠)。
+
+        return_date 為 None 時直接回 None——單程無法與來回總價相比。
+        """
+        if not return_date:
+            return None
+        return self.conn.execute(
+            """SELECT id, origin, destination, depart_date, return_date, price,
+                      currency, carriers, stops, fare_class, source, provider,
+                      observed_at
+               FROM observations
+               WHERE origin=? AND destination=? AND depart_date=? AND return_date=?
+                 AND stops=? AND fare_class=? AND currency=? AND source='google'
+                 AND observed_at <= ?
+               ORDER BY observed_at DESC, id DESC LIMIT 1""",
+            (origin, destination, depart_date, return_date, stops, fare_class,
+             currency, not_after),
+        ).fetchone()
+
     def recently_alerted(self, origin: str, destination: str,
                          depart_date: str, price: float,
                          within_hours: int = 24,

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -14,8 +15,41 @@ from .travelpayouts import TravelpayoutsClient, parse_offers, TravelpayoutsError
 from .storage import Store
 from .analyzer import evaluate
 from .notify import notify, channels_configured
+from . import price_state
 
 log = logging.getLogger(__name__)
+
+
+def _resolve_state(store, offer, now):
+    """把 Aviasales candidate 解析成價格狀態。零 API：只讀既有 observations。
+
+    candidate 的 observed_at 即本輪抓取時刻（store.record 亦以此刻寫入），
+    因此以 now 代表；reference 取同航程、不晚於 now 的最新 google 觀測。
+    """
+    cand = price_state.PriceObservation(
+        origin=offer.origin, destination=offer.destination,
+        depart_date=offer.depart_date, return_date=offer.return_date,
+        price=offer.price, currency=offer.currency, carriers=offer.carriers,
+        stops=offer.stops, fare_class=offer.fare_class,
+        source=offer.source, observed_at=now)
+    row = store.latest_itinerary_google(
+        origin=offer.origin, destination=offer.destination,
+        depart_date=offer.depart_date, return_date=offer.return_date,
+        stops=offer.stops, fare_class=offer.fare_class,
+        currency=offer.currency, not_after=now.isoformat(timespec="seconds"))
+    ref = None
+    if row is not None:
+        obs = row["observed_at"]
+        ts = datetime.fromisoformat(obs.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ref = price_state.PriceObservation(
+            origin=row["origin"], destination=row["destination"],
+            depart_date=row["depart_date"], return_date=row["return_date"],
+            price=row["price"], currency=row["currency"], carriers=row["carriers"],
+            stops=row["stops"], fare_class=row["fare_class"],
+            source=row["source"], observed_at=ts)
+    return price_state.resolve_alert_price(cand, now, reference=ref)
 
 # ---- 防重複 guard（fail-open）----------------------------------------------
 # 目的：GitHub schedule、手動 Run、外部排程器（cron-job.org）任意組合觸發時，
@@ -86,7 +120,8 @@ def upcoming_months(n: int, today: date | None = None) -> list[str]:
 
 
 def run(config_path: str = "config.yaml", db_path: str = "prices.db",
-        web_export_path: str = WEB_EXPORT_PATH) -> dict:
+        web_export_path: str = WEB_EXPORT_PATH,
+        now: datetime | None = None) -> dict:
     skip, age = guard_decision(web_export_path)
     if skip:
         log.info("資料齡 %.0f 分鐘 < %d 分鐘，跳過本輪（防重複 guard；"
@@ -95,6 +130,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
         _emit_skip_output()
         return {"searched": 0, "recorded": 0, "alerts": 0, "errors": 0,
                 "skipped": True}
+    now = now or datetime.now(timezone.utc)   # production 不傳 → 真實時鐘
     cfg = load_config(config_path)
     defaults = cfg.get("defaults", {})
     client = TravelpayoutsClient()
@@ -136,21 +172,31 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     store.record(offer)
                     summary["recorded"] += 1
 
+                    # ---- evaluate 之前先解析價格狀態（零 API、只讀既有 DB）----
+                    # 系統可能已有同航程的 Google 觀測；VERIFIED 時用權威價去
+                    # 判定 deal，不符合就自然不產生 Alert（無 suppression）。
+                    pstate = _resolve_state(store, offer, now)
+                    eval_offer = offer
+                    if pstate.state == price_state.VERIFIED:
+                        eval_offer = replace(offer, price=pstate.selected_price)
+
                     verdict = evaluate(
-                        offer, stats,
+                        eval_offer, stats,
                         absolute_threshold=merged.get("absolute_threshold"),
                         drop_pct=merged.get("drop_pct", 25.0),
                         min_history=merged.get("min_history", 30),
                     )
+                    if not pstate.eligible_for_alert:
+                        continue          # candidate 過舊：不發主動通知
                     if verdict.is_deal and not store.recently_alerted(
                             origin, dest, offer.depart_date, offer.price):
-                        sent = notify(offer, verdict)
+                        sent = notify(eval_offer, verdict, pstate)
                         if not sent and channels_configured():
                             log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",
                                       origin, dest, offer.depart_date)
                             continue
                         store.record_alert(origin, dest, offer.depart_date,
-                                           offer.price, verdict.reason)
+                                           pstate.selected_price, verdict.reason)
                         summary["alerts"] += 1
 
                 time.sleep(merged.get("pause_seconds", 0.6))

@@ -138,7 +138,9 @@ def test_format_alert_uses_google_link_with_dates():
     assert "google.com/travel/flights" in text
     assert "aviasales" not in text
     assert "TPE⇄NRT" in text and "約 6,800 TWD" in text   # 快取來源 → 約值
-    assert "曾出現低價" in text and "偵測於" in text and "台灣時間" in text
+    # UNVERIFIED 文案:標題必須同時帶出「疑似低價」與「尚未經 Google 驗證」
+    assert "疑似低價" in text and "尚未經 Google 驗證" in text
+    assert "偵測於" in text and "台灣時間" in text
     assert "比價:" in text and "非即時報價" in text
     assert "Aviasales 快取估價" in text
     assert "天來回" in text

@@ -36,7 +36,30 @@ def _tw_now() -> str:
     return now.strftime("%m/%d %H:%M") + " 台灣時間"
 
 
-def format_alert(offer: Offer, verdict: Verdict) -> str:
+def _tw_stamp(ts) -> str:
+    """把 datetime 或 ISO 字串轉成台灣時間 MM/DD HH:MM。"""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    if ts is None:
+        return ""
+    if isinstance(ts, str):
+        try:
+            ts = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return ts[:16]
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=_tz.utc)
+    return (ts.astimezone(_tz(_td(hours=8)))).strftime("%m/%d %H:%M")
+
+
+def format_alert(offer: Offer, verdict: Verdict, state=None) -> str:
+    """組出 LINE／Telegram 文案。
+
+    state 為 price_state.PriceState（可為 None，代表沿用舊的未驗證語意）。
+    三種狀態的標題與來源行必須讓使用者一眼分辨:
+      VERIFIED   已驗證低價 —— 使用權威價，標示驗證時間
+      CONFLICT   同航程價格有落差 —— 同列兩個價格與兩個觀測時間，不宣稱誰對
+      UNVERIFIED 疑似低價 —— 明確標示快取估價、非即時成交報價
+    """
     from datetime import date as _d
     dep = _d.fromisoformat(offer.depart_date)
     day = f"{offer.depart_date} 週{WEEKDAYS[dep.weekday()]}"
@@ -49,7 +72,34 @@ def format_alert(offer: Offer, verdict: Verdict) -> str:
         q += f" through {offer.return_date}"
     from urllib.parse import quote
     booking = "https://www.google.com/travel/flights?q=" + quote(q)
+    route = f"{offer.origin}⇄{offer.destination}"
 
+    st = getattr(state, "state", None)
+
+    if st == "verified":
+        return (
+            f"✈️ 已驗證低價 {route}・直飛\n"
+            f"日期: {day}\n"
+            f"Google 實價: {state.selected_price:,.0f} {offer.currency}（{who}）\n"
+            f"驗證於 {_tw_stamp(state.selected_observed_at)} 台灣時間\n"
+            f"觸發: {verdict.detail}\n"
+            f"立即比價: {booking}"
+        )
+
+    if st == "conflict":
+        return (
+            f"⚠️ 同航程價格有落差 {route}・直飛\n"
+            f"日期: {day}\n"
+            f"Aviasales 快取: 約 {round(state.selected_price / 100) * 100:,.0f} "
+            f"{offer.currency}（{_tw_stamp(state.selected_observed_at)}）\n"
+            f"Google 近期參考: {state.reference_price:,.0f} {offer.currency}"
+            f"（{_tw_stamp(state.reference_observed_at)}）\n"
+            f"價差: {abs(state.reference_price - state.selected_price):,.0f}"
+            f"（{state.conflict_percentage:.0f}%）\n"
+            f"目前售價尚未確認，請立即比價:\n{booking}"
+        )
+
+    # UNVERIFIED（或未傳 state 時的預設）：沿用既有的誠實快取語意
     is_cache = (offer.source or "").lower() in _CACHE_SOURCES
     if is_cache:
         shown = f"約 {round(offer.price / 100) * 100:,.0f}"
@@ -60,7 +110,7 @@ def format_alert(offer: Offer, verdict: Verdict) -> str:
     src = _SOURCE_LABEL.get((offer.source or "").lower(), offer.source or "未知來源")
 
     return (
-        f"✈️ 曾出現低價 {offer.origin}⇄{offer.destination}\n"
+        f"✈️ 疑似低價 {route}・直飛・尚未經 Google 驗證\n"
         f"日期: {day}\n"
         f"觀測到: {shown} {offer.currency}（{who}, 直飛）\n"
         f"來源: {src}・偵測於 {_tw_now()}\n"
@@ -111,9 +161,9 @@ def channels_configured() -> bool:
                 or os.environ.get("TELEGRAM_BOT_TOKEN"))
 
 
-def notify(offer: Offer, verdict: Verdict) -> list[str]:
+def notify(offer: Offer, verdict: Verdict, state=None) -> list[str]:
     """Send to all configured channels; return the list that succeeded."""
-    text = format_alert(offer, verdict)
+    text = format_alert(offer, verdict, state)
     sent = []
     if send_telegram(text):
         sent.append("telegram")
