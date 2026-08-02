@@ -184,9 +184,13 @@ def test_hero_candidate_matches_frontend_authoritative(tmp_path):
     # 同航線兩格,Hero 應為價格最低者(與前端 reduce 同義)
     _obs(store, "KHH", "NRT", dep_hi, _future(60), 15000, _iso(50))
     _obs(store, "KHH", "NRT", dep_lo, _future(45), 8000, _iso(50))
-    latest = authoritative_latest(store.conn, "KHH", "NRT")
+    # 前端權威 helper 與 Hero picker 必須用同一個固定時間基準,否則兩者會
+    # 各自對照不同的「今天」,測試結果就會隨執行日期漂移。
+    latest = authoritative_latest(store.conn, "KHH", "NRT",
+                                  as_of_date=TEST_TODAY, as_of_ts=TEST_NOW_REF)
     hero = hero_from_latest(latest)
-    cands = hero_candidates(store.conn, [{"origin": "KHH", "destination": "NRT"}], today=TEST_TODAY)
+    cands = hero_candidates(store.conn, [{"origin": "KHH", "destination": "NRT"}],
+                            today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert cands and cands[0]["depart_date"] == hero["depart_date"]
     assert cands[0]["price"] == hero["price"] == 8000
 
@@ -652,3 +656,126 @@ def test_result_independent_of_wall_clock(tmp_path):
     key = lambda ps: [(p["origin"], p["destination"], p["depart_date"],
                        p["return_date"], p["kind"]) for p in ps]
     assert key(a) == key(b)
+
+
+# ============ 注入式時鐘:跨月／跨年邊界(deterministic clock)===============
+# 背景:authoritative_latest 的視窗原本寫死 SQL 的 date('now'),而測試 fixture
+# 綁 TEST_TODAY。2026-08-01 跨月時「次月一日」下界由 08-21 跳到 09-01,把種在
+# 08-26 的 Hero 觀測踢出視窗 → plans 由 6 掉到 5,CI 連續紅燈。
+# 修法是把時間來源改成 bind parameter,以下測試鎖住「結果只由注入日期決定」。
+
+from farehunter.export_web import (                      # noqa: E402
+    _as_of_pair, authoritative_latest as _auth_latest,
+)
+
+
+def _seed_six_plan_fixture(store, tmp_path, base: date):
+    """以任意 base 日期種出可產生 6 plans 的固定 fixture(不碰真實今天)。"""
+    def fut(n):
+        return (base + timedelta(days=n)).isoformat()
+
+    def hero_dep(off):
+        d = base + timedelta(days=off)
+        nm = (base.replace(day=1) + timedelta(days=32)).replace(day=1)
+        return (d if d >= nm else nm + timedelta(days=7)).isoformat()
+
+    _seed_alert(store, o="TPE", d="NRT", dep=fut(40), ret=fut(45))
+    rp = _ranked_file(tmp_path, [("KHH", "FUK", fut(50), fut(55), 12000, _iso(300))])
+    _obs(store, "KHH", "OKA", hero_dep(42), fut(47), 9000, _iso(50))
+    cfg = {"routes": ROUTES + [
+        {"origin": "KHH", "destination": "FUK", "absolute_threshold": 12000},
+        {"origin": "KHH", "destination": "OKA", "absolute_threshold": 9000}]}
+    return cfg, rp
+
+
+def _plans_for(tmp_path, base: date, hhmm: str = "12:00:00"):
+    store = _store(tmp_path)
+    cfg, rp = _seed_six_plan_fixture(store, tmp_path, base)
+    now_ref = f"{base.isoformat()} {hhmm}"
+    # alert fixture 以 _iso() 相對 TEST_NOW 種下,故 alert 窗仍用 TEST_NOW_REF;
+    # 日期視窗則由 base 決定——正是要驗證的注入點。
+    return build_plans(cfg, store, base, ranked_path=rp, now_ref=TEST_NOW_REF)
+
+
+def test_month_end_as_of_yields_six_plans(tmp_path):
+    """月底(7/31):固定 fixture 產生 6 plans。"""
+    assert len(_plans_for(tmp_path, date(2026, 7, 31))) == 6
+
+
+def test_first_of_month_as_of_yields_six_plans(tmp_path):
+    """跨月當天(8/1):同樣規則、對應的固定 fixture,仍為 6 plans。
+    這正是 2026-08-01 讓 CI 紅燈的那一天。"""
+    assert len(_plans_for(tmp_path, date(2026, 8, 1))) == 6
+
+
+def test_year_boundary_as_of_is_stable(tmp_path):
+    """跨年(12/31 → 1/1):兩側都穩定產生 6 plans。"""
+    assert len(_plans_for(tmp_path, date(2026, 12, 31))) == 6
+    assert len(_plans_for(tmp_path, date(2027, 1, 1))) == 6
+
+
+def test_leap_day_as_of_does_not_error(tmp_path):
+    """閏年 2/28→2/29→3/1 不得產生日期錯誤。"""
+    for b in (date(2028, 2, 28), date(2028, 2, 29), date(2028, 3, 1)):
+        assert len(_plans_for(tmp_path, b)) == 6
+
+
+def test_same_fixture_same_as_of_is_independent_of_real_today(tmp_path):
+    """同一組固定輸入 + 同一個 as_of → 結果逐項相同,與真實執行日期無關。"""
+    def sig(base):
+        return [(p["kind"], p.get("slot_kind"), p["origin"], p["destination"],
+                 p["depart_date"], p["return_date"])
+                for p in _plans_for(tmp_path, base)]
+    a = sig(date(2026, 7, 31))
+    b = sig(date(2026, 7, 31))
+    assert a == b and len(a) == 6
+    # 不同注入日期本來就該產生不同視窗下界 → 不得相同
+    assert sig(date(2026, 8, 1)) != [] and len(sig(date(2026, 8, 1))) == 6
+
+
+def test_window_lower_bound_follows_injected_date(tmp_path):
+    """下界必須跟著注入日期走,而不是 CI 當天。"""
+    store = _store(tmp_path)
+    # 種一格 2026-08-26:7/31 視角在視窗內,8/1 視角(次月一日=9/1)則被排除
+    _obs(store, "KHH", "NRT", "2026-08-26", "2026-08-31", 8000, _iso(50))
+    on = _auth_latest(store.conn, "KHH", "NRT",
+                      as_of_date=date(2026, 7, 31), as_of_ts="2026-07-31 12:00:00")
+    off = _auth_latest(store.conn, "KHH", "NRT",
+                       as_of_date=date(2026, 8, 1), as_of_ts="2026-08-01 12:00:00")
+    assert [r["depart_date"] for r in on] == ["2026-08-26"]
+    assert off == []
+
+
+def test_as_of_pair_defaults_to_utc_not_local_today():
+    """production 預設:未注入時使用真實 UTC 日期,與 SQLite date('now') 等價。"""
+    import sqlite3
+    from datetime import datetime as _dt, timezone as _tz
+    date_s, ts_s = _as_of_pair()
+    utc_now = _dt.now(_tz.utc)
+    assert date_s == utc_now.strftime("%Y-%m-%d")
+    conn = sqlite3.connect(":memory:")
+    sql_date = conn.execute("SELECT date('now')").fetchone()[0]
+    conn.close()
+    assert date_s == sql_date            # 與 SQLite 的 UTC 語意一致
+    assert ts_s.startswith(date_s)
+
+
+def test_as_of_pair_accepts_date_and_str():
+    d, t = _as_of_pair(date(2026, 7, 15), "2026-07-15 12:00:00")
+    assert d == "2026-07-15" and t == "2026-07-15 12:00:00"
+    d2, t2 = _as_of_pair("2026-07-15", None)
+    assert d2 == "2026-07-15" and t2 is not None      # ts 退回真實 UTC now
+
+
+def test_production_default_matches_legacy_now_semantics(tmp_path):
+    """未注入時的結果,必須與原本寫死 date('now') 的語意相同。"""
+    import sqlite3
+    store = _store(tmp_path)
+    conn = store.conn
+    lo1, lo2, hi = conn.execute(
+        "SELECT date('now','start of month','+1 month'),"
+        " date('now','+21 days'), date('now','+90 days')").fetchone()
+    inside = max(lo1, lo2)
+    _obs(store, "KHH", "NRT", inside, hi, 8000, _iso(1))
+    rows = _auth_latest(conn, "KHH", "NRT")          # 不傳 as_of → 真實 UTC
+    assert [r["depart_date"] for r in rows] == [inside]

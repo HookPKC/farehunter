@@ -25,19 +25,21 @@ except ImportError:                     # pragma: no cover
 # 本清單價格最低那格(前端 index.html reduce 同義)。FSC 的 Hero 驗證候選
 # 必須呼叫本 helper,不得複製另一份 SQL,以免與首頁顯示漂移。
 # 視窗與排序若要修改,改這裡一處即可,export 與 FSC 同步生效。
+# 時間來源以 bind parameter 注入(見 authoritative_latest 的 as_of_*):
+# 視窗規則逐字不變,只把 'now' 換成可注入的基準,讓測試能用固定時鐘。
 _AUTHORITATIVE_LATEST_SQL = """WITH ranked AS (
                  SELECT depart_date, return_date, price, currency, carriers,
                         stops, observed_at, source,
                         ROW_NUMBER() OVER (
                           PARTITION BY depart_date
                           ORDER BY (source='google'
-                                    AND observed_at >= datetime('now','-14 days')) DESC,
+                                    AND observed_at >= datetime(?,'-14 days')) DESC,
                                    observed_at DESC, id DESC) AS rk
                  FROM observations
                  WHERE origin=? AND destination=? AND fare_class='any' AND stops=0
-                   AND depart_date >= date('now','start of month','+1 month')
-                   AND depart_date >= date('now','+21 days')
-                   AND depart_date <= date('now','+{near_term_days} days'))
+                   AND depart_date >= date(?,'start of month','+1 month')
+                   AND depart_date >= date(?,'+21 days')
+                   AND depart_date <= date(?,'+{near_term_days} days'))
                SELECT depart_date, return_date, price, currency, carriers,
                       stops, observed_at, source
                FROM ranked WHERE rk=1
@@ -91,12 +93,45 @@ def latest_google(conn, o: str, d: str, near_term_days: int = NEAR_TERM_DAYS) ->
     return [dict(r) for r in conn.execute(sql, (o, d))]
 
 
+def _as_of_pair(as_of_date=None, as_of_ts=None) -> tuple[str, str]:
+    """把可選的日期/時間基準正規化成 (ISO 日期, SQL 時間字串)。
+
+    兩者皆為 None 時使用**真實 UTC 現在**,與 SQLite 的 date('now') /
+    datetime('now') 語意完全一致(SQLite 的 'now' 就是 UTC)。刻意不使用
+    date.today(),因為那是本機時區,在非 UTC 環境會與 SQL 差一天。
+
+    只給 as_of_date(例如 planner 的 today)時,時間基準仍走真實 UTC 現在——
+    這讓 production 的 14 天 google 優先窗行為逐字不變。
+    """
+    _utc = datetime.now(timezone.utc)
+    if as_of_date is None:
+        date_s = _utc.strftime("%Y-%m-%d")
+    elif isinstance(as_of_date, str):
+        date_s = as_of_date[:10]
+    else:
+        date_s = as_of_date.strftime("%Y-%m-%d")
+    if as_of_ts is None:
+        ts_s = _utc.strftime("%Y-%m-%d %H:%M:%S")
+    elif isinstance(as_of_ts, str):
+        ts_s = as_of_ts
+    else:
+        ts_s = as_of_ts.strftime("%Y-%m-%d %H:%M:%S")
+    return date_s, ts_s
+
+
 def authoritative_latest(conn, o: str, d: str,
-                         near_term_days: int = NEAR_TERM_DAYS) -> list[dict]:
+                         near_term_days: int = NEAR_TERM_DAYS,
+                         as_of_date=None, as_of_ts=None) -> list[dict]:
     """回傳某航線近期價格日曆:每個 depart_date 一格權威價(dict list)。
-    這是 Hero/chips 的單一真相來源;export 與 FSC 共用此函式。"""
-    return [dict(r) for r in conn.execute(
-        _AUTHORITATIVE_LATEST_SQL.format(near_term_days=near_term_days), (o, d))]
+    這是 Hero/chips 的單一真相來源;export 與 FSC 共用此函式。
+
+    as_of_date / as_of_ts 為可注入的時間基準,沿用 planner 既有的
+    (today, now_ref) 雙時間源慣例。兩者皆不傳時走真實 UTC 現在,
+    production 行為與原本的 date('now') / datetime('now') 完全相同。
+    """
+    date_s, ts_s = _as_of_pair(as_of_date, as_of_ts)
+    sql = _AUTHORITATIVE_LATEST_SQL.format(near_term_days=int(near_term_days))
+    return [dict(r) for r in conn.execute(sql, (ts_s, o, d, date_s, date_s, date_s))]
 
 
 def hero_from_latest(latest: list[dict]) -> dict | None:
@@ -144,7 +179,8 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
         # per-date dedup ordering as intelligence._SELECT (see NEAR_TERM_DAYS) so
         # Hero/Cheapest here == Recommended cheapest there, by construction. Far
         # months live in the monthly strip, not here.
-        latest = authoritative_latest(conn, o, d)
+        latest = authoritative_latest(conn, o, d,
+                                      as_of_date=_now.date(), as_of_ts=_now)
 
         # google-sourced chips carry no airline; attach the aviasales
         # reference airline seen for the same departure date (approximate)

@@ -301,7 +301,8 @@ def cta_candidates(ranked_path: str = "docs/ranked.json",
 
 
 def hero_candidates(conn, routes: list[dict],
-                    today: date | None = None) -> list[dict]:
+                    today: date | None = None,
+                    now_ref: str | None = None) -> list[dict]:
     """各監控航線目前 Hero(首頁大字)背後的權威 route/date,取最久未經
     Google 實價背書者先。Hero 選擇完全複用 export_web 的權威 helper,保證
     與首頁顯示同一筆。純 DB 讀取、零 API。
@@ -311,7 +312,8 @@ def hero_candidates(conn, routes: list[dict],
     out = []
     for rt in routes:
         o, d = rt["origin"], rt["destination"]
-        hero = hero_from_latest(authoritative_latest(conn, o, d))
+        hero = hero_from_latest(authoritative_latest(
+            conn, o, d, as_of_date=today, as_of_ts=now_ref))
         if hero is None:
             continue
         dep_s, ret_s = hero["depart_date"], hero.get("return_date")
@@ -352,7 +354,7 @@ def build_verification_plans(conn, thresholds, routes,
     claimed_routes = {(o, d) for (o, d, _dep, _ret) in claimed_trips}
     pools = [alert_candidates(conn, thresholds, today, now_ref=now_ref),
              cta_candidates(ranked_path, today),
-             hero_candidates(conn, routes, today)]
+             hero_candidates(conn, routes, today, now_ref=now_ref)]
     plans: list[dict] = []
 
     def _try_pick(pool, allow_same_route):
