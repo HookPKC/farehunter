@@ -15,6 +15,7 @@ from .travelpayouts import TravelpayoutsClient, parse_offers, TravelpayoutsError
 from .storage import Store
 from .analyzer import evaluate
 from .notify import notify, channels_configured
+from . import health
 from . import price_state
 
 log = logging.getLogger(__name__)
@@ -129,13 +130,19 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                  age, GUARD_MINUTES)
         _emit_skip_output()
         return {"searched": 0, "recorded": 0, "alerts": 0, "errors": 0,
-                "skipped": True}
+                "empty": 0, "zero_record_routes": [], "skipped": True}
     now = now or datetime.now(timezone.utc)   # production 不傳 → 真實時鐘
     cfg = load_config(config_path)
     defaults = cfg.get("defaults", {})
     client = TravelpayoutsClient()
     store = Store(db_path)
-    summary = {"searched": 0, "recorded": 0, "alerts": 0, "errors": 0}
+    # empty / zero_record_routes 是零結果可觀測性的核心計數（見 health.py 的
+    # 存在理由）：empty 數「API 成功但解析後零筆」的月份次數，
+    # zero_record_routes 列出整輪一筆都沒寫進 DB 的航線。兩者都不是錯誤——
+    # 薄航線偶爾回空是正常的——但必須可數、可見，否則一條航線可以連續 9 天
+    # 全空而 workflow 從頭到尾綠燈。
+    summary = {"searched": 0, "recorded": 0, "alerts": 0, "errors": 0,
+               "empty": 0, "zero_record_routes": []}
     today_iso = date.today().isoformat()
 
     try:
@@ -144,6 +151,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
             merged = {**defaults, **route}
             months = upcoming_months(merged.get("months_ahead", 6))
             stats = store.route_stats(origin, dest)   # stats BEFORE this run
+            route_recorded = 0
+            route_empty = 0
 
             for month in months:
                 summary["searched"] += 1
@@ -164,6 +173,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     max_stops=0 if merged.get("non_stop") else None)
                 if not offers:
                     log.info("No cached fares %s→%s %s", origin, dest, month)
+                    summary["empty"] += 1
+                    route_empty += 1
                     continue
 
                 for offer in offers:
@@ -171,6 +182,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                         continue                      # stale cache entry
                     store.record(offer)
                     summary["recorded"] += 1
+                    route_recorded += 1
 
                     # ---- evaluate 之前先解析價格狀態（零 API、只讀既有 DB）----
                     # 系統可能已有同航程的 Google 觀測；VERIFIED 時用權威價去
@@ -216,6 +228,32 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                         summary["alerts"] += 1
 
                 time.sleep(merged.get("pause_seconds", 0.6))
+
+            if route_recorded == 0:
+                # 本輪這條航線一筆都沒寫進 DB。單次不代表故障（薄航線正常會
+                # 有空輪），但必須被數到並升級成 warning——這是 KHH→NGO 能
+                # 連續 9 天無人察覺的直接原因。
+                summary["zero_record_routes"].append(
+                    health.route_key(origin, dest))
+                log.warning("航線本輪零記錄 %s→%s（%d/%d 個月回空）",
+                            origin, dest, route_empty, len(months))
+
+        if summary["zero_record_routes"]:
+            log.error("本輪完全沒有抓到資料的航線 %d/%d 條：%s",
+                      len(summary["zero_record_routes"]), len(cfg["routes"]),
+                      ", ".join(summary["zero_record_routes"]))
+
+        # 累積視角：本輪零記錄只看當下，觀測齡才能抓到「已經斷線多天」。
+        # 用 config 的航線清單而非 DB DISTINCT，否則從未成功抓過的航線
+        # 永遠不會出現在健康報告裡。
+        health_block = health.build_health_safe(
+            store.conn,
+            [(r["origin"], r["destination"]) for r in cfg["routes"]],
+            now)
+        health.log_health(health_block)
+        summary["health"] = None if health_block is None else {
+            "counts": health_block["counts"],
+            "degraded": health_block["degraded"]}
     finally:
         store.close()
 

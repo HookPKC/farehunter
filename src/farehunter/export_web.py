@@ -19,6 +19,11 @@ try:
 except ImportError:                     # pragma: no cover
     from .current_price import resolve_current_price
 
+try:
+    from farehunter import health
+except ImportError:                     # pragma: no cover
+    from . import health
+
 
 # 首頁「權威近期價格日曆」的單一真相來源(SSOT)。每個 depart_date 一格,
 # 排序規則:14 天內的 fresh google 無條件優先,其次最新觀測。Hero 大字 =
@@ -151,8 +156,28 @@ def _route_insight(conn, o, d):
         return None      # 表尚未建立（快照還沒跑過）
 
 
+def _health_route_list(config_path: str, observed: list[tuple[str, str]]
+                       ) -> list[tuple[str, str]]:
+    """健康檢查的航線清單:以 config.yaml 為真相,讀不到才退回已觀測航線。
+
+    fail-open:export 是五個 writer 共用的最後一步,不能因為讀不到 config
+    就整個掛掉。退回已觀測航線時健康報告仍然有效,只是抓不到「config 有列
+    但從未成功抓過」的航線。
+    """
+    try:
+        import yaml
+        cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        routes = [(r["origin"], r["destination"]) for r in cfg.get("routes", [])]
+        if routes:
+            return routes
+    except Exception:                   # noqa: BLE001 — fail-open
+        pass
+    return observed
+
+
 def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
-           now: datetime | None = None) -> dict:
+           now: datetime | None = None,
+           config_path: str = "config.yaml") -> dict:
     _now = now or datetime.now(timezone.utc)   # 可注入,供測試固定時鐘
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -281,6 +306,18 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
         "SELECT COUNT(*) c FROM alerts WHERE sent_at >= datetime('now','-24 hours')"
     ).fetchone()["c"]
     total_obs = conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"]
+
+    # 航線健康。放進 data.json 而非另開檔案:五個 writer 都只 git add
+    # prices.db + docs/data.json（+ 各自的 report），新檔案不會被 commit,
+    # 而本輪不授權改 workflow。附帶好處是每輪 commit 的 diff 都會顯示
+    # 狀態變化,git log 本身就成為斷線時間軸。
+    # build_health_safe 失敗時回 None,payload 就帶 health: null——刻意不塞
+    # 「全部健康」的空殼,那會被讀成「沒有異常」（絕不 silent fallback）。
+    health_block = health.build_health_safe(
+        conn,
+        _health_route_list(config_path,
+                           [(rr["origin"], rr["destination"]) for rr in route_rows]),
+        _now)
     conn.close()
 
     payload = {
@@ -288,6 +325,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
         "env": os.environ.get("DATA_SOURCE_LABEL", "aviasales"),
         "totals": {"observations": total_obs, "routes": len(routes),
                    "alerts_24h": alerts_24h},
+        "health": health_block,
         "routes": routes,
         "alerts": alerts,
     }
@@ -304,3 +342,9 @@ if __name__ == "__main__":
     p = export(db, out)
     print(f"exported {p['totals']['observations']} observations, "
           f"{p['totals']['routes']} routes -> {out}")
+    _h = p["health"]
+    if _h is None:
+        print("route health: unavailable")
+    else:
+        print(f"route health: {_h['counts']}"
+              + (f"  degraded: {', '.join(_h['degraded'])}" if _h["degraded"] else ""))
