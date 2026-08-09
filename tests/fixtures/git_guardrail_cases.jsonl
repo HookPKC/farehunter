@@ -1,0 +1,31 @@
+{"expect":"block","command":"git push --force"}
+{"expect":"block","command":"git push -f origin main"}
+{"expect":"block","command":"git push --force-with-lease origin main"}
+{"expect":"block","command":"git push origin :old-branch"}
+{"expect":"block","command":"git push origin --delete old-branch"}
+{"expect":"block","command":"git reset --hard origin/main"}
+{"expect":"block","command":"git clean -fd"}
+{"expect":"block","command":"git clean -xf"}
+{"expect":"block","command":"git branch -D claude/foo"}
+{"expect":"block","command":"git checkout ."}
+{"expect":"block","command":"git restore ."}
+{"expect":"block","command":"git add -A && git push --force"}
+{"expect":"block","command":"cd /repo; git reset --hard HEAD~3"}
+{"expect":"block","command":"git status\ngit push -f"}
+{"expect":"block","command":"sudo git clean -fdx"}
+{"expect":"pass","command":"git push -u origin claude/install-this-odp5yo"}
+{"expect":"pass","command":"git push origin main"}
+{"expect":"pass","command":"git status"}
+{"expect":"pass","command":"git commit -m 'fix'"}
+{"expect":"pass","command":"git checkout main"}
+{"expect":"pass","command":"git checkout -b feature"}
+{"expect":"pass","command":"git restore --staged file.py"}
+{"expect":"pass","command":"git reset HEAD~1"}
+{"expect":"pass","command":"git clean -n"}
+{"expect":"pass","command":"git branch -d merged-branch"}
+{"expect":"pass","command":"python3 -m pytest tests/ -q"}
+{"expect":"pass","command":"grep -f patterns.txt file.txt"}
+{"expect":"pass","command":"echo 'never run git push --force here'"}
+{"expect":"pass","command":"git commit -F - <<'EOF'\nchore: document that git push --force is blocked\nEOF"}
+{"expect":"pass","command":"cat docs/notes.md | grep 'git reset --hard'"}
+{"expect":"pass","command":"git log --oneline -1 && git push -u origin main"}
