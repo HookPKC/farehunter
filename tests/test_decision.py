@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from farehunter.decision import (RouteContext, evaluate, WEIGHTS,
+from farehunter.decision import (RouteContext, evaluate, WEIGHTS, VALUE_WEIGHTS,
                                  _price_subscore, _confidence_level)
 from farehunter.normalize import from_observation
 from farehunter.storage import Store
@@ -31,13 +31,48 @@ def _ctx(**kw):
     return RouteContext(**base)
 
 
+#: 釘住時鐘，讓 freshness 與 decided_at 可預測——期望值寫死就必須先消掉時間變數。
+_NOW = dt.datetime(2026, 9, 1, 12, 0, tzinfo=dt.timezone.utc)
+_OBSERVED = dt.datetime(2026, 9, 1, 10, 0, tzinfo=dt.timezone.utc)   # 2 小時前
+
+
+def test_weights_sum_to_one():
+    """WEIGHTS 是加權平均的權重，總和必須是 1.0，否則 total 會跑出 0-100 之外。
+
+    這條單獨測，因為它是下面那個測試無法涵蓋的不變式。
+    """
+    assert round(sum(WEIGHTS.values()), 10) == 1.0
+    assert round(sum(VALUE_WEIGHTS.values()), 10) == 1.0
+
+
 def test_decision_has_all_five_subscores_and_blended_total():
-    d = evaluate(_off(), _ctx(), durs=[150, 190, 240])
-    for k in ("price", "freshness", "duration", "source_reliability", "confidence"):
-        assert 0 <= d.subscores[k] <= 100
-    manual = sum(WEIGHTS[k] * d.subscores[k] for k in WEIGHTS)
-    assert abs(d.total - round(manual)) <= 1        # total is the weighted blend
-    assert 1 <= d.stars <= 5
+    """期望值全部寫死。
+
+    這裡刻意不用 `sum(WEIGHTS[k] * subscores[k])` 反推期望值——那是拿答案對
+    答案：權重改錯時，期望值會跟著錯一樣多，測試照樣綠。實測把 price 權重從
+    0.40 改成 0.99（連總和=1.0 都破壞了），舊版的 9 個測試全數通過。
+    """
+    d = evaluate(_off(observed_at=_OBSERVED.isoformat()),
+                 _ctx(now=_NOW), durs=[150, 190, 240])
+    assert d.subscores == {"price": 67, "freshness": 99, "duration": 56,
+                           "source_reliability": 90, "confidence": 100}
+    assert d.total == 78          # 0.40×67 + 0.15×(99+56+90+100) = 78.55 → 79? 見下
+    assert d.stars == 4
+    assert d.confidence == "High"
+
+
+def test_total_is_computed_from_unrounded_subscores():
+    """total 用的是未取整的子分數，不是顯示出來的整數。
+
+    顯示值反推會得到 78.55（進位成 79），但 total 是 78——差異來自子分數在
+    加權前還沒取整。這個測試把這件事釘住：若哪天改成「先取整再加權」，
+    分數會悄悄偏移，而使用者看到的 subscores 仍然一模一樣。
+    """
+    d = evaluate(_off(observed_at=_OBSERVED.isoformat()),
+                 _ctx(now=_NOW), durs=[150, 190, 240])
+    from_displayed = sum(WEIGHTS[k] * d.subscores[k] for k in WEIGHTS)
+    assert round(from_displayed, 2) == 78.55
+    assert d.total == 78 and d.total != round(from_displayed)
 
 
 def test_price_subscore_anchors():
