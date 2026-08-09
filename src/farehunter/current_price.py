@@ -21,7 +21,9 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 
 from .freshness import _parse as _parse_ts
-from .price_state import carrier_signature
+from .normalize import CACHE_SOURCES
+from .price_state import (carrier_signature,
+                          CONFLICT_WINDOW_HOURS, CONFLICT_PCT)
 
 FRESH_VERIFIED = "fresh_verified"
 FRESH_ESTIMATE = "fresh_estimate"
@@ -31,10 +33,9 @@ NO_RECENT_PRICE = "no_recent_price"
 #: 各 current surface 的新鮮度 SLA(小時)
 SURFACE_SLA_HOURS = {"hero": 24.0, "cta": 24.0, "route_primary": 48.0}
 
-CONFLICT_WINDOW_HOURS = 48.0
-CONFLICT_PCT = 10.0
-
-_CACHE_SOURCES = {"aviasales", "travelpayouts"}
+# 衝突窗與差幅門檻與 Alert 端共用同一組定義(price_state)——通知說「有落差」
+# 而網站說「沒問題」是使用者看得見的不一致,兩邊必須永遠同步。此處刻意
+# re-export,讓既有的 `from .current_price import CONFLICT_PCT` 仍然可用。
 
 
 @dataclass(frozen=True)
@@ -50,7 +51,7 @@ DEFAULT_CURRENT_POLICY = CurrentPolicy()
 
 
 def _is_cache(source: str | None) -> bool:
-    return (source or "").lower() in _CACHE_SOURCES
+    return (source or "").lower() in CACHE_SOURCES
 
 
 def _pct(a: float, b: float) -> float:

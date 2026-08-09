@@ -1,11 +1,16 @@
-"""FIE v2 — Provider reliability layer.
+"""Provider reliability layer.
 
 Two signals combine into a 0..1 reliability score per provider:
   1. Base reliability (static config, our prior trust in the source).
-  2. Dynamic success rate from a provider_stats table, updated whenever
-     ProviderManager performs a live query.
+  2. Dynamic success rate from a provider_stats table, written by whichever
+     caller performs the live query (via `record`).
 When no dynamic stats exist yet, the base score is used (warehouse-derived
 recency can also be consulted via last_success_age).
+
+Note: no production path currently calls `record`, so provider_stats is empty
+and `reliability()` returns the base score. The dynamic half is kept because
+`record` is a two-line call any future live-query caller can make; if that
+never happens, this module can collapse to BASE_RELIABILITY alone.
 """
 from __future__ import annotations
 
