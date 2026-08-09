@@ -7,10 +7,6 @@ from typing import Optional
 
 from .models import Offer
 
-#: 沒有任何歷史觀測的出發日。n=0 讓 analyzer 的 min_history 閘門自然擋下
-#: new_low / big_drop，absolute 則照常可用（第一天就該能觸發）。
-EMPTY_STATS = {"n": 0, "min": None, "avg": None, "median": None}
-
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS observations (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,17 +93,40 @@ class Store:
         )
         self.conn.commit()
 
+    def route_stats(self, origin: str, destination: str) -> dict:
+        """整條航線的歷史統計（跨所有出發日）。供 new_low 使用。
+
+        「這條航線史上最便宜」是一個極值事件——罕見、明確、值得打擾使用者。
+        實測 5 週只觸發 3 次。這個語意必須用整條航線的資料才成立；改成單日
+        基準會讓它退化成「這個日期又刷新自己的紀錄」，實測暴增到 147 次。
+        """
+        row = self.conn.execute(
+            """SELECT COUNT(*) AS n, MIN(price) AS min_price, AVG(price) AS avg_price
+               FROM observations WHERE origin=? AND destination=? AND fare_class='any'""",
+            (origin, destination),
+        ).fetchone()
+        median = None
+        if row["n"]:
+            prices = [r["price"] for r in self.conn.execute(
+                "SELECT price FROM observations WHERE origin=? AND destination=? "
+                "AND fare_class='any' ORDER BY price",
+                (origin, destination))]
+            mid = len(prices) // 2
+            median = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
+        return {"n": row["n"], "min": row["min_price"],
+                "avg": row["avg_price"], "median": median}
+
     def route_stats_by_date(self, origin: str, destination: str) -> dict:
-        """每個出發日各自的歷史統計：{depart_date: {n, min, avg, median}}。
+        """每個出發日各自的歷史統計：{depart_date: {n, min, avg, median}}。供 big_drop 使用。
 
-        取代原本的「整條航線統計」。分析 108k 筆觀測後的結論：同一條航線不同
-        出發日的均價差距極大——TPE→KIX 從 5,853 到 45,862（7.8 倍），TPE→NRT
-        從 6,019 到 25,354（4.2 倍）。把淡季與旺季混在一起算出來的中位數，拿來
-        判斷單一價格是否「大跌」既不代表這天便宜，也不代表值得買：實測 100 則
-        big_drop 通知，100 則的價格都高於該航線自己設定的 absolute_threshold。
+        big_drop 問的是「這一天相對於它自己平常的價格，是不是反常地便宜」，
+        所以基準必須是單日。原本比的是整條航線的中位數，但同一條航線不同出發
+        日的均價差距極大——TPE→KIX 從 5,853 到 45,862（7.8 倍），TPE→NRT 從
+        6,019 到 25,354（4.2 倍）。淡旺季混算出的中位數對任何一天都不具代表性：
+        實測 100 則 big_drop 通知，100 則的價格都高於該航線設定的門檻。
 
-        改以「這一天自己的歷史」為基準後，min_history 也自然變成單日門檻——
-        歷史不足的出發日不觸發統計規則（absolute 不受影響），這正是期望行為。
+        歷史不足 min_history 的出發日不觸發 big_drop（absolute 與 new_low
+        不受影響），這正是期望行為。
         """
         out: dict[str, dict] = {}
         cur_date: Optional[str] = None

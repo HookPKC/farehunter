@@ -59,11 +59,13 @@ def test_store_record_and_stats(tmp_path):
     for p in [10000, 9000, 8000, 12000, 11000]:
         store.record(make_offer(p))
     store.record(make_offer(20000, fc="full"))   # full-service rows excluded from stats
-    stats = store.route_stats_by_date("TPE", "NRT")["2099-09-18"]
-    assert stats["n"] == 5
-    assert stats["min"] == 8000
-    assert stats["median"] == 10000
-    assert stats["avg"] == pytest.approx(10000)
+    for stats in (store.route_stats("TPE", "NRT"),
+                  store.route_stats_by_date("TPE", "NRT")["2099-09-18"]):
+        assert stats["n"] == 5              # 只有一個出發日，兩種統計應相同
+        assert stats["min"] == 8000
+        assert stats["median"] == 10000
+        assert stats["avg"] == pytest.approx(10000)
+    assert store.route_stats("KHH", "KIX")["n"] == 0
     assert store.route_stats_by_date("KHH", "KIX") == {}
     store.close()
 
@@ -121,14 +123,70 @@ def test_new_low_fires_with_history():
 
 def test_big_drop_fires_with_history():
     stats = {"n": 60, "min": 7000, "avg": 10000, "median": 10000}
-    v = evaluate(make_offer(7400), stats, absolute_threshold=None,
-                 drop_pct=25, min_history=30)
+    v = evaluate(make_offer(7400), stats, date_stats=stats,
+                 absolute_threshold=None, drop_pct=25, min_history=30)
     assert v.is_deal and v.reason == "big_drop"
 
 
 def test_normal_price_no_alert():
     stats = {"n": 60, "min": 7000, "avg": 10000, "median": 10000}
-    v = evaluate(make_offer(9500), stats, absolute_threshold=6000, min_history=30)
+    v = evaluate(make_offer(9500), stats, date_stats=stats,
+                 absolute_threshold=6000, min_history=30)
+    assert not v.is_deal
+
+
+# ---- 兩條統計規則各自的比較基準（回歸：曾經誤把兩者都改成單日基準）---------
+def test_big_drop_uses_the_departure_date_not_the_route():
+    """該出發日平常 10,000，今天 7,400 → 反常便宜，該通知。
+
+    整條航線的中位數是 20,000（含旺季），用它當基準的話 7,400 也會過，
+    但那是巧合——真正的判準必須是這一天自己的價格。
+    """
+    route = {"n": 900, "min": 5000, "avg": 20000, "median": 20000}
+    date_ = {"n": 60, "min": 7000, "avg": 10000, "median": 10000}
+    v = evaluate(make_offer(7400), route, date_stats=date_,
+                 absolute_threshold=None, drop_pct=25, min_history=30)
+    assert v.is_deal and v.reason == "big_drop"
+    assert "這天的中位數 10,000" in v.detail          # 用的是單日中位數
+
+
+def test_big_drop_does_not_fire_on_an_expensive_date_that_is_merely_below_route_median():
+    """核心回歸：這天的 20,000 只是「相對整條航線便宜」，不是「相對它自己便宜」。
+
+      舊版（比全航線）：20,000 <= 30,000 × 75% = 22,500  → 誤報
+      新版（比該出發日）：20,000 >  24,000 × 75% = 18,000 → 正確地不報
+
+    實測 100 則 big_drop 通知全部屬於這一類——價格都高於使用者自己設的門檻。
+    """
+    route = {"n": 900, "min": 5000, "avg": 30000, "median": 30000}
+    date_ = {"n": 60, "min": 17000, "avg": 24000, "median": 24000}
+    v = evaluate(make_offer(20000), route, date_stats=date_,
+                 absolute_threshold=None, drop_pct=25, min_history=30)
+    assert not v.is_deal
+    # 同一筆資料在舊版的比較方式下會觸發——證明這個測試真的在區分兩者
+    assert 20000 <= route["median"] * 0.75
+
+
+def test_new_low_uses_the_route_not_the_departure_date():
+    """核心回歸：new_low 是「這條航線史上最便宜」的極值事件。
+
+    9,500 刷新了「這一天」的紀錄（該日最低 10,000），但離全航線最低 5,000
+    還很遠——這不是史上最低，不該用 new_low 打擾使用者。改用單日基準的話
+    每個日期都會不斷刷新自己的紀錄，實測 5 週從 3 次暴增到 147 次。
+    """
+    route = {"n": 900, "min": 5000, "avg": 20000, "median": 20000}
+    date_ = {"n": 60, "min": 10000, "avg": 11000, "median": 11000}
+    v = evaluate(make_offer(9500), route, date_stats=date_,
+                 absolute_threshold=None, drop_pct=25, min_history=30)
+    assert v.reason != "new_low"
+
+
+def test_big_drop_silent_when_the_date_has_no_history():
+    """該出發日沒有歷史 → big_drop 不觸發。寧可少發一則，也不要退回
+    「拿全航線中位數當單日基準」那種靜默錯誤的比較。"""
+    route = {"n": 900, "min": 5000, "avg": 20000, "median": 20000}
+    v = evaluate(make_offer(9000), route, date_stats=None,
+                 absolute_threshold=None, drop_pct=25, min_history=30)
     assert not v.is_deal
 
 

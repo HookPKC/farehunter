@@ -22,15 +22,23 @@ routes:
   - origin: KHH
     destination: KIX
     absolute_threshold: 7500
+  # 以下四條線的門檻原本設在「史上最低觀測價」之下，absolute 規則永遠不可能
+  # 觸發（KHH→FUK 門檻 7,000，但 5 週內最便宜只到 10,375）。它們原本只靠
+  # big_drop 撐著，而那正是 2026-08 修掉的噪音——等於一邊收不到有用通知，
+  # 一邊被無用通知洗版。
+  #
+  # 新門檻的推導方式：不是猜預算，而是對齊「四條正常航線的實際通知頻率」
+  # （每月 2–10 次）。取每月約 2–3 次的價位，資料為 2026-07-03~08-09 的觀測。
+  # 一個月後資料量翻倍時應重算——目前遠期出發日還沒經歷「越接近越降價」。
   - origin: KHH
     destination: CTS      # 札幌新千歲
-    absolute_threshold: 10000
+    absolute_threshold: 14200   # 原 10000（史上最低 10,765，永不觸發）→ 每月約 3 次
   - origin: KHH
     destination: FUK      # 福岡
-    absolute_threshold: 7000
+    absolute_threshold: 12300   # 原 7000（史上最低 10,375，永不觸發）→ 每月約 2 次
   - origin: KHH
     destination: OKA      # 沖繩那霸
-    absolute_threshold: 6000
+    absolute_threshold: 8200    # 原 6000（史上最低 7,295，永不觸發）→ 每月約 3 次
   - origin: KHH
     destination: NGO      # 名古屋中部
-    absolute_threshold: 7500
+    absolute_threshold: 11100   # 原 7500（史上最低 9,148，永不觸發）→ 每月約 2 次
