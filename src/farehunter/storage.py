@@ -7,6 +7,10 @@ from typing import Optional
 
 from .models import Offer
 
+#: 沒有任何歷史觀測的出發日。n=0 讓 analyzer 的 min_history 閘門自然擋下
+#: new_low / big_drop，absolute 則照常可用（第一天就該能觸發）。
+EMPTY_STATS = {"n": 0, "min": None, "avg": None, "median": None}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS observations (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,23 +97,43 @@ class Store:
         )
         self.conn.commit()
 
-    def route_stats(self, origin: str, destination: str) -> dict:
-        """Historical stats across ALL departure dates for a route."""
-        row = self.conn.execute(
-            """SELECT COUNT(*) AS n, MIN(price) AS min_price, AVG(price) AS avg_price
-               FROM observations WHERE origin=? AND destination=? AND fare_class='any'""",
-            (origin, destination),
-        ).fetchone()
-        median = None
-        if row["n"]:
-            prices = [r["price"] for r in self.conn.execute(
-                "SELECT price FROM observations WHERE origin=? AND destination=? "
-                "AND fare_class='any' ORDER BY price",
-                (origin, destination))]
-            mid = len(prices) // 2
-            median = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
-        return {"n": row["n"], "min": row["min_price"],
-                "avg": row["avg_price"], "median": median}
+    def route_stats_by_date(self, origin: str, destination: str) -> dict:
+        """每個出發日各自的歷史統計：{depart_date: {n, min, avg, median}}。
+
+        取代原本的「整條航線統計」。分析 108k 筆觀測後的結論：同一條航線不同
+        出發日的均價差距極大——TPE→KIX 從 5,853 到 45,862（7.8 倍），TPE→NRT
+        從 6,019 到 25,354（4.2 倍）。把淡季與旺季混在一起算出來的中位數，拿來
+        判斷單一價格是否「大跌」既不代表這天便宜，也不代表值得買：實測 100 則
+        big_drop 通知，100 則的價格都高於該航線自己設定的 absolute_threshold。
+
+        改以「這一天自己的歷史」為基準後，min_history 也自然變成單日門檻——
+        歷史不足的出發日不觸發統計規則（absolute 不受影響），這正是期望行為。
+        """
+        out: dict[str, dict] = {}
+        cur_date: Optional[str] = None
+        prices: list[float] = []
+
+        def _flush() -> None:
+            if cur_date is None or not prices:
+                return
+            n = len(prices)
+            mid = n // 2
+            median = prices[mid] if n % 2 else (prices[mid - 1] + prices[mid]) / 2
+            out[cur_date] = {"n": n, "min": prices[0],
+                             "avg": sum(prices) / n, "median": median}
+
+        # 依 (depart_date, price) 排序 → 同一天的價格已排好，中位數直接取中間值
+        for row in self.conn.execute(
+                """SELECT depart_date, price FROM observations
+                   WHERE origin=? AND destination=? AND fare_class='any'
+                   ORDER BY depart_date, price""",
+                (origin, destination)):
+            if row["depart_date"] != cur_date:
+                _flush()
+                cur_date, prices = row["depart_date"], []
+            prices.append(row["price"])
+        _flush()
+        return out
 
     # ---- alert dedup ---------------------------------------------------------
     def latest_itinerary_google(self, *, origin: str, destination: str,
@@ -140,45 +164,67 @@ class Store:
              currency, not_after),
         ).fetchone()
 
-    #: 各價格狀態的 dedup 窗。CONFLICT 較長,避免同一個未變化的落差每天重複騷擾。
-    DEDUP_HOURS = {"verified": 24, "conflict": 72, "unverified": 24}
+    #: 抑制窗（天）。舊版是 24 小時（CONFLICT 72 小時），意思是「同一天內不重複」,
+    #: 但過了窗又 1 分鐘,一模一樣的價格就再叫一次。實測 TPE→NRT 2026-09-15 在
+    #: 07-29~08-04 連續六天收到同一個 5,623；220 則通知只涵蓋 56 個行程（平均每
+    #: 個行程被叫 3.9 次,最慘的一個 24 次）。價格沒變就不是新消息,窗改長。
+    SUPPRESS_DAYS = 30
+
+    #: dedup 分桶。verified 自成一桶——「已驗證」比「疑似」更有把握,值得再說
+    #: 一次。unverified 與 conflict 共用一桶:兩者的差別只在於當下有沒有一筆
+    #: 落在 48 小時參考窗內的 Google 觀測,價格本身沒有變。實測 TPE→NRT
+    #: 2026-09-17 的 5,963 就是因為 status 在這兩者間擺動而重複發了 5 次。
+    _UNCONFIRMED = ("unverified", "conflict")
+
+    @classmethod
+    def _status_bucket(cls, price_status: str | None) -> tuple[str, tuple]:
+        """回傳 (SQL 條件片段, 參數)。片段只由本方法的字面量組成,不含外部輸入。"""
+        if price_status is None:
+            return "price_status IS NULL", ()          # 歷史列:僅與 NULL 相符
+        if price_status.lower() == "verified":
+            return "LOWER(price_status) = ?", ("verified",)
+        return "LOWER(price_status) IN (?, ?)", cls._UNCONFIRMED
 
     def recently_alerted(self, origin: str, destination: str,
                          depart_date: str, price: float,
-                         within_hours: int = 24,
+                         within_hours: int = SUPPRESS_DAYS * 24,
                          improvement_pct: float = 10.0,
                          *, return_date: str | None = None,
                          carrier_signature: str | None = None,
                          price_status: str | None = None,
                          reference_price: float | None = None) -> bool:
-        """True 表示「近期已通知過同一行程且無顯著變化」,應跳過。
+        """True 表示「已通知過同一行程且沒有更好的消息」,應跳過。
 
         identity 至少為 (origin, destination, depart_date, return_date,
         carrier_signature, price_status)。不同回程日、不同 carrier、不同狀態
         各自獨立 dedup,不互相阻擋。
 
+        比較基準是**窗內最便宜的已通知價**,不是最近一則。否則價格在窗內來回
+        波動時（8000 → 7000 → 7600）會把基準推回較貴的那一筆,同一個行程又能
+        重新通知一輪。以最低價為基準,只有真正更好的消息才會再叫。
+
         向後相容:歷史列的 return_date / carrier_signature 為 NULL,SQL 等值
         比對自然不會匹配帶有明確行程的新 alert——即舊資料不會錯誤抑制新的明確
         行程(規格要求)。不猜測回填舊列。
 
-        允許重新通知:價格改善 >= improvement_pct、狀態改變(例如升級為
+        允許重新通知:價格較基準改善 >= improvement_pct、狀態改變(例如升級為
         verified)、或 CONFLICT 的參考價出現同等幅度的變化。
         """
-        hours = self.DEDUP_HOURS.get((price_status or "").lower(), within_hours)
+        status_clause, status_params = self._status_bucket(price_status)
         row = self.conn.execute(
-            """SELECT price, reference_price FROM alerts
-               WHERE origin=? AND destination=? AND depart_date=?
-                 AND return_date IS ? AND carrier_signature IS ?
-                 AND price_status IS ?
-                 AND sent_at >= datetime('now', ?)
-               ORDER BY sent_at DESC LIMIT 1""",
+            f"""SELECT price, reference_price FROM alerts
+                WHERE origin=? AND destination=? AND depart_date=?
+                  AND return_date IS ? AND carrier_signature IS ?
+                  AND {status_clause}
+                  AND sent_at >= datetime('now', ?)
+                ORDER BY price ASC, sent_at DESC LIMIT 1""",
             (origin, destination, depart_date, return_date, carrier_signature,
-             price_status, f"-{hours} hours"),
+             *status_params, f"-{within_hours} hours"),
         ).fetchone()
         if row is None:
             return False
         if price <= row["price"] * (1 - improvement_pct / 100.0):
-            return False                      # 顯著更便宜 → 重新通知
+            return False                      # 比已通知的最低價再便宜一截 → 重新通知
         prev_ref, new_ref = row["reference_price"], reference_price
         if prev_ref and new_ref and \
                 abs(new_ref - prev_ref) >= prev_ref * (improvement_pct / 100.0):

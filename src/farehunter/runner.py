@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 
 from .travelpayouts import TravelpayoutsClient, parse_offers, TravelpayoutsError
-from .storage import Store
+from .storage import Store, EMPTY_STATS
 from .analyzer import evaluate
 from .notify import notify, channels_configured
 from . import health
@@ -150,7 +150,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
             origin, dest = route["origin"], route["destination"]
             merged = {**defaults, **route}
             months = upcoming_months(merged.get("months_ahead", 6))
-            stats = store.route_stats(origin, dest)   # stats BEFORE this run
+            # 每個出發日各自的歷史，取自本輪寫入之前的狀態。
+            stats_by_date = store.route_stats_by_date(origin, dest)
             route_recorded = 0
             route_empty = 0
 
@@ -193,7 +194,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                         eval_offer = replace(offer, price=pstate.selected_price)
 
                     verdict = evaluate(
-                        eval_offer, stats,
+                        eval_offer,
+                        stats_by_date.get(offer.depart_date, EMPTY_STATS),
                         absolute_threshold=merged.get("absolute_threshold"),
                         drop_pct=merged.get("drop_pct", 25.0),
                         min_history=merged.get("min_history", 30),

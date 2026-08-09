@@ -51,7 +51,8 @@ def test_full_pipeline(tmp_path, monkeypatch, capsys):
     assert "through%202099-09-23" in out
 
     store = Store(str(db))
-    assert store.route_stats("TPE", "NRT")["n"] == 4   # stats only count fare_class='any'
+    by_date = store.route_stats_by_date("TPE", "NRT")
+    assert sum(s["n"] for s in by_date.values()) == 4   # stats only count fare_class='any'
     store.close()
 
     # second run within 24h: same prices -> dedup suppresses the alert

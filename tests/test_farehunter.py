@@ -59,12 +59,35 @@ def test_store_record_and_stats(tmp_path):
     for p in [10000, 9000, 8000, 12000, 11000]:
         store.record(make_offer(p))
     store.record(make_offer(20000, fc="full"))   # full-service rows excluded from stats
-    stats = store.route_stats("TPE", "NRT")
+    stats = store.route_stats_by_date("TPE", "NRT")["2099-09-18"]
     assert stats["n"] == 5
     assert stats["min"] == 8000
     assert stats["median"] == 10000
     assert stats["avg"] == pytest.approx(10000)
-    assert store.route_stats("KHH", "KIX")["n"] == 0
+    assert store.route_stats_by_date("KHH", "KIX") == {}
+    store.close()
+
+
+def test_stats_are_kept_separate_per_departure_date(tmp_path):
+    """核心回歸：便宜的日期不得被昂貴的日期拉高基準。
+
+    舊版把整條航線混在一起算中位數。實測 TPE→KIX 各出發日均價從 5,853 到
+    45,862（7.8 倍），混算出的中位數對任何一天都不具代表性。
+    """
+    store = Store(str(tmp_path / "t.db"))
+    for p in [6000, 6200, 6400]:                       # 淡季那天
+        store.record(make_offer(p, dep="2099-09-18"))
+    for p in [30000, 32000, 34000]:                    # 旺季那天
+        store.record(make_offer(p, dep="2099-12-31"))
+
+    by_date = store.route_stats_by_date("TPE", "NRT")
+    assert by_date["2099-09-18"]["median"] == 6200
+    assert by_date["2099-12-31"]["median"] == 32000
+
+    # 混算的話中位數會是 18,200，於是 9/18 那天要跌到 13,650 才算 big_drop——
+    # 遠低於它自己的歷史最低 6,000，等於這天永遠不可能觸發；反過來旺季那天
+    # 只要低於 13,650 就會誤報。分開算之後兩邊各自合理。
+    assert by_date["2099-09-18"]["median"] * 0.75 < 6000
     store.close()
 
 
