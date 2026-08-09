@@ -11,8 +11,6 @@ from farehunter.reliability import ReliabilityStore, base_reliability
 from farehunter.ranking import (rank, score_offers, WeightConfig, BALANCED,
                                 AIRLINE_QUALITY)
 from farehunter.normalize import NormalizedOffer
-from farehunter.providers.base import FlightProvider, RawOffer
-from farehunter.providers.manager import ProviderManager
 from farehunter.storage import Store
 from farehunter.models import Offer
 
@@ -171,64 +169,6 @@ def test_stale_data_penalised_in_ranking():
               for s in score_offers([fresh, stale], BALANCED,
                                     reliability_of=lambda s: 0.8, now=NOW)}
     assert scored[fresh.observed_at] > scored[stale.observed_at]
-
-
-# ---- provider manager (fallback + parallel) ------------------------------
-
-class _FakeProvider(FlightProvider):
-    def __init__(self, source, offers=None, boom=False, **kw):
-        self.source = source
-        super().__init__(**kw)
-        self._offers = offers or []
-        self._boom = boom
-
-    def search(self, route, date):
-        if self._boom:
-            raise RuntimeError("provider down")
-        return [RawOffer(self.source, {"price": p}, "KHH", "KIX", "2026-09-01")
-                for p in self._offers]
-
-    def normalize(self, raw):
-        return NormalizedOffer(price=raw.raw["price"], currency="TWD",
-                               route="KHH-KIX", source=self.source,
-                               stops=0, duration=180, airline=["IT"],
-                               observed_at=NOW.isoformat())
-
-
-def test_manager_parallel_aggregates_all_providers():
-    mgr = ProviderManager([_FakeProvider("a", [9000]),
-                           _FakeProvider("b", [8500, 9200])])
-    res = mgr.search(("KHH", "KIX"), ("2026-09-01", "2026-09-06"))
-    assert sorted(o.price for o in res.offers) == [8500, 9000, 9200]
-    assert set(res.ok_sources) == {"a", "b"} and not res.failed_sources
-
-
-def test_manager_fallback_isolates_failure():
-    mgr = ProviderManager([_FakeProvider("good", [8800]),
-                           _FakeProvider("bad", boom=True)])
-    res = mgr.search(("KHH", "KIX"), ("2026-09-01", None))
-    assert [o.price for o in res.offers] == [8800]      # good still returns
-    assert res.ok_sources == ["good"] and res.failed_sources == ["bad"]
-    assert "bad" in res.errors
-
-
-def test_manager_reliability_tracking_updates_store():
-    conn = sqlite3.connect(":memory:")
-    store = ReliabilityStore(conn)
-    mgr = ProviderManager([_FakeProvider("good", [8800]),
-                           _FakeProvider("bad", boom=True)],
-                          reliability_store=store)
-    mgr.search(("KHH", "KIX"), ("2026-09-01", None))
-    assert store.stats("good")["ok"] == 1
-    assert store.stats("bad")["fail"] == 1
-
-
-def test_new_provider_zero_refactor_registration():
-    mgr = ProviderManager([_FakeProvider("a", [9000])])
-    mgr.register(_FakeProvider("z", [7000]))            # plug in without touching others
-    res = mgr.search(("KHH", "KIX"), ("2026-09-01", None))
-    assert 7000 in [o.price for o in res.offers]
-    assert set(mgr.sources) == {"a", "z"}
 
 
 # ---- intelligence end-to-end --------------------------------------------

@@ -91,5 +91,9 @@ def test_export_bitwise_identical_after_refactor(tmp_path):
     b = tmp_path / "b.json"
     export(str(tmp_path / "p.db"), str(a))
     export(str(tmp_path / "p.db"), str(b))
-    norm = lambda s: re.sub(r'"generated_at": "[^"]*"', '"generated_at": "X"', s)
+    # 兩個欄位取的是 export 當下的牆鐘：generated_at 與 health.checked_at。
+    # 只正規化前者的話，兩次 export 若跨過一個秒界就會假失敗——而 monitor.yml
+    # 是「測試沒過就不抓價」，這種偶發紅燈會直接漏掉一次價格監控。
+    def norm(s: str) -> str:
+        return re.sub(r'"(generated_at|checked_at)": "[^"]*"', r'"\1": "X"', s)
     assert norm(a.read_text(encoding="utf-8")) == norm(b.read_text(encoding="utf-8"))

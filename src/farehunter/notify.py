@@ -13,6 +13,7 @@ import requests
 
 from .models import Offer
 from .analyzer import Verdict
+from .normalize import CACHE_SOURCES
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +22,8 @@ WEEKDAYS = "一二三四五六日"
 
 # 通知價格語意（與看板統一原則一致）：
 # 快取/估價來源 → 「約 NT$X」百位四捨五入；google 觀測價 → 精確數字。
-_CACHE_SOURCES = {"aviasales", "travelpayouts"}
+# 快取來源清單由 normalize 提供單一定義——通知、網站、評分三處若各自維護
+# 一份，新增資料源時漏改任一處就會出現「網站說已驗證、通知說是估計價」。
 _SOURCE_LABEL = {
     "aviasales": "Aviasales 快取估價",
     "travelpayouts": "Travelpayouts 快取估價",
@@ -100,7 +102,7 @@ def format_alert(offer: Offer, verdict: Verdict, state=None) -> str:
         )
 
     # UNVERIFIED（或未傳 state 時的預設）：沿用既有的誠實快取語意
-    is_cache = (offer.source or "").lower() in _CACHE_SOURCES
+    is_cache = (offer.source or "").lower() in CACHE_SOURCES
     if is_cache:
         shown = f"約 {round(offer.price / 100) * 100:,.0f}"
         kind = "快取估價"

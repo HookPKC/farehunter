@@ -64,28 +64,52 @@ def test_same_itinerary_same_status_is_deduped(tmp_path):
     st.close()
 
 
-def test_status_windows_are_configured(tmp_path):
+def _alert_ago(st, sql_offset, *, price=7761.0, status="unverified"):
+    """在過去某個時間點寫入一則 alert（sql_offset 例如 '-30 hours'）。"""
+    st.conn.execute(
+        "INSERT INTO alerts (origin,destination,depart_date,price,reason,"
+        "sent_at,return_date,carrier_signature,price_status) "
+        f"VALUES (?,?,?,?,?,datetime('now','{sql_offset}'),?,?,?)",
+        (BASE["origin"], BASE["destination"], BASE["depart_date"], price,
+         "absolute", "2026-09-08", "GK", status))
+    st.conn.commit()
+
+
+def test_unchanged_price_does_not_renotify_next_day(tmp_path):
+    """核心回歸：舊版 24h 窗一過就重發,實測同一個 5,623 連叫六天。
+
+    價格沒變就不是新消息——30 小時前發過的同一價格必須仍被抑制。
+    """
     st = _store(tmp_path)
-    assert st.DEDUP_HOURS["verified"] == 24
-    assert st.DEDUP_HOURS["unverified"] == 24
-    assert st.DEDUP_HOURS["conflict"] == 72
+    _alert_ago(st, "-30 hours", price=5623.0)
+    assert _recent(st, price=5623.0) is True
     st.close()
 
 
-def test_conflict_uses_longer_window(tmp_path):
-    """CONFLICT 於 30 小時前發過 → 仍在 72h 窗內,應 dedup;
-    同樣時間點的 unverified(24h 窗)則已過窗。"""
+def test_unchanged_price_still_suppressed_after_a_week(tmp_path):
     st = _store(tmp_path)
-    for status in ("conflict", "unverified"):
-        st.conn.execute(
-            "INSERT INTO alerts (origin,destination,depart_date,price,reason,"
-            "sent_at,return_date,carrier_signature,price_status) "
-            "VALUES (?,?,?,?,?,datetime('now','-30 hours'),?,?,?)",
-            (BASE["origin"], BASE["destination"], BASE["depart_date"], 7761.0,
-             "absolute", "2026-09-08", "GK", status))
-    st.conn.commit()
-    assert _recent(st, status="conflict") is True      # 72h 窗內
-    assert _recent(st, status="unverified") is False   # 超出 24h 窗
+    _alert_ago(st, "-7 days", price=5623.0)
+    assert _recent(st, price=5623.0) is True
+    st.close()
+
+
+def test_suppression_expires_after_window(tmp_path):
+    """抑制不是永久的：超過 SUPPRESS_DAYS 後同一個好康可以再提醒一次。"""
+    st = _store(tmp_path)
+    assert st.SUPPRESS_DAYS == 30
+    _alert_ago(st, "-31 days", price=5623.0)
+    assert _recent(st, price=5623.0) is False
+    st.close()
+
+
+def test_baseline_is_cheapest_alerted_not_latest(tmp_path):
+    """基準取窗內最低價。8000 → 7000 之後,7600 不得因為「比最近一則便宜」
+    而重新通知——它比你已經被告知過的 7000 還貴。"""
+    st = _store(tmp_path)
+    _alert_ago(st, "-3 days", price=8000.0)
+    _alert_ago(st, "-2 days", price=7000.0)
+    assert _recent(st, price=7600.0) is True     # 比 7000 貴 → 不是新消息
+    assert _recent(st, price=6200.0) is False    # 比 7000 便宜 11.4% → 通知
     st.close()
 
 
@@ -100,9 +124,35 @@ def test_price_improvement_reopens_notification(tmp_path):
 
 
 def test_status_upgrade_to_verified_reopens(tmp_path):
+    """「已驗證」比「疑似」更有把握,是真正的新消息 → 可以再說一次。"""
     st = _store(tmp_path)
     _alert(st, status="unverified")
     assert _recent(st, status="verified") is False
+    st.close()
+
+
+def test_unverified_conflict_flapping_does_not_renotify(tmp_path):
+    """unverified ↔ conflict 來回擺動不是新消息——價格一毛沒變,差別只在當下
+    有沒有一筆落在參考窗內的 Google 觀測。實測這讓同一個 5,963 重發了 5 次。
+    """
+    st = _store(tmp_path)
+    _alert(st, price=5963.0, status="unverified")
+    assert _recent(st, price=5963.0, status="conflict") is True
+    st.close()
+
+
+def test_conflict_then_unverified_also_suppressed(tmp_path):
+    st = _store(tmp_path)
+    _alert(st, price=5963.0, status="conflict")
+    assert _recent(st, price=5963.0, status="unverified") is True
+    st.close()
+
+
+def test_verified_stays_its_own_bucket(tmp_path):
+    """反向:已用 verified 通知過,之後降級成 unverified 不得再吵一次。"""
+    st = _store(tmp_path)
+    _alert(st, price=5963.0, status="verified")
+    assert _recent(st, price=5963.0, status="verified") is True
     st.close()
 
 

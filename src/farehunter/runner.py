@@ -150,7 +150,11 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
             origin, dest = route["origin"], route["destination"]
             merged = {**defaults, **route}
             months = upcoming_months(merged.get("months_ahead", 6))
-            stats = store.route_stats(origin, dest)   # stats BEFORE this run
+            # 兩組基準，都取自本輪寫入之前的狀態：
+            #   route_stats     整條航線 → new_low（史上最低是極值事件）
+            #   stats_by_date   單一出發日 → big_drop（反常便宜是相對事件）
+            stats = store.route_stats(origin, dest)
+            stats_by_date = store.route_stats_by_date(origin, dest)
             route_recorded = 0
             route_empty = 0
 
@@ -194,6 +198,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
 
                     verdict = evaluate(
                         eval_offer, stats,
+                        date_stats=stats_by_date.get(offer.depart_date),
                         absolute_threshold=merged.get("absolute_threshold"),
                         drop_pct=merged.get("drop_pct", 25.0),
                         min_history=merged.get("min_history", 30),

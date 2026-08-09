@@ -47,7 +47,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
         for route in cfg["routes"]:
             o, d = route["origin"], route["destination"]
             merged = {**defaults, **route}
-            stats = store.route_stats(o, d)
+            stats = store.route_stats(o, d)              # new_low：整條航線
+            stats_by_date = store.route_stats_by_date(o, d)   # big_drop：單一出發日
             for start, end in windows:
                 summary["searched"] += 1
                 try:
@@ -77,6 +78,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
                     store.record(offer)
                     summary["recorded"] += 1
                     verdict = evaluate(offer, stats,
+                                       date_stats=stats_by_date.get(offer.depart_date),
                                        absolute_threshold=merged.get("absolute_threshold"),
                                        drop_pct=merged.get("drop_pct", 25.0),
                                        min_history=merged.get("min_history", 30))
