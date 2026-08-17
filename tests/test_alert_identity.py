@@ -30,11 +30,12 @@ def _alert(st, *, price=7761.0, ret="2026-09-08", csig="GK",
 
 
 def _recent(st, *, price=7761.0, ret="2026-09-08", csig="GK",
-            status="unverified", ref=None):
+            status="unverified", ref=None, reason="absolute"):
     return st.recently_alerted(BASE["origin"], BASE["destination"],
                                BASE["depart_date"], price,
                                return_date=ret, carrier_signature=csig,
-                               price_status=status, reference_price=ref)
+                               price_status=status, reference_price=ref,
+                               reason=reason)
 
 
 # ---- 1/2 不同 identity 各自獨立 ------------------------------------------
@@ -161,6 +162,70 @@ def test_reference_price_material_change_reopens(tmp_path):
     _alert(st, status="conflict", ref=8778.0)
     assert _recent(st, status="conflict", ref=8800.0) is True   # 幾乎沒變
     assert _recent(st, status="conflict", ref=10500.0) is False  # 參考價大變
+    st.close()
+
+
+def test_reference_price_comparison_converges(tmp_path):
+    """回歸：一組完全靜止的 (價格, 參考價) 不得每輪重發。
+
+    價格基準取「窗內最便宜」、參考價基準若跟它共用同一列就永不收斂——新寫入的
+    alert 價格較貴，永遠不會成為新的最便宜基準列，於是參考價的比較對象被凍結
+    在舊值，同一個沒有變化的落差每小時重發一次。實測連問 6 次會發 6 次。
+    參考價必須改跟「最近一則」比。
+    """
+    st = _store(tmp_path)
+    _alert(st, price=7000.0, status="conflict", ref=8000.0)
+    sent = 0
+    for _ in range(6):
+        if not _recent(st, price=7500.0, status="conflict", ref=9000.0):
+            sent += 1
+            _alert(st, price=7500.0, status="conflict", ref=9000.0)
+    assert sent == 1, f"靜止狀態重發了 {sent} 次，應該只有第一次"
+    st.close()
+
+
+# ---- new_low 自成一桶 -------------------------------------------------------
+
+def test_new_low_is_not_suppressed_by_an_earlier_absolute(tmp_path):
+    """回歸：absolute 每天都可能觸發，new_low 5 週只出現數次。
+
+    窗拉到 30 天之後，若兩者共用一個 dedup 桶，一則 absolute 會讓接下來 30 天
+    的 new_low 全部消失——最有價值的訊號被最廉價的訊號擋住。
+    """
+    st = _store(tmp_path)
+    _alert(st, price=6364.0, reason="absolute")
+    assert _recent(st, price=6270.0, reason="new_low") is False    # 史上最低 → 放行
+    assert _recent(st, price=6270.0, reason="absolute") is True    # 同理由 → 照擋
+    st.close()
+
+
+def test_new_low_still_dedupes_against_other_new_lows(tmp_path):
+    """自成一桶不等於不去重：連續刷新 0.1% 仍應被擋。"""
+    st = _store(tmp_path)
+    _alert(st, price=6270.0, reason="new_low")
+    assert _recent(st, price=6265.0, reason="new_low") is True
+    assert _recent(st, price=5600.0, reason="new_low") is False    # 便宜 10.7%
+    st.close()
+
+
+def test_gcal_shaped_alert_keeps_return_dates_independent(tmp_path):
+    """回歸：gcal_sweep 曾經只傳 4 個位置參數，identity 全走 NULL，
+
+    導致同一個出發日的不同回程日落進同一個桶互相封鎖 30 天。這裡用它現在的
+    呼叫形狀（帶 return_date、carrier_signature=None、status=verified）確認
+    不同回程日各自獨立。
+    """
+    st = _store(tmp_path)
+    st.record_alert("KHH", "NRT", "2026-10-01", 9000.0, "absolute",
+                    return_date="2026-10-05", carrier_signature=None,
+                    price_source="google", price_status="verified")
+    same = st.recently_alerted("KHH", "NRT", "2026-10-01", 8800.0,
+                               return_date="2026-10-05", carrier_signature=None,
+                               price_status="verified", reason="absolute")
+    other = st.recently_alerted("KHH", "NRT", "2026-10-01", 8800.0,
+                                return_date="2026-10-12", carrier_signature=None,
+                                price_status="verified", reason="absolute")
+    assert same is True and other is False
     st.close()
 
 

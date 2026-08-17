@@ -12,6 +12,7 @@ from .searchapi_calendar import fetch_calendar, parse_calendar, SearchApiError
 from .storage import Store
 from .analyzer import evaluate
 from .notify import notify, channels_configured
+from . import price_state
 
 log = logging.getLogger(__name__)
 
@@ -82,15 +83,32 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db") -> dict:
                                        absolute_threshold=merged.get("absolute_threshold"),
                                        drop_pct=merged.get("drop_pct", 25.0),
                                        min_history=merged.get("min_history", 30))
+                    # identity 必須與 runner 一致。原本這裡只傳 4 個位置參數，
+                    # return_date / carrier_signature / price_status 全走 NULL，
+                    # 於是同一個出發日的不同回程日會落進同一個 dedup 桶互相封鎖
+                    # ——正是 alerts 表加這幾個欄位要修掉的那個 bug。窗從 24 小時
+                    # 拉到 30 天之後，這個漏傳的影響被放大 30 倍。
+                    # price_status 固定為 verified：這條路徑取的就是 Google 實價，
+                    # 本身即權威價，不需要再被別的觀測驗證。
+                    csig = price_state.carrier_signature(offer.carriers)
                     if verdict.is_deal and not store.recently_alerted(
-                            o, d, offer.depart_date, offer.price):
+                            o, d, offer.depart_date, offer.price,
+                            return_date=offer.return_date,
+                            carrier_signature=csig,
+                            price_status=price_state.VERIFIED,
+                            reason=verdict.reason):
                         sent = notify(offer, verdict)
                         if not sent and channels_configured():
                             log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",
                                       o, d, offer.depart_date)
                         else:
-                            store.record_alert(o, d, offer.depart_date,
-                                               offer.price, verdict.reason)
+                            store.record_alert(
+                                o, d, offer.depart_date, offer.price,
+                                verdict.reason,
+                                return_date=offer.return_date,
+                                carrier_signature=csig,
+                                price_source=offer.source,
+                                price_status=price_state.VERIFIED)
                             summary["alerts"] += 1
                 time.sleep(1)
     finally:

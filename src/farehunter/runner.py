@@ -1,9 +1,9 @@
 """Runner: load config, iterate months per route, store, evaluate, notify."""
 from __future__ import annotations
 
-import json
 import logging
 import os
+import sqlite3
 import time
 from dataclasses import replace
 from datetime import date, datetime, timezone
@@ -57,11 +57,19 @@ def _resolve_state(store, offer, now):
 # 若資料仍新鮮就跳過本輪，避免重複抓價與 commit 噪音。
 # 鐵律：guard 只能「跳過」，絕不能「擋路」——任何讀取/解析錯誤一律照常執行，
 # 寧可重複，不可讓 guard 自己成為新的停擺原因（PLAYBOOK 1-6 後續強化）。
+#
+# 時鐘來源：prices.db 裡 source='aviasales' 的最新觀測——只有這支 monitor 會寫。
+# 原本讀的是 docs/data.json 的 generated_at，但那個欄位被全站共用：
+# fsc-snapshot / verify-airlines / gcal-sweep / longrange-sweep 每次跑完都會執行
+# 同一支 export_web 覆寫它。實測後果是每天固定漏抓 2 小時——
+#   06:18 抓價 → 06:54 fsc snapshot 重置時鐘 → 07:xx 判定「資料才 23 分鐘新」跳過
+#              → 07:24 airline verify 再重置 → 08:xx 又跳過 → 08:42 才恢復，
+#   而 08:42 已偏離整點，於是 09:xx 再跳一次。
+# 近三天 71 個整點中有 5 個完全沒有價格觀測，全部落在 07–09 UTC 這個區間。
 GUARD_MINUTES = 55
-WEB_EXPORT_PATH = "docs/data.json"
 
 
-def guard_decision(export_path: str = WEB_EXPORT_PATH,
+def guard_decision(db_path: str = "prices.db",
                    force: bool | None = None) -> tuple[bool, float | None]:
     """回傳 (是否跳過, 資料齡分鐘)。資料齡不可知時回 (False, None)＝照常執行。
 
@@ -70,9 +78,16 @@ def guard_decision(export_path: str = WEB_EXPORT_PATH,
     if force is None:
         force = os.environ.get("FAREHUNTER_FORCE", "").lower() not in ("", "0", "false")
     try:
-        with open(export_path, encoding="utf-8") as fh:
-            generated_at = json.load(fh)["generated_at"]
-        ts = datetime.fromisoformat(str(generated_at))
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT MAX(observed_at) FROM observations "
+                "WHERE source='aviasales'").fetchone()
+        finally:
+            conn.close()
+        if row is None or row[0] is None:
+            raise ValueError("尚無 aviasales 觀測")
+        ts = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
         age = (datetime.now(timezone.utc) - ts).total_seconds() / 60
@@ -121,9 +136,8 @@ def upcoming_months(n: int, today: date | None = None) -> list[str]:
 
 
 def run(config_path: str = "config.yaml", db_path: str = "prices.db",
-        web_export_path: str = WEB_EXPORT_PATH,
         now: datetime | None = None) -> dict:
-    skip, age = guard_decision(web_export_path)
+    skip, age = guard_decision(db_path)
     if skip:
         log.info("資料齡 %.0f 分鐘 < %d 分鐘，跳過本輪（防重複 guard；"
                  "手動 Run 勾選 force 或設 FAREHUNTER_FORCE=1 可強制執行）",
@@ -212,7 +226,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                             return_date=offer.return_date,
                             carrier_signature=csig,
                             price_status=pstate.state,
-                            reference_price=pstate.reference_price):
+                            reference_price=pstate.reference_price,
+                            reason=verdict.reason):
                         sent = notify(eval_offer, verdict, pstate)
                         if not sent and channels_configured():
                             log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",
