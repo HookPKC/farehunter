@@ -204,6 +204,16 @@ class Store:
             return "LOWER(price_status) = ?", ("verified",)
         return "LOWER(price_status) IN (?, ?)", cls._UNCONFIRMED
 
+    @staticmethod
+    def _reason_bucket(reason: str | None) -> tuple[str, tuple]:
+        """new_low 自成一桶；其餘（含 NULL 歷史列）共用一桶。
+
+        片段只由本方法的字面量組成,不含外部輸入。
+        """
+        if (reason or "").lower() == "new_low":
+            return "LOWER(reason) = ?", ("new_low",)
+        return "(reason IS NULL OR LOWER(reason) <> ?)", ("new_low",)
+
     def recently_alerted(self, origin: str, destination: str,
                          depart_date: str, price: float,
                          within_hours: int = SUPPRESS_DAYS * 24,
@@ -211,16 +221,27 @@ class Store:
                          *, return_date: str | None = None,
                          carrier_signature: str | None = None,
                          price_status: str | None = None,
-                         reference_price: float | None = None) -> bool:
+                         reference_price: float | None = None,
+                         reason: str | None = None) -> bool:
         """True 表示「已通知過同一行程且沒有更好的消息」,應跳過。
 
         identity 至少為 (origin, destination, depart_date, return_date,
         carrier_signature, price_status)。不同回程日、不同 carrier、不同狀態
         各自獨立 dedup,不互相阻擋。
 
-        比較基準是**窗內最便宜的已通知價**,不是最近一則。否則價格在窗內來回
+        **價格基準**取窗內最便宜的已通知價,不是最近一則。否則價格在窗內來回
         波動時（8000 → 7000 → 7600）會把基準推回較貴的那一筆,同一個行程又能
-        重新通知一輪。以最低價為基準,只有真正更好的消息才會再叫。
+        重新通知一輪。
+
+        **參考價基準**必須另外取最近一則,不能跟價格基準共用同一列。共用會導致
+        永不收斂:新寫入的 alert 價格較貴,永遠不會成為新的「最便宜」基準列,
+        於是參考價的比較對象被凍結在舊值,一組完全靜止的 (價格, 參考價) 每輪
+        都會判定為「參考價有意義變化」而重發。實測連問 6 次會發 6 次。
+
+        **new_low 自成一桶**（reason 參數）。它是「這條航線史上最便宜」的極值
+        事件,5 週只出現數次,卻最容易被每天都可能觸發的 absolute 壓掉——窗拉到
+        30 天之後,一則 absolute 會讓接下來 30 天的 new_low 全部消失,除非再便宜
+        10%。其餘 reason 仍共用一桶,避免同一個價格換個理由再吵一次。
 
         向後相容:歷史列的 return_date / carrier_signature 為 NULL,SQL 等值
         比對自然不會匹配帶有明確行程的新 alert——即舊資料不會錯誤抑制新的明確
@@ -230,24 +251,30 @@ class Store:
         verified)、或 CONFLICT 的參考價出現同等幅度的變化。
         """
         status_clause, status_params = self._status_bucket(price_status)
-        row = self.conn.execute(
-            f"""SELECT price, reference_price FROM alerts
-                WHERE origin=? AND destination=? AND depart_date=?
-                  AND return_date IS ? AND carrier_signature IS ?
-                  AND {status_clause}
-                  AND sent_at >= datetime('now', ?)
-                ORDER BY price ASC, sent_at DESC LIMIT 1""",
-            (origin, destination, depart_date, return_date, carrier_signature,
-             *status_params, f"-{within_hours} hours"),
-        ).fetchone()
-        if row is None:
+        reason_clause, reason_params = self._reason_bucket(reason)
+        where = (f"origin=? AND destination=? AND depart_date=?"
+                 f" AND return_date IS ? AND carrier_signature IS ?"
+                 f" AND {status_clause} AND {reason_clause}"
+                 f" AND sent_at >= datetime('now', ?)")
+        params = (origin, destination, depart_date, return_date,
+                  carrier_signature, *status_params, *reason_params,
+                  f"-{within_hours} hours")
+
+        cheapest = self.conn.execute(
+            f"SELECT price FROM alerts WHERE {where}"
+            " ORDER BY price ASC, sent_at DESC LIMIT 1", params).fetchone()
+        if cheapest is None:
             return False
-        if price <= row["price"] * (1 - improvement_pct / 100.0):
+        if price <= cheapest["price"] * (1 - improvement_pct / 100.0):
             return False                      # 比已通知的最低價再便宜一截 → 重新通知
-        prev_ref, new_ref = row["reference_price"], reference_price
+
+        latest = self.conn.execute(
+            f"SELECT reference_price FROM alerts WHERE {where}"
+            " ORDER BY sent_at DESC, id DESC LIMIT 1", params).fetchone()
+        prev_ref, new_ref = latest["reference_price"], reference_price
         if prev_ref and new_ref and \
                 abs(new_ref - prev_ref) >= prev_ref * (improvement_pct / 100.0):
-            return False                      # 參考價有意義變化 → 重新通知
+            return False                      # 參考價相對「上一則」有意義變化 → 重新通知
         return True
 
     def record_longrange(self, origin: str, destination: str, depart_date: str,

@@ -14,6 +14,7 @@ import farehunter.runner as runner_mod
 from farehunter import health
 from farehunter.export_web import export
 from farehunter.storage import Store
+from farehunter.models import Offer
 
 NOW = datetime(2026, 8, 7, 1, 36, 0, tzinfo=timezone.utc)
 
@@ -261,7 +262,6 @@ def test_runner_counts_empty_and_zero_record_routes(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, "TravelpayoutsClient", EmptyClient)
 
     summary = runner_mod.run(str(cfg), str(tmp_path / "p.db"),
-                             web_export_path=str(tmp_path / "none.json"),
                              now=NOW)
 
     assert summary["searched"] == 3
@@ -284,7 +284,6 @@ def test_runner_survives_health_failure(tmp_path, monkeypatch):
                         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
 
     summary = runner_mod.run(str(cfg), str(tmp_path / "p.db"),
-                             web_export_path=str(tmp_path / "none.json"),
                              now=NOW)
     assert summary["health"] is None
     assert summary["searched"] == 1
@@ -294,11 +293,15 @@ def test_runner_survives_health_failure(tmp_path, monkeypatch):
 def test_runner_guard_skip_keeps_summary_shape(tmp_path, monkeypatch):
     """guard 跳過時的回傳也要有新欄位，呼叫端不必到處 .get() 防身。"""
     monkeypatch.delenv("FAREHUNTER_FORCE", raising=False)
-    export_path = tmp_path / "data.json"
-    fresh = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    export_path.write_text('{"generated_at": "%s"}' % fresh, encoding="utf-8")
-    summary = runner_mod.run(str(tmp_path / "c.yaml"), str(tmp_path / "p.db"),
-                             web_export_path=str(export_path))
+    # guard 的時鐘是 prices.db 裡 source='aviasales' 的最新觀測（不是 data.json，
+    # 那個欄位會被四支 sweep 覆寫）。寫一筆「剛剛」的觀測讓 guard 判定跳過。
+    db_path = tmp_path / "p.db"
+    store = Store(str(db_path))
+    store.record(Offer(origin="TPE", destination="NRT", depart_date="2099-09-18",
+                       return_date="2099-09-23", price=8000.0, currency="TWD",
+                       carriers="CI", stops=0, duration="190"))
+    store.close()
+    summary = runner_mod.run(str(tmp_path / "c.yaml"), str(db_path))
     assert summary["skipped"] is True
     assert summary["empty"] == 0
     assert summary["zero_record_routes"] == []

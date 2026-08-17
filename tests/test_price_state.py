@@ -325,7 +325,6 @@ def _run(tmp_path, monkeypatch, sent, threshold=8000):
     monkeypatch.setattr(runner_mod, "channels_configured", lambda: True)
     return runner_mod.run(str(_cfg(tmp_path, threshold)),
                           str(tmp_path / "prices.db"),
-                          web_export_path=str(tmp_path / "none.json"),
                           now=RUN_NOW)
 
 

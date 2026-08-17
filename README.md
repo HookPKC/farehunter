@@ -90,7 +90,10 @@ python -m pytest tests/ -v           # 跑測試（15 個，不需網路與金�
    `TRAVELPAYOUTS_TOKEN`，以及選用的
    `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`、`LINE_CHANNEL_ACCESS_TOKEN`、`LINE_USER_ID`
 3. Actions 頁面手動觸發一次 `FareHunter Monitor` 確認能跑
-4. 之後每 6 小時自動執行，`prices.db` 與 `docs/data.json` 會自動 commit 回 repo
+4. 之後**每小時**自動執行（GitHub schedule `:07` ＋ 外部觸發 `:17`；55 分鐘的
+   防重複 guard 會跳過其中重複的那一次），`prices.db` 與 `docs/data.json`
+   會自動 commit 回 repo。維運判斷見 `docs/HANDOFF_AI.md`：連續 ≥2 小時沒有
+   新的 `chore: price observations` commit 才算異常
 
 ## 手機 App（GitHub Pages + PWA）
 
@@ -130,7 +133,11 @@ python -m pytest tests/ -v           # 跑測試（15 個，不需網路與金�
   曾實測在 `q=` 附加 `for 1 adult economy class` 會導致 Google 落地頁解析退化
   （目的地與日期落空），已回退。若未來要精準控制旅客數/艙等，需另開任務研究
   Google 的結構化參數（如 `tfs=` 編碼），不要再往 `q=` 疊加自然語言。
-- **統計規則需要時間**：`new_low` / `big_drop` 要累積約 2–4 週資料才會啟用
+- **兩條統計規則的啟用時機差很多**：`new_low` 比整條航線，通常首日至數日內就會
+  啟用（實測最薄的 KHH→NGO 也只花 2.6 天累積到 30 筆）。`big_drop` 比單一出發日，
+  薄航線的多數出發日可能長期累積不到 30 筆而始終不觸發——實測 6 週後 KHH→CTS
+  只有 8/73 個出發日達標、KHH→NGO 只有 4/33。這是刻意設計（見 `storage.py` 的
+  `route_stats_by_date` docstring），不是故障
 - 尚未涵蓋：飯店、Error Fare 交叉比價、價格預測——這些是 v2+ 範圍，
   等歷史資料累積起來才有意義
 
