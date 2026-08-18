@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 try:                                    # works both as script and as package module
     from farehunter.models import NEAR_TERM_DAYS
@@ -23,6 +26,11 @@ try:
     from farehunter import health
 except ImportError:                     # pragma: no cover
     from . import health
+
+try:
+    from farehunter import cheap_days
+except ImportError:                     # pragma: no cover
+    from . import cheap_days
 
 
 # 首頁「權威近期價格日曆」的單一真相來源(SSOT)。每個 depart_date 一格,
@@ -318,6 +326,16 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
         _health_route_list(config_path,
                            [(rr["origin"], rr["destination"]) for rr in route_rows]),
         _now)
+    # 「哪天特別便宜」——跨出發日的相對比較。與 alerts 回答的是不同問題：
+    # alerts 是「該買了」（要打斷你），這裡是「哪天便宜」（你規劃時來查）。
+    # 用最新價而非史上最低，見 cheap_days 的說明。
+    try:
+        cheap = cheap_days.build_cheap_days(
+            conn, [(rr["origin"], rr["destination"]) for rr in route_rows],
+            today=_now.date().isoformat())
+    except Exception as exc:  # noqa: BLE001 — 看板功能不得讓整份 export 失敗
+        log.warning("cheap_days 計算失敗（%s），本次以空清單輸出", exc)
+        cheap = []
     conn.close()
 
     payload = {
@@ -328,6 +346,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
         "health": health_block,
         "routes": routes,
         "alerts": alerts,
+        "cheap_days": cheap,
     }
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
