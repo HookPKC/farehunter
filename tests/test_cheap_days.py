@@ -222,12 +222,16 @@ def test_missing_timestamps_fall_back_to_plain_price_comparison():
 # ---- 取價契約：必須是「最新」而不是「史上最低」--------------------------------
 
 def _seed(conn, rows):
+    """rows: (origin, destination, depart_date, price, observed_at[, return_date])"""
     conn.execute("""CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    origin TEXT, destination TEXT, depart_date TEXT, price REAL,
+                    origin TEXT, destination TEXT, depart_date TEXT,
+                    return_date TEXT, price REAL,
                     currency TEXT, observed_at TEXT, fare_class TEXT)""")
     conn.executemany("INSERT INTO observations (origin,destination,depart_date,"
-                     "price,currency,observed_at,fare_class) VALUES (?,?,?,?,?,?,?)",
-                     [(o, d, dd, p, "TWD", at, "any") for o, d, dd, p, at in rows])
+                     "return_date,price,currency,observed_at,fare_class) "
+                     "VALUES (?,?,?,?,?,?,?,?)",
+                     [(r[0], r[1], r[2], (r[5] if len(r) > 5 else None),
+                       r[3], "TWD", r[4], "any") for r in rows])
     conn.commit()
 
 
@@ -242,12 +246,13 @@ def test_latest_prices_by_date_takes_the_newest_not_the_cheapest():
     from farehunter.cheap_days import latest_prices_by_date
     conn = sqlite3.connect(":memory:")
     _seed(conn, [
-        ("KHH", "FUK", "2026-11-27", 16173.0, "2026-07-20T10:00:00+00:00"),
-        ("KHH", "FUK", "2026-11-27", 54597.0, "2026-08-17T02:00:00+00:00"),
+        ("KHH", "FUK", "2026-11-27", 16173.0, "2026-07-20T10:00:00+00:00", "2026-12-01"),
+        ("KHH", "FUK", "2026-11-27", 54597.0, "2026-08-17T02:00:00+00:00", "2026-12-02"),
     ])
-    prices, seen = latest_prices_by_date(conn, "KHH", "FUK")
+    prices, seen, ret = latest_prices_by_date(conn, "KHH", "FUK")
     assert prices["2026-11-27"] == 54597.0, "取到了史上最低，那個價格已經不存在"
     assert seen["2026-11-27"] == "2026-08-17T02:00:00+00:00"
+    assert ret["2026-11-27"] == "2026-12-02", "回程日要跟最新那筆一致，供比價連結用"
     conn.close()
 
 

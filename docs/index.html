@@ -120,6 +120,34 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
   .alert-row .why{flex-basis:100%;white-space:normal;text-align:right;margin-left:0}
 }
 
+/* ============ Cheap days（哪天特別便宜）============
+   沿用 .alerts 的容器語彙，只多一欄「落差」與一個 ★ 標記。刻意不做成卡片：
+   這是一張供比對的表，密度比視覺重量重要。 */
+.cheap{border:1px solid var(--line1);border-radius:var(--r-m);overflow:hidden;
+  background:var(--bg1)}
+.cheap-row{display:flex;align-items:baseline;gap:var(--s3);padding:var(--s3) var(--s4);
+  font-family:var(--mono);font-size:var(--fs-s);border-bottom:1px solid var(--line1);
+  color:var(--ink2);text-decoration:none;transition:background var(--t-fast)}
+.cheap-row:last-child{border-bottom:0}
+.cheap-row:hover{background:var(--bg2)}
+/* ★ 用 --pos（好消息），不用琥珀——token 註解明訂 amber 只保留給票價數字 */
+.cheap-row .star{width:1em;color:var(--pos);flex:none}
+.cheap-row .rt{color:var(--ink1);font-weight:700;min-width:88px}
+.cheap-row .dd{white-space:nowrap}
+.cheap-row .pr{color:var(--pos);font-weight:700;font-variant-numeric:tabular-nums}
+.cheap-row .gap{color:var(--ink1);font-weight:700;font-variant-numeric:tabular-nums}
+.cheap-row .vs{color:var(--ink3);font-size:var(--fs-xs);font-variant-numeric:tabular-nums}
+.cheap-row .age{color:var(--ink3);font-size:var(--fs-xs);margin-left:auto;
+  text-align:right;white-space:nowrap}
+/* 觀測較舊的列：提亮資料齡而非另開一個顏色——語意由文字承擔（「N 天前觀測」），
+   避免使用者把舊價當現價，也不動用被保留的琥珀色。 */
+.cheap-row.stale .age{color:var(--ink2)}
+@media (max-width:559px){
+  .cheap-row{flex-wrap:wrap;row-gap:2px}
+  .cheap-row .vs{flex-basis:100%}
+  .cheap-row .age{flex-basis:100%;text-align:right;margin-left:0}
+}
+
 /* ============ Route quick-nav ============ */
 .routenav{display:flex;gap:var(--s2);overflow-x:auto;padding-bottom:var(--s1);
   -webkit-overflow-scrolling:touch;scrollbar-width:none;margin-bottom:var(--s3)}
@@ -315,6 +343,13 @@ footer{margin-top:var(--s7);font-size:var(--fs-xs);color:var(--ink3);
   <div class="skel" style="height:40px;border-radius:0"></div>
 </div>
 
+<h2 id="h-cheap">哪天特別便宜 <span class="count" id="cheap-count"></span></h2>
+<p class="howto">跟同航線前後 10 天比，明顯低於周圍的出發日。★＝落差 30% 以上。
+  這裡回答「哪天便宜」，上面的警報回答「該買了」。</p>
+<div class="cheap" id="cheap" aria-labelledby="h-cheap">
+  <div class="skel" style="height:40px;border-radius:0"></div>
+</div>
+
 <h2 id="h-routes">監控航線 <span class="count" id="route-count"></span>
   <button id="navsort" class="sortbtn" type="button" hidden
     aria-label="切換下方導覽膠囊排序方式">排序：推薦序</button></h2>
@@ -398,6 +433,23 @@ function sparkline(hist, median, routeId){
     <circle cx="${X(last).toFixed(1)}" cy="${Y(ps[last]).toFixed(1)}" r="3.5" fill="#FFB300"/>
   </svg>`;
 }
+
+// 星期幾。沿用上方既有的 WD 陣列（不重新宣告）。
+// 刻意用 getUTCDay：depart_date 是純日期字串，new Date("2026-10-06") 會被解讀成
+// UTC 午夜，用本地 getDay() 在 UTC 以西的時區會整個偏移一天。
+const weekday = ds => {
+  const t = new Date(ds + "T00:00:00Z");
+  return isNaN(t) ? "" : "(" + WD[t.getUTCDay()] + ")";
+};
+
+// 「哪天特別便宜」的日期：跨年時必須顯示年份。這張表最遠看到 10 個月後，
+// 同一份清單裡會同時出現 12/15（今年）與 01/27（明年）——只印月日會讓人
+// 以為 01/27 比較近。其他區塊都只看近期，沿用它們的 MM/DD 即可。
+const cheapDate = ds => {
+  const md = ds.slice(5).replace("-", "/");
+  return ds.slice(0, 4) === String(new Date().getFullYear()) ? md
+                                                             : ds.slice(2, 4) + "/" + md;
+};
 
 function gfLink(o,d,dep,ret){
   // Google Flights 深連結備註（勿刪）：
@@ -619,6 +671,34 @@ function render(data){
         <span class="why">${REASONS[a.reason]||a.reason} · ${a.sent_at.slice(5,10).replace("-","/")}</span></a>`).join("")
     : `<div class="empty"><b>目前沒有警報。</b><br>
        價格低於門檻或出現歷史新低時會列在這裡；統計規則約累積 30 筆觀察後自動啟用。</div>`;
+
+  // 哪天特別便宜：跨出發日的相對比較。cheap_days 可能不存在（舊版 data.json）
+  // 或為空清單（沒有符合的日期），兩種都要平順處理。
+  const cheap = Array.isArray(data.cheap_days) ? data.cheap_days : [];
+  $("cheap-count").textContent = cheap.length ? `· ${cheap.length}` : "";
+  $("cheap").innerHTML = cheap.length
+    ? cheap.slice(0,12).map(c=>{
+        const ageH = c.observed_at
+          ? (Date.now() - new Date(c.observed_at).getTime())/3.6e6 : null;
+        const stale = ageH !== null && ageH > 72;
+        const ageTxt = ageH === null ? "觀測時間未知"
+          : ageH < 48 ? `${Math.max(1,Math.round(ageH))} 小時前觀測`
+          : `${Math.round(ageH/24)} 天前觀測`;
+        return `<a class="cheap-row${stale?" stale":""}"
+          href="${gfLink(c.origin,c.destination,c.depart_date,c.return_date)}"
+          target="_blank" rel="noopener"
+          aria-label="${c.origin} 到 ${c.destination} ${c.depart_date} 比前後十天便宜 ${Math.round(c.discount_pct)}%">
+          <span class="star" aria-hidden="true">${c.notable?"★":""}</span>
+          <span class="rt">${c.origin}→${c.destination}</span>
+          <span class="dd">${cheapDate(c.depart_date)} ${weekday(c.depart_date)}</span>
+          <span class="pr">${fmt(c.price)}</span>
+          <span class="gap">−${Math.round(c.discount_pct)}%</span>
+          <span class="vs">周圍約 ${fmt(c.neighbour_median)}</span>
+          <span class="age">${ageTxt}</span></a>`;
+      }).join("")
+    : `<div class="empty"><b>目前沒有明顯比周圍便宜的日期。</b><br>
+       需要該出發日與前後 10 天有同時期的觀測才能比較；薄航線的資料較稀疏，
+       累積幾輪後才會出現。</div>`;
 
   $("route-count").textContent = `· ${data.routes.length}`;
   if(!data.routes.length){

@@ -67,6 +67,7 @@ class CheapDay:
     neighbours: int              # 參與比較的鄰近日期數
     notable: bool                # 跌幅是否達到推播門檻
     observed_at: str | None = None   # 這個價格是何時觀測到的，供前端顯示資料齡
+    return_date: str | None = None    # 該筆觀測的回程日，供前端組比價連結
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -78,6 +79,7 @@ def find_cheap_days(prices_by_date: dict[str, float],
                     *,
                     today: str | None = None,
                     observed_at_by_date: dict[str, str] | None = None,
+                    return_date_by_date: dict[str, str] | None = None,
                     window_days: int = WINDOW_DAYS,
                     drop_pct: float = DROP_PCT,
                     min_neighbours: int = MIN_NEIGHBOURS,
@@ -156,7 +158,8 @@ def find_cheap_days(prices_by_date: dict[str, float],
             price=price, neighbour_median=med,
             discount_pct=round(disc, 1), neighbours=len(neigh),
             notable=disc >= notify_pct,
-            observed_at=(observed_at_by_date or {}).get(ds)))
+            observed_at=seen.get(ds),
+            return_date=(return_date_by_date or {}).get(ds)))
 
     out.sort(key=lambda c: (-c.discount_pct, c.depart_date))
     return out
@@ -164,7 +167,7 @@ def find_cheap_days(prices_by_date: dict[str, float],
 
 #: 每個出發日「最新一筆」觀測。刻意不是 MIN(price)——見 find_cheap_days 的說明。
 _LATEST_PER_DATE = """
-SELECT o.depart_date, o.price, o.observed_at
+SELECT o.depart_date, o.price, o.observed_at, o.return_date
   FROM observations o
   JOIN (SELECT depart_date, MAX(observed_at) AS mx
           FROM observations
@@ -177,8 +180,8 @@ SELECT o.depart_date, o.price, o.observed_at
 
 
 def latest_prices_by_date(conn, origin: str, destination: str
-                          ) -> tuple[dict[str, float], dict[str, str]]:
-    """回傳 ({depart_date: 最新價}, {depart_date: 觀測時間})。
+                          ) -> tuple[dict[str, float], dict[str, str], dict[str, str]]:
+    """回傳 ({depart_date: 最新價}, {depart_date: 觀測時間}, {depart_date: 回程日})。
 
     存在的理由：把「必須用最新價、不能用史上最低」這個容易寫錯的查詢收在一處。
     同一時刻若有多筆並列（同一輪抓到多個行程），GROUP BY 取其中一筆——它們都是
@@ -186,11 +189,14 @@ def latest_prices_by_date(conn, origin: str, destination: str
     """
     prices: dict[str, float] = {}
     seen_at: dict[str, str] = {}
+    ret: dict[str, str] = {}
     for row in conn.execute(_LATEST_PER_DATE,
                             (origin, destination, origin, destination)):
         prices[row[0]] = row[1]
         seen_at[row[0]] = row[2]
-    return prices, seen_at
+        if row[3]:
+            ret[row[0]] = row[3]
+    return prices, seen_at, ret
 
 
 def build_cheap_days(conn, routes, *, today: str | None = None,
@@ -198,8 +204,9 @@ def build_cheap_days(conn, routes, *, today: str | None = None,
     """對每條航線跑一次比較，合併後依跌幅排序。routes 為 (origin, destination) 序列。"""
     hits: list[CheapDay] = []
     for origin, destination in routes:
-        prices, seen_at = latest_prices_by_date(conn, origin, destination)
+        prices, seen_at, ret = latest_prices_by_date(conn, origin, destination)
         hits += find_cheap_days(prices, origin, destination, today=today,
-                                observed_at_by_date=seen_at, **kw)
+                                observed_at_by_date=seen_at,
+                                return_date_by_date=ret, **kw)
     hits.sort(key=lambda c: (-c.discount_pct, c.depart_date))
     return [h.to_dict() for h in hits]
