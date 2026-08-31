@@ -332,7 +332,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
     try:
         cheap = cheap_days.build_cheap_days(
             conn, [(rr["origin"], rr["destination"]) for rr in route_rows],
-            today=_now.date().isoformat())
+            now=_now)
     except Exception as exc:  # noqa: BLE001 — 看板功能不得讓整份 export 失敗
         log.warning("cheap_days 計算失敗（%s），本次以空清單輸出", exc)
         cheap = []

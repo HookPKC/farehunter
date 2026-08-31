@@ -4,16 +4,18 @@
 big_drop 原本拿全航線中位數當基準時踩過的坑，不能在這裡重演。
 """
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from farehunter.cheap_days import (find_cheap_days, WINDOW_DAYS, DROP_PCT,
-                                   MIN_NEIGHBOURS, NOTIFY_PCT)
+                                   MIN_NEIGHBOURS, NOTIFY_PCT, FRESH_HOURS)
 
 BASE = date(2026, 10, 1)
 TODAY = "2026-09-01"
+#: 固定「現在」，讓新鮮度相關的測試不依賴真實時鐘
+NOW = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 
 
 def _flat(n=21, price=10000.0, start=BASE):
@@ -166,59 +168,6 @@ def test_observed_at_is_carried_through():
     assert "observed_at" in hits[0].to_dict()
 
 
-# ---- 比較必須同時期 ---------------------------------------------------------
-
-def _now_iso(days_ago=0):
-    from datetime import datetime, timezone
-    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
-
-
-def test_stale_candidate_is_not_compared_against_fresh_neighbours():
-    """核心方法回歸：拿六週前的候選價去比昨天的鄰近價會產生假性便宜。
-
-    只要這段期間整體漲價，那個舊價格就會顯得便宜——實測 KHH→FUK 2026-12-04
-    的候選價是 6 週前觀測的，鄰近中位數多數來自本週。這裡的候選是 20 天前、
-    鄰近全是今天，時間差超過 MAX_SPREAD_DAYS，因此鄰近全部不採用 → 樣本不足
-    → 不下判斷。
-    """
-    p = _flat(price=10000.0)
-    target = (BASE + timedelta(days=10)).isoformat()
-    p[target] = 6000.0
-    at = {d: _now_iso(0) for d in p}
-    at[target] = _now_iso(20)
-    assert _find(p, observed_at_by_date=at) == []
-
-
-def test_contemporaneous_prices_are_compared_normally():
-    """同一批抓到的（時間差在上限內）照常比較。"""
-    p = _flat(price=10000.0)
-    target = (BASE + timedelta(days=10)).isoformat()
-    p[target] = 6000.0
-    at = {d: _now_iso(1) for d in p}
-    at[target] = _now_iso(3)                 # 相差 2 天，在 7 天上限內
-    hits = _find(p, observed_at_by_date=at)
-    assert len(hits) == 1 and hits[0].discount_pct == 40.0
-
-
-def test_absurdly_old_observation_is_dropped_entirely():
-    """超過 MAX_AGE_DAYS 的候選日不列出——太舊的價格連當參考都沒意義。"""
-    p = _flat(price=10000.0)
-    target = (BASE + timedelta(days=10)).isoformat()
-    p[target] = 6000.0
-    at = {d: _now_iso(40) for d in p}         # 全部 40 天前：比較公平但太舊
-    assert _find(p, observed_at_by_date=at) == []
-    # 同樣的資料，把上限放寬就會出現——證明是年齡擋掉的，不是別的原因
-    assert len(_find(p, observed_at_by_date=at, max_age_days=60)) == 1
-
-
-def test_missing_timestamps_fall_back_to_plain_price_comparison():
-    """呼叫端沒提供時間戳時不得整批啞掉——退回單純的價格比較。"""
-    p = _flat(price=10000.0)
-    p[(BASE + timedelta(days=10)).isoformat()] = 6000.0
-    assert len(_find(p, observed_at_by_date=None)) == 1
-    assert len(_find(p, observed_at_by_date={})) == 1
-
-
 # ---- 取價契約：必須是「最新」而不是「史上最低」--------------------------------
 
 def _seed(conn, rows):
@@ -260,19 +209,59 @@ def test_build_cheap_days_merges_routes_and_sorts_by_discount():
     import sqlite3
     from farehunter.cheap_days import build_cheap_days
     conn = sqlite3.connect(":memory:")
+    fresh = (NOW - timedelta(hours=3)).isoformat()
+    fresher = (NOW - timedelta(hours=1)).isoformat()
     rows = []
     for i in range(21):
         ds = (BASE + timedelta(days=i)).isoformat()
-        rows.append(("TPE", "NRT", ds, 10000.0, "2026-08-17T02:00:00+00:00"))
-        rows.append(("TPE", "KIX", ds, 20000.0, "2026-08-17T02:00:00+00:00"))
+        rows.append(("TPE", "NRT", ds, 10000.0, fresh))
+        rows.append(("TPE", "KIX", ds, 20000.0, fresh))
     # TPE→NRT 便宜 30%、TPE→KIX 便宜 50% → KIX 應排前面
     rows.append(("TPE", "NRT", (BASE + timedelta(days=10)).isoformat(),
-                 7000.0, "2026-08-17T03:00:00+00:00"))
+                 7000.0, fresher))
     rows.append(("TPE", "KIX", (BASE + timedelta(days=10)).isoformat(),
-                 10000.0, "2026-08-17T03:00:00+00:00"))
+                 10000.0, fresher))
     _seed(conn, rows)
-    out = build_cheap_days(conn, [("TPE", "NRT"), ("TPE", "KIX")], today=TODAY)
+    out = build_cheap_days(conn, [("TPE", "NRT"), ("TPE", "KIX")], now=NOW)
     assert [h["destination"] for h in out] == ["KIX", "NRT"]
     assert [h["discount_pct"] for h in out] == [50.0, 30.0]
     assert all(isinstance(h, dict) for h in out)
     conn.close()
+
+
+# ---- 新鮮度：只用最近 FRESH_HOURS 內的觀測互相比較 ---------------------------
+
+def test_only_fresh_observations_participate():
+    """核心設計回歸：舊觀測不得參與比較。
+
+    列出的每個價格都必須還訂得到——實測「史上最低價」有 13/28 已經消失，其中
+    KHH→FUK 2026-11-27 從 16,173 漲到 54,597。而且兩邊都新鮮就自動保證同時期，
+    不需要額外的 spread 補丁（舊版有，已刪）。
+    """
+    import sqlite3
+    from farehunter.cheap_days import build_cheap_days
+    conn = sqlite3.connect(":memory:")
+    stale = (NOW - timedelta(days=5)).isoformat()
+    fresh = (NOW - timedelta(hours=2)).isoformat()
+    target = (BASE + timedelta(days=10)).isoformat()
+    rows = []
+    for i in range(21):
+        ds = (BASE + timedelta(days=i)).isoformat()
+        if ds == target:
+            continue
+        rows.append(("TPE", "NRT", ds, 10000.0, fresh))
+    # 這一天只有 5 天前的觀測，價格 5000——當時很便宜，但現在不知道還在不在
+    rows.append(("TPE", "NRT", target, 5000.0, stale))
+    _seed(conn, rows)
+
+    out = build_cheap_days(conn, [("TPE", "NRT")], now=NOW)
+    assert out == [], "這天沒有 24 小時內的觀測，不該把 5 天前的價格端出去"
+
+    # 把新鮮度放寬到 6 天，同一筆資料就會出現——證明擋掉它的是新鮮度而非別的條件
+    out2 = build_cheap_days(conn, [("TPE", "NRT")], now=NOW, fresh_hours=24 * 6)
+    assert len(out2) == 1 and out2[0]["price"] == 5000.0
+
+
+def test_fresh_hours_default_matches_the_site_sla():
+    """與網站 hero / CTA 的 24 小時 SLA 一致——整站對「現價」用同一把尺。"""
+    assert FRESH_HOURS == 24
