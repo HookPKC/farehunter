@@ -2,7 +2,7 @@
 
 **讀者**：接手本專案的任何 AI 模型（Claude Opus/Sonnet、Codex、GPT 系列或其他），
 以及想了解 AI 協作規範的人類。本文件不綁定任何特定模型；「你」指接手的 AI。
-最後更新：2026-07-10。
+最後更新：2026-08-31。
 
 ---
 
@@ -22,8 +22,12 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 **資料來源三層（更新頻率天差地遠，這是理解一切價差問題的鑰匙）**：
 - 快取估價：Travelpayouts/Aviasales，monitor **每小時**（頁面標「≈」「約」）
 - Google 實價：SerpAPI fsc-snapshot **每日** 06:10 UTC（「傳統航空最低」等精確價）
-- Google 日曆實價：SearchApi gcal-sweep **每週一** 05:30 UTC、longrange-sweep
-  **每月 3/18 日**（綠色月度數字）
+- 航空公司官網實價：Scrape.do verify-airlines **每日**（驗證看板候選）
+
+> 曾有第三層「Google 日曆實價」（SearchApi gcal-sweep／longrange-sweep）。
+> SearchApi 的額度是**一次性試用 100 次**（實測跨月不重置），2026-08 用盡且
+> 不續費，該層與其 `long_range` 表（1,277 筆、零讀者）已於同月移除。歷史
+> `provider='searchapi'` 觀測仍留在 DB，標籤對應表因此保留。
 
 **觸發與防護四層（2026-07-07 全部就位）**：
 1. 雙觸發：GitHub schedule `:07`（不可靠，實測命中率曾僅 ~7%，保留為備援）＋
@@ -34,7 +38,7 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 4. 維運者端：monitor 尾端 optional 心跳（repo secret `HC_PING_URL`，未設即休眠）
    ＋ cron-job.org 失敗 email
 
-**concurrency**：monitor/fsc/gcal/longrange/verify 共用 `farehunter` 群組
+**concurrency**：monitor/fsc/verify 共用 `farehunter` 群組
 （`cancel-in-progress: false`＝排隊不互砍）；deploy-pages 獨立 `pages` 群組。
 
 ## 2. 絕對禁區（違反任一項＝事故）
@@ -65,7 +69,7 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 
 | 樣態 | 特徵 | 案例 | 處置 |
 |---|---|---|---|
-| **guard 跳過** | 該班 run 綠色成功，log 有「跳過本輪」；稍早（<55 分）有 fsc/gcal 等來源剛 commit 並更新過 `data.json` | 7/8：fsc 漂移至 12:05 跑完並 export，12:17 monitor 見資料齡 12 分 → 正常跳過 | 不處理。資料其實剛被刷新 |
+| **guard 跳過** | 該班 run 綠色成功，log 有「跳過本輪」；稍早（<55 分）有 fsc/verify 等來源剛 commit | 7/8：fsc 漂移至 12:05 跑完並 export，12:17 monitor 見資料齡 12 分 → 正常跳過 | 不處理。資料其實剛被刷新 |
 | **排隊補跑** | 兩個 workflow 同時到場，晚到的 queued 後照跑，commit 時間略延後 | 7/9 16:17：verify 與 monitor 同場，兩者都成功（16:17 與 16:18 各一筆 commit） | 不處理。concurrency 正常運作 |
 | **平台單次取消** | run 顯示 cancelled，但當下群組內無人佔用、也非手動取消 | 7/9 06:17：monitor cancelled，當日 fsc/verify 均在 16:1x 才跑（無撞車）→ GitHub 平台偶發 | 單次＋下一班正常＝忽略 |
 
@@ -98,7 +102,7 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 - **prices.db 成長**：SQLite 檔案每小時隨 commit 進 repo（2026-07 已 12,000+
   筆觀測）。一兩年尺度 repo 會肥大、clone 變慢。可能方向：歷史歸檔、shallow
   clone 指引、或改存放策略——屬大改，需完整提案與使用者明確核准，勿順手做。
-- 實價來源（fsc/gcal/longrange）僅靠 GitHub 排程、時間漂移嚴重。已評估過
+- 實價來源（fsc/verify）僅靠 GitHub 排程、時間漂移嚴重。已評估過
   「比照 monitor 加外部觸發」：因付費 API 消耗與低頻本質，**判定不值得**，
   維持現狀。除非使用者重新立案，不要主動重提。
 

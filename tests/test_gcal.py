@@ -1,34 +1,17 @@
+"""export_web 的顯示規則驗收（實價優先、月份最低、carrier 回退）。
+
+檔名沿用歷史（原本也含 SearchApi 日曆解析測試）。SearchApi 的一次性試用額度
+於 2026-08 用盡且不續費，gcal_sweep / longrange_sweep / searchapi_calendar
+已移除，相關的兩個測試隨之刪除；此檔其餘測試與資料來源無關，全部保留。
+"""
 import sys
-from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from farehunter.searchapi_calendar import parse_calendar
 from farehunter.storage import Store
 from farehunter.models import Offer
 from farehunter.export_web import export
-
-PAYLOAD = {"calendar": [
-    {"departure": "2099-08-01", "return": "2099-08-06", "price": 9800},
-    {"departure": "2099-08-01", "return": "2099-08-05", "price": 9200},   # 4 晚更便宜
-    {"departure": "2099-08-01", "return": "2099-08-20", "price": 7000},   # 19 晚，排除
-    {"departure": "2099-08-02", "return": "2099-08-02", "has_no_flights": True},
-    {"departure": "2099-08-03", "return": "2099-08-08", "price": 8100,
-     "is_lowest_price": True},
-    {"departure": "2020-01-01", "return": "2020-01-06", "price": 1},      # 過去，排除
-]}
-
-
-def test_parse_calendar_min_per_departure_within_trip_window():
-    offers = parse_calendar(PAYLOAD, "TPE", "NRT", today=date(2099, 7, 1))
-    assert [(o.depart_date, o.price) for o in offers] == \
-        [("2099-08-01", 9200), ("2099-08-03", 8100)]
-    o = offers[0]
-    assert o.source == "google" and o.fare_class == "any"
-    assert o.carriers == "" and o.stops == 0
-    assert "through%202099-08-05" in o.link
-
 
 def test_chip_prefers_fresh_google_price(tmp_path):
     import datetime as dt
@@ -106,25 +89,6 @@ def test_monthly_low_picks_cheapest_per_month(tmp_path):
     assert len([m for m in monthly]) == len({m["ym"] for m in monthly})
     cheapest = min(monthly, key=lambda m: m["price"])
     assert cheapest["source"] == "google"
-
-
-def test_sweep_windows_tile_six_months_no_gaps():
-    from farehunter.gcal_sweep import (sweep_windows, DEEP_POSITIONS,
-                                       CHUNK_DAYS, NEAR_CHUNKS)
-    import datetime as dt
-    base = dt.date(2026, 1, 5)
-    starts = set()
-    for wk in range(DEEP_POSITIONS):
-        wins = sweep_windows(base + dt.timedelta(weeks=wk))
-        assert len(wins) == NEAR_CHUNKS + 1          # 每次固定 2 窗 = 16/週
-        for s, e in wins:
-            assert (e - s).days == CHUNK_DAYS - 1
-            starts.add((s - (base + dt.timedelta(weeks=wk))).days)
-    # 近端 day1 + 深掃 day15,29,...：相鄰窗起點間距恰為 CHUNK_DAYS（無縫、無重疊）
-    deep = sorted(x for x in starts if x >= 15)
-    assert deep[0] == 15
-    assert all(b - a == CHUNK_DAYS for a, b in zip(deep, deep[1:]))
-    assert deep[-1] + CHUNK_DAYS >= 180              # 覆蓋達 6 個月
 
 
 def test_monthly_real_price_beats_cheaper_cache_same_date(tmp_path):
