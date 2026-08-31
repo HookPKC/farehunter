@@ -73,6 +73,7 @@ class CheapDay:
     notable: bool                # 跌幅是否達到推播門檻
     observed_at: str | None = None   # 這個價格是何時觀測到的，供前端顯示資料齡
     return_date: str | None = None   # 該筆觀測的回程日，供前端組比價連結
+    source: str | None = None        # aviasales（快取估價）或 google（實際觀測價）
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -85,6 +86,7 @@ def find_cheap_days(prices_by_date: dict[str, float],
                     today: str | None = None,
                     observed_at_by_date: dict[str, str] | None = None,
                     return_date_by_date: dict[str, str] | None = None,
+                    source_by_date: dict[str, str] | None = None,
                     window_days: int = WINDOW_DAYS,
                     drop_pct: float = DROP_PCT,
                     min_neighbours: int = MIN_NEIGHBOURS,
@@ -108,6 +110,7 @@ def find_cheap_days(prices_by_date: dict[str, float],
              if isinstance(p, (int, float)) and not isinstance(p, bool) and p > 0}
     seen = observed_at_by_date or {}
     rets = return_date_by_date or {}
+    srcs = source_by_date or {}
 
     out: list[CheapDay] = []
     for ds, price in valid.items():
@@ -132,7 +135,8 @@ def find_cheap_days(prices_by_date: dict[str, float],
             price=price, neighbour_median=med,
             discount_pct=round(disc, 1), neighbours=len(neigh),
             notable=disc >= notify_pct,
-            observed_at=seen.get(ds), return_date=rets.get(ds)))
+            observed_at=seen.get(ds), return_date=rets.get(ds),
+            source=srcs.get(ds)))
 
     out.sort(key=lambda c: (-c.discount_pct, c.depart_date))
     return out
@@ -140,7 +144,7 @@ def find_cheap_days(prices_by_date: dict[str, float],
 
 #: 每個出發日「最新一筆」觀測。刻意不是 MIN(price)——見 find_cheap_days 的說明。
 _LATEST_PER_DATE = """
-SELECT o.depart_date, o.price, o.observed_at, o.return_date
+SELECT o.depart_date, o.price, o.observed_at, o.return_date, o.source
   FROM observations o
   JOIN (SELECT depart_date, MAX(observed_at) AS mx
           FROM observations
@@ -154,8 +158,9 @@ SELECT o.depart_date, o.price, o.observed_at, o.return_date
 
 
 def latest_prices_by_date(conn, origin: str, destination: str, *, since: str = ""
-                          ) -> tuple[dict[str, float], dict[str, str], dict[str, str]]:
-    """回傳 ({depart_date: 最新價}, {depart_date: 觀測時間}, {depart_date: 回程日})。
+                          ) -> tuple[dict[str, float], dict[str, str],
+                                     dict[str, str], dict[str, str]]:
+    """回傳 (最新價, 觀測時間, 回程日, 來源) 四個以 depart_date 為鍵的字典。
 
     since: ISO 時間字串，只採計不早於它的觀測。空字串＝不限（測試與診斷用；
         production 一律經由 build_cheap_days 帶入新鮮度下限）。
@@ -167,13 +172,16 @@ def latest_prices_by_date(conn, origin: str, destination: str, *, since: str = "
     prices: dict[str, float] = {}
     seen_at: dict[str, str] = {}
     rets: dict[str, str] = {}
+    srcs: dict[str, str] = {}
     for row in conn.execute(_LATEST_PER_DATE,
                             (origin, destination, since, origin, destination)):
         prices[row[0]] = row[1]
         seen_at[row[0]] = row[2]
         if row[3]:
             rets[row[0]] = row[3]
-    return prices, seen_at, rets
+        if row[4]:
+            srcs[row[0]] = row[4]
+    return prices, seen_at, rets, srcs
 
 
 def build_cheap_days(conn, routes, *, now: datetime | None = None,
@@ -189,10 +197,11 @@ def build_cheap_days(conn, routes, *, now: datetime | None = None,
 
     hits: list[CheapDay] = []
     for origin, destination in routes:
-        prices, seen_at, rets = latest_prices_by_date(
+        prices, seen_at, rets, srcs = latest_prices_by_date(
             conn, origin, destination, since=since)
         hits += find_cheap_days(prices, origin, destination, today=today,
                                 observed_at_by_date=seen_at,
-                                return_date_by_date=rets, **kw)
+                                return_date_by_date=rets,
+                                source_by_date=srcs, **kw)
     hits.sort(key=lambda c: (-c.discount_pct, c.depart_date))
     return [h.to_dict() for h in hits]

@@ -13,6 +13,7 @@ from .storage import Store
 from .analyzer import evaluate
 from .notify import notify, channels_configured
 from . import price_state
+from . import health
 
 log = logging.getLogger(__name__)
 
@@ -128,3 +129,6 @@ if __name__ == "__main__":
             sys.argv[2] if len(sys.argv) > 2 else "prices.db")
     print(f"日曆掃描完成: 查詢 {s['searched']} 次, 記錄 {s['recorded']} 筆, "
           f"警報 {s['alerts']} 則, 錯誤 {s['errors']} 次")
+    # 全軍覆沒時以非零結束碼失敗——見 health.sweep_exit_code 的說明：
+    # SearchApi 額度用完後，這支程式曾連續五週回 0 記錄 16 錯誤而 workflow 全綠。
+    raise SystemExit(health.sweep_exit_code(s, "gcal_sweep"))

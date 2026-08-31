@@ -171,16 +171,17 @@ def test_observed_at_is_carried_through():
 # ---- 取價契約：必須是「最新」而不是「史上最低」--------------------------------
 
 def _seed(conn, rows):
-    """rows: (origin, destination, depart_date, price, observed_at[, return_date])"""
+    """rows: (origin, destination, depart_date, price, observed_at[, return_date[, source]])"""
     conn.execute("""CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT,
                     origin TEXT, destination TEXT, depart_date TEXT,
-                    return_date TEXT, price REAL,
-                    currency TEXT, observed_at TEXT, fare_class TEXT)""")
+                    return_date TEXT, price REAL, currency TEXT,
+                    observed_at TEXT, fare_class TEXT, source TEXT)""")
     conn.executemany("INSERT INTO observations (origin,destination,depart_date,"
-                     "return_date,price,currency,observed_at,fare_class) "
-                     "VALUES (?,?,?,?,?,?,?,?)",
+                     "return_date,price,currency,observed_at,fare_class,source) "
+                     "VALUES (?,?,?,?,?,?,?,?,?)",
                      [(r[0], r[1], r[2], (r[5] if len(r) > 5 else None),
-                       r[3], "TWD", r[4], "any") for r in rows])
+                       r[3], "TWD", r[4], "any",
+                       (r[6] if len(r) > 6 else "aviasales")) for r in rows])
     conn.commit()
 
 
@@ -198,7 +199,7 @@ def test_latest_prices_by_date_takes_the_newest_not_the_cheapest():
         ("KHH", "FUK", "2026-11-27", 16173.0, "2026-07-20T10:00:00+00:00", "2026-12-01"),
         ("KHH", "FUK", "2026-11-27", 54597.0, "2026-08-17T02:00:00+00:00", "2026-12-02"),
     ])
-    prices, seen, ret = latest_prices_by_date(conn, "KHH", "FUK")
+    prices, seen, ret, src = latest_prices_by_date(conn, "KHH", "FUK")
     assert prices["2026-11-27"] == 54597.0, "取到了史上最低，那個價格已經不存在"
     assert seen["2026-11-27"] == "2026-08-17T02:00:00+00:00"
     assert ret["2026-11-27"] == "2026-12-02", "回程日要跟最新那筆一致，供比價連結用"
@@ -265,3 +266,29 @@ def test_only_fresh_observations_participate():
 def test_fresh_hours_default_matches_the_site_sla():
     """與網站 hero / CTA 的 24 小時 SLA 一致——整站對「現價」用同一把尺。"""
     assert FRESH_HOURS == 24
+
+
+def test_source_is_carried_so_the_ui_can_label_cache_estimates():
+    """快取價與 Google 實際觀測價必須能區分。
+
+    實測快取對 Google 即時價的絕對誤差中位數 7.9%、90 百分位 27%，而且 28% 的
+    情況下快取比實價便宜 >10%。把兩者混在一起顯示成同樣的數字並不誠實——網站
+    其他地方已有「快取估價 / 約 NT$X」的既有做法，看板要跟上。
+    """
+    import sqlite3
+    from farehunter.cheap_days import build_cheap_days
+    conn = sqlite3.connect(":memory:")
+    fresh = (NOW - timedelta(hours=2)).isoformat()
+    target = (BASE + timedelta(days=10)).isoformat()
+    rows = []
+    for i in range(21):
+        ds = (BASE + timedelta(days=i)).isoformat()
+        if ds == target:
+            continue
+        rows.append(("TPE", "NRT", ds, 10000.0, fresh, None, "aviasales"))
+    rows.append(("TPE", "NRT", target, 7000.0, fresh, "2026-10-16", "google"))
+    _seed(conn, rows)
+    out = build_cheap_days(conn, [("TPE", "NRT")], now=NOW)
+    assert len(out) == 1
+    assert out[0]["source"] == "google", "來源要帶出來，前端才能標示可信度"
+    conn.close()

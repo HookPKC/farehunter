@@ -180,3 +180,45 @@ def _log_health(health: dict, logger: logging.Logger) -> None:
                      ", ".join(health["degraded"]))
     else:
         logger.info("Route health 全部 %d 條航線觀測新鮮", len(health["routes"]))
+
+
+# ---- sweep 的結束碼：讓「全軍覆沒」不再靜默 ----------------------------------
+
+#: 各支 sweep 用來表示「有寫進 DB」的欄位名（不同 sweep 命名不同）。
+_RECORDED_KEYS = ("recorded", "dates_covered", "verified")
+
+
+def sweep_failed_entirely(summary: dict) -> bool:
+    """True 表示這一輪 sweep 每一次查詢都失敗、而且什麼都沒記錄。
+
+    存在的理由是一次實際發生的靜默失敗：SearchApi 的月額度用完之後，
+    gcal_sweep 的 16 次查詢全部回 HTTP 429，summary 是
+    {'searched': 16, 'recorded': 0, 'errors': 16}——但進入點無條件 exit 0，
+    於是 workflow 每週照樣綠燈、照樣 commit，而 Google 即時價（唯一的基準
+    真相來源）整整五週沒有進帳，沒有任何地方看得出來。
+
+    判斷刻意收得很緊，只認「全軍覆沒」：
+      - searched == 0        → 沒查就沒失敗（例如當週沒有掃描窗）
+      - errors < searched    → 部分成功，屬正常波動
+      - 有任何記錄           → 有進帳就不算壞掉
+    薄航線查得到但解析後回空是 errors=0 / recorded=0，不會被誤判——那是
+    正常現象，PLAYBOOK 也明訂它該被數但不該當成故障。
+    """
+    searched = int(summary.get("searched") or 0)
+    if searched <= 0:
+        return False
+    if int(summary.get("errors") or 0) < searched:
+        return False
+    return not any(int(summary.get(k) or 0) > 0 for k in _RECORDED_KEYS)
+
+
+def sweep_exit_code(summary: dict, name: str = "sweep",
+                    logger: logging.Logger | None = None) -> int:
+    """回傳給 SystemExit 用的結束碼；全軍覆沒時回 1 並記一筆 error。"""
+    if not sweep_failed_entirely(summary):
+        return 0
+    (logger or log).error(
+        "%s 全軍覆沒：%d 次查詢全部失敗且零記錄（summary=%s）。"
+        "workflow 將以非零結束碼失敗，以免這種狀況再次靜默五週。",
+        name, int(summary.get("searched") or 0), summary)
+    return 1

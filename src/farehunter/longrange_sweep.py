@@ -13,6 +13,7 @@ from .runner import load_config
 from .searchapi_calendar import (fetch_oneway_calendar, parse_oneway_prices,
                                  combine_roundtrips, SearchApiError)
 from .storage import Store
+from . import health
 
 log = logging.getLogger(__name__)
 
@@ -71,3 +72,6 @@ if __name__ == "__main__":
             sys.argv[2] if len(sys.argv) > 2 else "prices.db")
     print(f"長程掃描完成: 查詢 {s['searched']} 次, 覆蓋 {s['dates_covered']} 個出發日, "
           f"錯誤 {s['errors']} 次")
+    # 全軍覆沒時以非零結束碼失敗——見 health.sweep_exit_code 的說明：
+    # SearchApi 額度用完後，這支程式曾連續五週回 0 記錄 16 錯誤而 workflow 全綠。
+    raise SystemExit(health.sweep_exit_code(s, "longrange_sweep"))
