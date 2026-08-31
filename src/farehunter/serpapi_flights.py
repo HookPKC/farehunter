@@ -19,6 +19,7 @@ from datetime import date, timedelta
 import requests
 
 from .models import Offer
+from .normalize import CACHE_SOURCES
 from .travelpayouts import FULL_SERVICE
 
 log = logging.getLogger(__name__)
@@ -300,6 +301,55 @@ def cta_candidates(ranked_path: str = "docs/ranked.json",
     return out
 
 
+def cheap_days_candidates(data_path: str = "docs/data.json",
+                          today: date | None = None) -> list[dict]:
+    """從 docs/data.json 的 cheap_days 取驗證候選：正在被推薦、但價格是快取估價的日期。
+
+    為什麼需要這個池子：cheap_days 看板是最新的推薦介面，卻是唯一沒有驗證優先權
+    的。實測拿 aviasales 快取價對 Google 即時價比對（同航程、時間差 ≤6 小時、
+    74 筆），絕對誤差中位數 7.9%、90 百分位 27%，而且 28% 的情況下快取比實價
+    便宜 >10%。看板第一名若剛好落在那 28% 裡，使用者點進去會看到高得多的價格。
+
+    只收兩種條件都成立的項目：
+      notable（落差 ≥ NOTIFY_PCT）——只有夠大的落差才值得花一次額度
+      來源是快取——已經是 google 觀測價的不需要再驗
+    因此池深通常只有 0–4，沒有 notable 的日子它自動讓位給 hero，不會長期擠掉
+    別的池子。實測 cheap∩hero = 0、cheap∩cta = 0，是真正不同的驗證目標。
+
+    落差大者先（最該被證實或推翻的）。唯讀，嚴格 fail-soft：檔案缺失 / JSON
+    損壞 / 欄位缺失一律回 []。
+    """
+    today = today or date.today()
+    try:
+        import json
+        with open(data_path, encoding="utf-8") as fh:
+            items = json.load(fh).get("cheap_days") or []
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+    out = []
+    for it in items:
+        try:
+            if not it.get("notable"):
+                continue
+            if str(it.get("source") or "").lower() not in CACHE_SOURCES:
+                continue                  # 已是 google 實價 → 不必花額度
+            o, d = it.get("origin"), it.get("destination")
+            dep_s, ret_s = it.get("depart_date"), it.get("return_date")
+            if not (o and d and dep_s and ret_s):
+                continue                  # 沒有回程日就組不出比價查詢，不猜
+            if not _valid_horizon(dep_s, today):
+                continue
+            out.append({"origin": o, "destination": d, "depart_date": dep_s,
+                        "return_date": ret_s, "price": it.get("price"),
+                        "observed_at": it.get("observed_at") or "",
+                        "discount_pct": it.get("discount_pct") or 0.0,
+                        "slot_kind": "cheap_day"})
+        except (AttributeError, TypeError):
+            continue                      # 單筆欄位不符 → 跳過，不炸
+    out.sort(key=lambda c: -float(c["discount_pct"]))   # 落差大者先
+    return out
+
+
 def hero_candidates(conn, routes: list[dict],
                     today: date | None = None,
                     now_ref: str | None = None) -> list[dict]:
@@ -330,6 +380,7 @@ def hero_candidates(conn, routes: list[dict],
 
 def build_verification_plans(conn, thresholds, routes,
                              ranked_path: str = "docs/ranked.json",
+                             data_path: str = "docs/data.json",
                              today: date | None = None,
                              claimed_trips: set | None = None,
                              max_slots: int = 3,
@@ -352,7 +403,14 @@ def build_verification_plans(conn, thresholds, routes,
     now_ref = now_ref or "now"
     claimed_trips = claimed_trips if claimed_trips is not None else set()
     claimed_routes = {(o, d) for (o, d, _dep, _ret) in claimed_trips}
+    # 池子順序＝驗證優先序，每個池子最多貢獻一個槽，用罄由後面遞補。
+    #   alert      已經推播到使用者手機的，主張最強
+    #   cheap_day  看板正在推薦、但價格是快取估價的（見 cheap_days_candidates）
+    #   cta / hero 網站上的推薦與大字
+    # cheap_day 只收 notable 且來源為快取的項目，池深通常 0–4，
+    # 沒有 notable 的日子自動讓位，不會長期擠掉 cta / hero。
     pools = [alert_candidates(conn, thresholds, today, now_ref=now_ref),
+             cheap_days_candidates(data_path, today),
              cta_candidates(ranked_path, today),
              hero_candidates(conn, routes, today, now_ref=now_ref)]
     plans: list[dict] = []

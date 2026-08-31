@@ -107,12 +107,18 @@ def _no_ranked(tmp_path):
     return str(tmp_path / "does_not_exist.json")
 
 
+def _no_data(tmp_path):
+    """隔離 cheap_day 池：不隔離的話會讀到 repo 裡真實的 docs/data.json，
+    測試結果就隨當天的看板內容浮動。"""
+    return str(tmp_path / "no_data.json")
+
+
 # ============ Rotation 基礎 =================================================
 
 # 3. 三個 Rotation 固定保留
 def test_three_rotation_slots_always_present(tmp_path):
     store = _store(tmp_path)
-    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path),
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                         now_ref=TEST_NOW_REF)
     rot = [p for p in plans if p["kind"] == "rotation"]
     assert len(rot) == 3
@@ -122,7 +128,7 @@ def test_three_rotation_slots_always_present(tmp_path):
 def test_no_candidate_rotation_matches_legacy(tmp_path):
     store = _store(tmp_path)
     today = TEST_TODAY
-    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path),
+    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                         now_ref=TEST_NOW_REF)
     assert all(p["kind"] == "rotation" for p in plans) and len(plans) == 3
     legacy = []
@@ -144,7 +150,7 @@ def test_rotation_deterministic_regardless_of_verification(tmp_path):
     expected = [(r["origin"], r["destination"])
                 for r in pick_routes_for_today(ROUTES, today=today,
                                                per_day=ROTATION_PER_DAY)]
-    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path),
+    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                         now_ref=TEST_NOW_REF)
     rot = [p for p in plans if p["kind"] == "rotation"]
     assert [(p["origin"], p["destination"]) for p in rot] == expected
@@ -157,7 +163,7 @@ def test_alert_candidate_creates_verification(tmp_path):
     store = _store(tmp_path)
     _seed_alert(store, o="KHH", d="KIX", dep=_future(60), ret=_future(65))
     plans = build_verification_plans(store.conn, THRESH, ROUTES,
-                                     ranked_path=_no_ranked(tmp_path),
+                                     ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                                      today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert any(p["slot_kind"] == "alert" for p in plans)
 
@@ -224,7 +230,7 @@ def test_cta_missing_fields_failsoft(tmp_path):
 def test_build_plans_survives_missing_ranked(tmp_path):
     store = _store(tmp_path)
     _seed_alert(store)
-    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path),
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                         now_ref=TEST_NOW_REF)
     assert len(plans) >= 3            # 至少三輪替,不崩
 
@@ -257,7 +263,7 @@ def test_claimed_key_includes_return_date(tmp_path):
     _seed_alert(store, o="TPE", d="NRT", dep=dep, ret=_future(47), price=6100)
     plans = build_verification_plans(store.conn, THRESH,
                                      [{"origin": "TPE", "destination": "NRT"}],
-                                     ranked_path=_no_ranked(tmp_path),
+                                     ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                                      claimed_trips=claimed,
                                      today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert any(p["return_date"] == _future(47) for p in plans)
@@ -288,7 +294,7 @@ def test_insufficient_candidates_fewer_than_three(tmp_path):
     _seed_alert(store, o="TPE", d="NRT", dep=_future(40), ret=_future(45))
     # 無 CTA、無 Hero 候選
     plans = build_verification_plans(store.conn, THRESH, [],
-                                     ranked_path=_no_ranked(tmp_path),
+                                     ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                                      today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert len(plans) == 1 and plans[0]["slot_kind"] == "alert"
 
@@ -315,7 +321,7 @@ def test_cooldown_alert(tmp_path):
     dep, ret = _seed_alert(store, o="TPE", d="NRT", dep=_future(40), ret=_future(45))
     _obs(store, "TPE", "NRT", dep, ret, 9000, _iso(10), source="google")
     plans = build_verification_plans(store.conn, THRESH, [],
-                                     ranked_path=_no_ranked(tmp_path),
+                                     ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                                      today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert not any(p["slot_kind"] == "alert" for p in plans)
 
@@ -339,7 +345,7 @@ def test_cooldown_hero(tmp_path):
     _obs(store, "KHH", "NRT", dep, _future(47), 8000, _iso(10), source="google")
     plans = build_verification_plans(store.conn, THRESH,
                                      [{"origin": "KHH", "destination": "NRT"}],
-                                     ranked_path=_no_ranked(tmp_path),
+                                     ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                                      today=TEST_TODAY, now_ref=TEST_NOW_REF)
     assert not any(p["slot_kind"] == "hero" for p in plans)
 
@@ -380,7 +386,7 @@ def test_rotation_trip_not_reused_by_verification(tmp_path):
     dep, ret = snapshot_dates(today, horizon_weeks=w)
     _obs(store, r0["origin"], r0["destination"], dep, ret, 6000, _iso(2))
     _alert(store, r0["origin"], r0["destination"], dep, 6000, "new_low", _sqlite(1))
-    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path),
+    plans = build_plans(CFG, store, today, ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                         now_ref=TEST_NOW_REF)
     verify = [p for p in plans if p["kind"] == "verify"]
     assert not any((p["origin"], p["destination"], p["depart_date"],
@@ -441,7 +447,7 @@ def test_plans_never_exceed_daily_cap(tmp_path):
         _seed_alert(store, o=rt["origin"], d=rt["destination"],
                     dep=_future(30 + i), ret=_future(35 + i),
                     price=5000 + i, sent_hours_ago=1 + i * 0.1)
-    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path),
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                         now_ref=TEST_NOW_REF)
     assert len(plans) <= SEARCHES_PER_DAY
 
@@ -473,7 +479,7 @@ def test_api_ok_no_match_stays_green_with_warning(tmp_path, monkeypatch):
     monkeypatch.setattr(fsc_mod, "load_config", lambda p: CFG)
     monkeypatch.setattr(fsc_mod.time, "sleep", lambda s: None)
     summary = fsc_run("x.yaml", str(tmp_path / "prices.db"),
-                      ranked_path=_no_ranked(tmp_path))
+                      ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path))
     assert summary["api_errors"] == 0
     assert summary["api_ok"] == summary["planned"] == 3
     assert summary["api_ok_no_match"] == 3
@@ -497,7 +503,7 @@ def test_serpapi_error_counted_not_fatal(tmp_path, monkeypatch):
     monkeypatch.setattr(fsc_mod, "load_config", lambda p: CFG)
     monkeypatch.setattr(fsc_mod.time, "sleep", lambda s: None)
     summary = fsc_run("x.yaml", str(tmp_path / "prices.db"),
-                      ranked_path=_no_ranked(tmp_path))
+                      ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path))
     assert summary["api_errors"] == 1
     assert summary["api_ok"] == summary["planned"] - 1
 
@@ -635,7 +641,7 @@ def test_cooldown_boundary_fixed_nowref(tmp_path):
 def test_rotation_and_verification_share_today(tmp_path):
     store = _store(tmp_path)
     _seed_alert(store, o="TPE", d="NRT", dep=_future(40), ret=_future(45))
-    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path),
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path), data_path=_no_data(tmp_path),
                         now_ref=TEST_NOW_REF)
     rot = [p for p in plans if p["kind"] == "rotation"]
     # rotation 的出發日必為 TEST_TODAY + horizon,不含真實今天的痕跡
@@ -779,3 +785,103 @@ def test_production_default_matches_legacy_now_semantics(tmp_path):
     _obs(store, "KHH", "NRT", inside, hi, 8000, _iso(1))
     rows = _auth_latest(conn, "KHH", "NRT")          # 不傳 as_of → 真實 UTC
     assert [r["depart_date"] for r in rows] == [inside]
+
+
+# ============ cheap_day 驗證槽 ==============================================
+# cheap_days 看板是最新的推薦介面，卻曾是唯一沒有驗證優先權的。實測拿快取價對
+# Google 即時價比對（同航程、時間差 ≤6 小時、74 筆）：絕對誤差中位 7.9%、
+# 90 百分位 27%，28% 的情況下快取比實價便宜 >10%。看板第一名若落在那 28% 裡，
+# 使用者點進去會看到高得多的價格。
+
+def _data_file(tmp_path, entries):
+    """寫一個最小 data.json；entries: list of dict（覆寫預設欄位）。"""
+    base = {"origin": "TPE", "destination": "NRT",
+            "depart_date": _future(60), "return_date": _future(65),
+            "price": 7000.0, "neighbour_median": 10000.0, "discount_pct": 30.0,
+            "neighbours": 8, "notable": True,
+            "observed_at": _iso(2), "source": "aviasales"}
+    path = tmp_path / "data.json"
+    path.write_text(json.dumps(
+        {"cheap_days": [{**base, **e} for e in entries]}, ensure_ascii=False),
+        encoding="utf-8")
+    return str(path)
+
+
+def test_cheap_day_candidate_is_picked(tmp_path):
+    from farehunter.serpapi_flights import cheap_days_candidates
+    p = _data_file(tmp_path, [{}])
+    got = cheap_days_candidates(p, TEST_TODAY)
+    assert len(got) == 1
+    assert got[0]["slot_kind"] == "cheap_day"
+    assert got[0]["origin"] == "TPE" and got[0]["destination"] == "NRT"
+
+
+def test_only_notable_entries_are_worth_a_search(tmp_path):
+    """看板列到 15% 就顯示，但只有 ≥30% 才值得花一次額度。"""
+    from farehunter.serpapi_flights import cheap_days_candidates
+    p = _data_file(tmp_path, [{"notable": False, "discount_pct": 18.0}])
+    assert cheap_days_candidates(p, TEST_TODAY) == []
+
+
+def test_google_sourced_entries_need_no_verification(tmp_path):
+    """已經是 Google 實價的不必再花額度驗證——那是這個池子存在的前提。"""
+    from farehunter.serpapi_flights import cheap_days_candidates
+    p = _data_file(tmp_path, [{"source": "google"}])
+    assert cheap_days_candidates(p, TEST_TODAY) == []
+
+
+def test_bigger_discount_goes_first(tmp_path):
+    from farehunter.serpapi_flights import cheap_days_candidates
+    p = _data_file(tmp_path, [
+        {"depart_date": _future(60), "discount_pct": 31.0},
+        {"depart_date": _future(70), "discount_pct": 44.0},
+    ])
+    got = cheap_days_candidates(p, TEST_TODAY)
+    assert [g["discount_pct"] for g in got] == [44.0, 31.0]
+
+
+def test_entry_without_return_date_is_skipped(tmp_path):
+    """沒有回程日組不出比價查詢，不猜。"""
+    from farehunter.serpapi_flights import cheap_days_candidates
+    p = _data_file(tmp_path, [{"return_date": None}])
+    assert cheap_days_candidates(p, TEST_TODAY) == []
+
+
+def test_missing_or_broken_data_json_is_failsoft(tmp_path):
+    from farehunter.serpapi_flights import cheap_days_candidates
+    assert cheap_days_candidates(str(tmp_path / "nope.json"), TEST_TODAY) == []
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert cheap_days_candidates(str(bad), TEST_TODAY) == []
+    empty = tmp_path / "empty.json"
+    empty.write_text("{}", encoding="utf-8")
+    assert cheap_days_candidates(str(empty), TEST_TODAY) == []
+
+
+def test_cheap_day_reaches_the_plan(tmp_path):
+    """整合：cheap_day 候選要真的出現在 build_plans 的輸出裡。"""
+    store = _store(tmp_path)
+    dep, ret = _future(60), _future(65)
+    p = _data_file(tmp_path, [{"depart_date": dep, "return_date": ret}])
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=_no_ranked(tmp_path),
+                        data_path=p, now_ref=TEST_NOW_REF)
+    store.close()
+    kinds = [pl.get("slot_kind") for pl in plans]
+    assert "cheap_day" in kinds, f"cheap_day 沒有進入 plans：{kinds}"
+    cd = [pl for pl in plans if pl.get("slot_kind") == "cheap_day"][0]
+    assert cd["depart_date"] == dep and cd["return_date"] == ret
+    assert len(plans) <= 6, "不得超過每日額度"
+
+
+def test_no_notable_cheap_day_yields_the_slot(tmp_path):
+    """沒有 notable 的日子，cheap_day 池自動讓位，不會長期擠掉 cta / hero。"""
+    store = _store(tmp_path)
+    p = _data_file(tmp_path, [{"notable": False}])
+    ranked = _ranked_file(tmp_path, [("TPE", "KIX", _future(50), _future(55),
+                                     6400.0, _iso(50))])
+    plans = build_plans(CFG, store, TEST_TODAY, ranked_path=ranked,
+                        data_path=p, now_ref=TEST_NOW_REF)
+    store.close()
+    kinds = [pl.get("slot_kind") for pl in plans]
+    assert "cheap_day" not in kinds
+    assert "cta" in kinds, f"cheap_day 讓位後 cta 應接上：{kinds}"
