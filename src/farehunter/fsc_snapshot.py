@@ -30,6 +30,7 @@ ROTATION_SLOTS = 3   # 固定保留,與 verification 完全解耦
 
 def build_plans(cfg: dict, store: Store, today: _date,
                 ranked_path: str = "docs/ranked.json",
+                data_path: str = "docs/data.json",
                 now_ref: str | None = None) -> list[dict]:
     """先建計畫、後執行。純 DB/JSON 讀取,零 API。
 
@@ -55,7 +56,8 @@ def build_plans(cfg: dict, store: Store, today: _date,
 
     verify_budget = SEARCHES_PER_DAY - len(plans)
     for v in build_verification_plans(store.conn, thresholds, routes,
-                                      ranked_path=ranked_path, today=today,
+                                      ranked_path=ranked_path,
+                                      data_path=data_path, today=today,
                                       claimed_trips=claimed_trips,
                                       max_slots=verify_budget, now_ref=now_ref):
         plans.append({**v, "kind": "verify"})
@@ -66,6 +68,7 @@ def build_plans(cfg: dict, store: Store, today: _date,
 
 def run(config_path: str = "config.yaml", db_path: str = "prices.db",
         ranked_path: str = "docs/ranked.json",
+        data_path: str = "docs/data.json",
         today: _date | None = None, now_ref: str | None = None) -> dict:
     cfg = load_config(config_path)
     today = today or _date.today()   # production 不傳 → 真實今天,行為不變
@@ -73,9 +76,11 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
     summary = {"planned": 0, "api_ok": 0, "api_errors": 0, "api_ok_no_match": 0,
                "recorded": 0, "real": 0, "insights": 0,
                "rotation": 0, "verify": 0,
-               "slot_alert": 0, "slot_cta": 0, "slot_hero": 0}
+               "slot_alert": 0, "slot_cheap_day": 0, "slot_cta": 0,
+               "slot_hero": 0}
     try:
         plans = build_plans(cfg, store, today, ranked_path=ranked_path,
+                            data_path=data_path,
                             now_ref=now_ref)
         summary["planned"] = len(plans)
         for plan in plans:
@@ -92,7 +97,9 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 summary["rotation"] += 1
             else:
                 summary["verify"] += 1
-                summary[f"slot_{plan.get('slot_kind', 'alert')}"] += 1
+                # 未知 slot_kind 不得炸掉整輪（新增池子時漏改計數器的保險）
+                key = f"slot_{plan.get('slot_kind', 'alert')}"
+                summary[key] = summary.get(key, 0) + 1
                 log.info("Verify probe [%s] %s→%s %s~%s",
                          plan.get("slot_kind"), o, d, dep, ret)
             pi = payload.get("price_insights") or {}
@@ -135,7 +142,8 @@ def main(argv=None) -> int:
             argv[1] if len(argv) > 1 else "prices.db",
             argv[2] if len(argv) > 2 else "docs/ranked.json")
     print(f"快照完成: 計畫 {s['planned']}(輪替 {s['rotation']}/驗證 {s['verify']}"
-          f":alert {s['slot_alert']}/cta {s['slot_cta']}/hero {s['slot_hero']})"
+          f":alert {s['slot_alert']}/cheap_day {s['slot_cheap_day']}"
+          f"/cta {s['slot_cta']}/hero {s['slot_hero']})"
           f", API 成功 {s['api_ok']}/錯誤 {s['api_errors']}/成功無航班 "
           f"{s['api_ok_no_match']}, 實價 {s['real']} 傳統 {s['recorded']} "
           f"insights {s['insights']}")
