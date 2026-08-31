@@ -2,10 +2,15 @@
 
 The Aviasales cache is a cheapest-fare feed and structurally excludes
 full-service carriers (CI/BR/JX...). Google Flights has them; SerpAPI exposes
-Google Flights as an API with a free tier (~100 searches/month). We spend
-that budget as SEARCHES_PER_DAY route snapshots per day, rotating through the
-configured routes, and record the cheapest all-full-service itinerary into the
-existing fare_class='full' track.
+Google Flights as an API. We spend SEARCHES_PER_DAY route snapshots per day,
+rotating through the configured routes, and record the cheapest
+all-full-service itinerary into the existing fare_class='full' track.
+
+**額度：不要相信註解，去看 docs/quota.json。** 這段原本寫「free tier
+(~100 searches/month)」，而 SEARCHES_PER_DAY = 6（＝約 180 次/月）是圍繞那個
+數字設計的。但 2026-08 實測 31 天每天跑滿、從未被擋——180 > 100，所以那句話
+是錯的，真實額度更大。`farehunter.quota` 每天記錄真實方案與用量，調整
+SEARCHES_PER_DAY 之前先看那份紀錄；憑註解或印象加量是在賭使用者的錢。
 
 Endpoint: GET https://serpapi.com/search?engine=google_flights
 Auth: api_key query param (env var SERPAPI_KEY).

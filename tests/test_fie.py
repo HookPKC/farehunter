@@ -54,15 +54,6 @@ def test_normalize_serpapi_itinerary_times_and_stops():
     assert o.source == "serpapi"
 
 
-def test_normalize_searchapi_calendar_sparse_low_quality():
-    o = N.from_searchapi_calendar({"departure": "2026-09-01", "return": "2026-09-06",
-                                   "price": 8100}, "KHH", "KIX")
-    assert o.airline == [] and o.duration is None and o.stops is None
-    assert o.departure_time is None
-    assert o.raw_quality_score < 0.5         # only price present
-    assert N.is_valid(o)                      # still valid, just sparse
-
-
 def test_airline_codes_consistency():
     assert N._codes("CI,BR") == ["CI", "BR"]
     assert N._codes("ci br  ci") == ["CI", "BR"]     # dedup + upper

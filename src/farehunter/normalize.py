@@ -140,15 +140,6 @@ def from_scrapedo(it: dict, origin, destination, depart_date, return_date):
     return _itinerary(it, origin, destination, "scrapedo", depart_date, return_date)
 
 
-def from_searchapi_calendar(row: dict, origin: str, destination: str) -> NormalizedOffer:
-    # calendar rows: {departure, return, price} — no times/airline/duration
-    return _build(
-        row["price"], row.get("currency", "TWD"),
-        f"{origin}-{destination}", "searchapi",
-        depart_date=str(row.get("departure", "") or "") or None,
-        return_date=str(row.get("return", "") or "") or None)
-
-
 def from_observation(row) -> NormalizedOffer:
     """A stored warehouse row (observations table / Offer) -> NormalizedOffer.
     source in the warehouse is 'aviasales' or 'google'; times are not stored."""

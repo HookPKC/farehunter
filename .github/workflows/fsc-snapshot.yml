@@ -59,6 +59,10 @@ jobs:
           set -euo pipefail
           BASE_SHA="$(git rev-parse refs/remotes/origin/main)"
           git add prices.db docs/data.json
+          # 額度紀錄可能不存在（未設金鑰時 quota.snapshot 會跳過不寫檔）。
+          # set -e 之下直接 git add 不存在的路徑會讓整個 Commit 步驟失敗，
+          # 連價格資料一起賠掉——為了一份觀測附件弄丟主資料是本末倒置。
+          [ -f docs/quota.json ] && git add docs/quota.json || true
           if git diff --cached --quiet; then
             echo "No data changes to commit"
             exit 0
