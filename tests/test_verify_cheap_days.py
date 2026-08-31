@@ -112,10 +112,51 @@ def test_trip_already_priced_by_fsc_is_skipped(tmp_path):
     st.close(); st2.close()
 
 
-def test_not_notable_is_ignored(tmp_path):
-    """只有夠大的落差才值得花一次額度（cheap_days_candidates 的條件）。"""
+def test_non_notable_is_now_verified_too(tmp_path):
+    """刻意反轉的行為：Scrape.do 的額度是這支程式專用的，卡在 notable
+    只是讓額度閒置。
+
+    實測 14 天看板歷史：只驗 notable 是每日 1.9 筆（576 credits/月＝免費層
+    58%），放寬後 2.6 筆（819＝82%），都在 1,000 之內。效果是「看板上出現的
+    每條航線都有實價」而不只是落差 ≥30% 的那幾格。
+    """
     st = _store(tmp_path)
-    assert _pick(st, tmp_path, _entry(notable=False)) == []
+    got = _pick(st, tmp_path, _entry(notable=False, discount=22.0))
+    assert [c["depart_date"] for c in got] == ["2026-11-20"]
+    st.close()
+
+
+def test_below_the_board_threshold_is_still_refused(tmp_path):
+    """放寬不等於沒有下限。看板本身只收 ≥ DROP_PCT，這裡明示同一條線，
+    以免門檻日後被調鬆時驗證跟著失守。"""
+    from farehunter.cheap_days import DROP_PCT
+    st = _store(tmp_path)
+    assert _pick(st, tmp_path, _entry(notable=False, discount=DROP_PCT - 1)) == []
+    assert len(_pick(st, tmp_path, _entry(notable=False, discount=DROP_PCT))) == 1
+    st.close()
+
+
+def test_serpapi_side_still_gates_on_notable(tmp_path):
+    """關鍵不對稱：SerpAPI 只有 3 個驗證槽要跟 alert/cta/hero 共用，所以那邊
+    必須維持 notable 門檻，否則 cheap_day 會天天填滿、長期擠掉別的池子。
+
+    這條測試存在的理由就是防止有人「順手」把兩邊統一。
+    """
+    from farehunter.serpapi_flights import cheap_days_candidates
+    path = _board(tmp_path, _entry(notable=False, discount=22.0))
+    assert cheap_days_candidates(path, TODAY) == []                  # 預設仍嚴格
+    assert len(cheap_days_candidates(path, TODAY,
+                                     require_notable=False)) == 1    # 明確放寬才收
+    st = _store(tmp_path); st.close()
+
+
+def test_daily_cap_still_bounds_the_free_tier(tmp_path):
+    """放寬候選池不得放寬預算：3/天 × 31 × 10 credits = 930，仍在免費層
+    1,000 之內。看板再長也不能多花。"""
+    st = _store(tmp_path)
+    board = [_entry(o="TPE", d=x, discount=40.0 - i)
+             for i, x in enumerate(["NRT", "KIX", "FUK", "NGO", "CTS"])]
+    assert len(_pick(st, tmp_path, *board)) == 3
     st.close()
 
 

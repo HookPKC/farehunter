@@ -307,7 +307,9 @@ def cta_candidates(ranked_path: str = "docs/ranked.json",
 
 
 def cheap_days_candidates(data_path: str = "docs/data.json",
-                          today: date | None = None) -> list[dict]:
+                          today: date | None = None, *,
+                          require_notable: bool = True,
+                          min_discount_pct: float = 0.0) -> list[dict]:
     """從 docs/data.json 的 cheap_days 取驗證候選：正在被推薦、但價格是快取估價的日期。
 
     為什麼需要這個池子：cheap_days 看板是最新的推薦介面，卻是唯一沒有驗證優先權
@@ -315,11 +317,24 @@ def cheap_days_candidates(data_path: str = "docs/data.json",
     74 筆），絕對誤差中位數 7.9%、90 百分位 27%，而且 28% 的情況下快取比實價
     便宜 >10%。看板第一名若剛好落在那 28% 裡，使用者點進去會看到高得多的價格。
 
-    只收兩種條件都成立的項目：
-      notable（落差 ≥ NOTIFY_PCT）——只有夠大的落差才值得花一次額度
-      來源是快取——已經是 google 觀測價的不需要再驗
-    因此池深通常只有 0–4，沒有 notable 的日子它自動讓位給 hero，不會長期擠掉
-    別的池子。實測 cheap∩hero = 0、cheap∩cta = 0，是真正不同的驗證目標。
+    來源必須是快取——已經是 google 實價的不必再花額度。
+
+    **require_notable 為什麼要可調（兩個呼叫端的預算結構完全不同）**：
+
+    - `True`（預設，給 fsc_snapshot）：只收 notable（落差 ≥ NOTIFY_PCT）。
+      SerpAPI 那邊只有 3 個驗證槽、要跟 alert / cta / hero 共用，所以 cheap_day
+      必須是「夠大的落差才值得佔一槽」，沒有 notable 的日子自動讓位。實測
+      cheap∩hero = 0、cheap∩cta = 0，是真正不同的驗證目標。**不要把這個預設
+      改成 False**，否則 cheap_day 會天天填滿、長期擠掉 cta / hero。
+    - `False`（給 verify_airlines）：Scrape.do 的額度是這支程式專用的，沒人
+      跟它搶，卡在 notable 只是讓額度閒置。實測 14 天看板歷史：notable 每日
+      1.9 筆（576 credits/月 = 免費層 58%），放寬後 2.6 筆（819 = 82%），
+      VERIFICATIONS_PER_DAY=3 的理論上限是 930 = 93%，都在 1,000 之內。
+      放寬的效果是「看板上出現的每條航線都有實價」而不只是落差 ≥30% 的。
+
+    min_discount_pct 是放寬時的下限（呼叫端傳 cheap_days.DROP_PCT）：看板本身
+    已經只收 ≥ DROP_PCT 的項目，這個參數是明示意圖、並防止門檻日後被調鬆時
+    這裡跟著失守。
 
     落差大者先（最該被證實或推翻的）。唯讀，嚴格 fail-soft：檔案缺失 / JSON
     損壞 / 欄位缺失一律回 []。
@@ -334,7 +349,9 @@ def cheap_days_candidates(data_path: str = "docs/data.json",
     out = []
     for it in items:
         try:
-            if not it.get("notable"):
+            if require_notable and not it.get("notable"):
+                continue
+            if float(it.get("discount_pct") or 0.0) < min_discount_pct:
                 continue
             if str(it.get("source") or "").lower() not in CACHE_SOURCES:
                 continue                  # 已是 google 實價 → 不必花額度

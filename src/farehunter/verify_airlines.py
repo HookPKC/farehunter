@@ -25,10 +25,22 @@ from pathlib import Path
 from .scrapedo_flights import (search_flights, parse_cheapest_direct,
                                VERIFICATIONS_PER_DAY, ScrapeDoError)
 from .serpapi_flights import cheap_days_candidates, _is_cooled
+from .cheap_days import DROP_PCT
 from .storage import Store
 from . import health
 
 log = logging.getLogger(__name__)
+
+#: Scrape.do 免費層預算（每次成功請求 10 credits，免費 1,000 credits/月）：
+#:
+#:   VERIFICATIONS_PER_DAY(3) × 31 天 × 10 credits = 930 credits = 93%
+#:
+#: 也就是說每日上限 3 本來就是照免費層算出來的，之前只是因為候選池卡在
+#: notable 而填不滿（實測 14 天看板歷史：每日 1.9 筆 = 576 credits = 58%）。
+#: 放寬後每日 2.6 筆 = 819 credits = 82%，仍在免費層內。
+#:
+#: **要調高 VERIFICATIONS_PER_DAY 之前先重算這行。** 4/天就是 1,240 credits，
+#: 超過免費層，月底會開始靜默失敗——那正是 SearchApi 那次的失敗型態。
 
 #: 候選觀測最多可以多舊。驗證一個 49 天前的日曆價，對今天的決策沒有意義——
 #: 那個價格早就不存在了（實測快取／舊觀測與現價的絕對誤差中位數 7.9%、
@@ -76,7 +88,9 @@ def pick_candidates(store: Store, limit: int = VERIFICATIONS_PER_DAY,
     out: list[dict] = []
     claimed_routes: set[tuple[str, str]] = set()
 
-    for c in cheap_days_candidates(data_path, today):
+    for c in cheap_days_candidates(data_path, today,
+                                   require_notable=False,
+                                   min_discount_pct=DROP_PCT):
         if len(out) >= limit:
             break
         o, d = c["origin"], c["destination"]
