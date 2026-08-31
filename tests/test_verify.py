@@ -34,6 +34,14 @@ def test_parse_handles_flat_shape():
     assert o.carriers == "CI" and o.price == 14000
 
 
+def _no_data(tmp_path):
+    """空的 data.json → 隔離 cheap_day 主池（否則會讀到 repo 的真實看板）。"""
+    import json
+    p = tmp_path / "empty.json"
+    p.write_text(json.dumps({"cheap_days": []}), encoding="utf-8")
+    return str(p)
+
+
 def test_pick_candidates_prefers_cheapest_unverified_one_per_route(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     import datetime as dt
@@ -44,7 +52,7 @@ def test_pick_candidates_prefers_cheapest_unverified_one_per_route(tmp_path):
     store.record(Offer("TPE", "NRT", d2, r1, 7000, "TWD", "", 0, "", source="google"))
     store.record(Offer("KHH", "KIX", d1, r1, 8000, "TWD", "", 0, "", source="google"))
     store.record(Offer("KHH", "FUK", d1, r1, 6000, "TWD", "IT", 0, "", source="google"))  # 已驗證
-    cands = pick_candidates(store)
+    cands = pick_candidates(store, data_path=_no_data(tmp_path))
     got = [(c["origin"], c["destination"], c["price"]) for c in cands]
     assert got == [("TPE", "NRT", 7000), ("KHH", "KIX", 8000)]  # 每航線取最便宜、跳過已驗證
     store.close()

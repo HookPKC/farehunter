@@ -46,7 +46,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - name: Verify airlines for cheapest calendar dates
+      - name: Verify board cheap days with real airline prices
         env:
           SCRAPEDO_KEY: ${{ secrets.SCRAPEDO_KEY }}
         run: PYTHONPATH=src python -m farehunter.verify_airlines
