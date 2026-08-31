@@ -29,6 +29,14 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 > 不續費，該層與其 `long_range` 表（1,277 筆、零讀者）已於同月移除。歷史
 > `provider='searchapi'` 觀測仍留在 DB，標籤對應表因此保留。
 
+**付費 API 額度（2026-08 起可觀測，不要再憑印象推論）**：
+`docs/quota.json` 由 fsc-snapshot 每日寫入並 commit，內容是 SerpAPI 真實
+方案、本月用量、剩餘次數與判讀（`farehunter.quota`；打的是免費且不計額度的
+`account.json`）。改 `SEARCHES_PER_DAY` 之前先看這份紀錄與它的 git 歷史。
+背景：`serpapi_flights` 的註解長期誤寫「free tier (~100/month)」，而實測
+180 次/月從未被擋——整個系統圍繞一個錯的前提設計。status 為 `low` /
+`exhausted` 時會記 warning；`headroom` 是機會提示不是警報。
+
 **觸發與防護四層（2026-07-07 全部就位）**：
 1. 雙觸發：GitHub schedule `:07`（不可靠，實測命中率曾僅 ~7%，保留為備援）＋
    **cron-job.org `:17` 外部觸發（2026-07-07 上線，主力）**

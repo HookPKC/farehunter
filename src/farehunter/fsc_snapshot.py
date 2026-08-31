@@ -22,6 +22,7 @@ from .serpapi_flights import (search_google_flights, parse_full_service,
                               horizon_for_slot, build_verification_plans,
                               SEARCHES_PER_DAY, SerpApiError)
 from .storage import Store
+from . import quota
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +70,8 @@ def build_plans(cfg: dict, store: Store, today: _date,
 def run(config_path: str = "config.yaml", db_path: str = "prices.db",
         ranked_path: str = "docs/ranked.json",
         data_path: str = "docs/data.json",
-        today: _date | None = None, now_ref: str | None = None) -> dict:
+        today: _date | None = None, now_ref: str | None = None,
+        quota_path: str | None = "docs/quota.json") -> dict:
     cfg = load_config(config_path)
     today = today or _date.today()   # production 不傳 → 真實今天,行為不變
     store = Store(db_path)
@@ -77,7 +79,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                "recorded": 0, "real": 0, "insights": 0,
                "rotation": 0, "verify": 0,
                "slot_alert": 0, "slot_cheap_day": 0, "slot_cta": 0,
-               "slot_hero": 0}
+               "slot_hero": 0, "quota": "unchecked"}
     try:
         plans = build_plans(cfg, store, today, ranked_path=ranked_path,
                             data_path=data_path,
@@ -131,6 +133,11 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
     if summary["api_ok_no_match"]:
         log.warning("%d plan(s) returned HTTP OK but zero matching flights",
                     summary["api_ok_no_match"])
+    # 額度自我檢查：本輪查詢之後才做，數字才含本輪用量。account.json 免費、
+    # 不計入額度，且 snapshot() 永不拋例外——見 quota 模組 docstring。
+    # quota_path=None 可關掉（測試用；production 走預設）。
+    if quota_path:
+        summary["quota"] = quota.snapshot(quota_path)["status"]
     return summary
 
 
@@ -146,7 +153,7 @@ def main(argv=None) -> int:
           f"/cta {s['slot_cta']}/hero {s['slot_hero']})"
           f", API 成功 {s['api_ok']}/錯誤 {s['api_errors']}/成功無航班 "
           f"{s['api_ok_no_match']}, 實價 {s['real']} 傳統 {s['recorded']} "
-          f"insights {s['insights']}")
+          f"insights {s['insights']}, 額度 {s['quota']}")
     # 全數 API 失敗 → 非零退出,讓 workflow 紅燈;成功但零航班不算失敗
     if s["planned"] > 0 and s["api_errors"] == s["planned"]:
         print("ERROR: 所有 API 查詢均失敗,快照零產出", file=sys.stderr)
