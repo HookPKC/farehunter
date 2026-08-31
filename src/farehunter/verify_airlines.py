@@ -13,9 +13,23 @@ from . import health
 
 log = logging.getLogger(__name__)
 
+#: 候選觀測最多可以多舊。驗證一個 49 天前的日曆價，對今天的決策沒有意義——
+#: 那個價格早就不存在了（實測快取／舊觀測與現價的絕對誤差中位數 7.9%、
+#: 90 百分位 27%，而 49 天的跨度遠大於此）。
+#:
+#: 這個界線是必要的：SearchApi 的一次性額度於 2026-08 用盡後，日曆來源停止供料，
+#: 而 carriers='' 的候選池被凍結在七月的 77 筆。沒有這個界線，這支程式會每天
+#: 花掉 3 次 Scrape.do（每月 90 次＝免費層 1,000 credits 的 900）去驗證死資料，
+#: 而且會持續 26 天把整池磨完。寧可閒置也不要浪費額度在過期的價格上。
+CANDIDATE_MAX_AGE_DAYS = 14
 
-def pick_candidates(store: Store, limit: int = VERIFICATIONS_PER_DAY) -> list[dict]:
-    """Cheapest unverified google-priced future dates, max one per route."""
+
+def pick_candidates(store: Store, limit: int = VERIFICATIONS_PER_DAY,
+                    max_age_days: int = CANDIDATE_MAX_AGE_DAYS) -> list[dict]:
+    """Cheapest unverified google-priced future dates, max one per route.
+
+    只取 max_age_days 內的觀測——見 CANDIDATE_MAX_AGE_DAYS 的說明。
+    """
     rows = store.conn.execute(
         """WITH latest_google AS (
              SELECT origin, destination, depart_date, return_date, price, carriers,
@@ -23,14 +37,27 @@ def pick_candidates(store: Store, limit: int = VERIFICATIONS_PER_DAY) -> list[di
                                        ORDER BY observed_at DESC, rowid DESC) AS rk
              FROM observations
              WHERE source='google' AND fare_class='any'
-               AND depart_date BETWEEN date('now','+1 day') AND date('now','+330 days')),
+               AND depart_date BETWEEN date('now','+1 day') AND date('now','+330 days')
+               AND julianday(observed_at) >= julianday('now') - ?),
            unverified AS (
              SELECT *, ROW_NUMBER() OVER (PARTITION BY origin, destination
                                           ORDER BY price ASC) AS pr
              FROM latest_google WHERE rk=1 AND carriers='' AND return_date != '')
            SELECT origin, destination, depart_date, return_date, price
            FROM unverified WHERE pr=1 ORDER BY price ASC LIMIT ?""",
-        (limit,)).fetchall()
+        (max_age_days, limit)).fetchall()
+    if not rows:
+        # 「沒有新鮮的待驗目標」與「壞掉了」是兩件事，要能分辨。
+        stale = store.conn.execute(
+            """SELECT COUNT(*) FROM observations
+               WHERE source='google' AND fare_class='any' AND carriers=''
+                 AND depart_date > date('now')""").fetchone()[0]
+        if stale:
+            log.warning("無新鮮候選：另有 %d 筆 carriers='' 觀測但都超過 %d 天，"
+                        "已跳過以免浪費額度（日曆來源是否停止供料？）",
+                        stale, max_age_days)
+        else:
+            log.info("無待驗證候選——所有 google 觀測都已帶有航空公司")
     return [dict(r) for r in rows]
 
 
