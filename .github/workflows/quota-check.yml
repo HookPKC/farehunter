@@ -1,0 +1,64 @@
+name: Quota Check
+
+# 只有手動觸發，刻意沒有 schedule。
+#
+# 每日的額度紀錄由 fsc-snapshot 順手產生（docs/quota.json，會 commit 進 repo
+# 形成時間序列）。這支 workflow 存在的理由不同：fsc-snapshot 的實際投遞時間
+# 漂移嚴重（實測最近 20 班散落台灣時間 10:35–隔日 02:34），想看額度時不該
+# 被那個不確定性綁住。
+#
+# 打的是 https://serpapi.com/account.json —— **免費且不計入搜尋額度**，所以
+# 這支可以隨便按，不會消耗任何東西。
+#
+# 唯讀：不寫 commit、不動 prices.db。歷史紀錄交給 fsc-snapshot 那份就好，
+# 手動查詢沒必要在 repo 裡留下雜訊 commit（也就沒有推送衝突的風險）。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 不加入 farehunter concurrency 群組：這支不碰 DB、不推 commit，
+# 沒有理由跟抓價流程排隊。
+concurrency:
+  group: quota-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Check SerpAPI quota
+        id: quota
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+        run: |
+          set -uo pipefail
+          # 寫到 runner 的暫存目錄，不碰 repo 內的 docs/quota.json
+          OUT="${RUNNER_TEMP}/quota.json"
+          PYTHONPATH=src python -m farehunter.quota "$OUT" | tee "${RUNNER_TEMP}/line.txt"
+          {
+            echo "## SerpAPI 額度"
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/line.txt"
+            echo '```'
+            echo
+            echo "<details><summary>完整回報</summary>"
+            echo
+            echo '```json'
+            cat "$OUT" 2>/dev/null || echo '(未產生：可能未設 SERPAPI_KEY)'
+            echo            # quota.json 沒有結尾換行，少這行的話 ``` 會黏在 } 後面
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
