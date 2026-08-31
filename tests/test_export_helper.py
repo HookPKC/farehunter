@@ -97,3 +97,36 @@ def test_export_bitwise_identical_after_refactor(tmp_path):
     def norm(s: str) -> str:
         return re.sub(r'"(generated_at|checked_at)": "[^"]*"', r'"\1": "X"', s)
     assert norm(a.read_text(encoding="utf-8")) == norm(b.read_text(encoding="utf-8"))
+
+
+def test_export_populates_cheap_days_end_to_end(tmp_path):
+    """整合回歸：模組測試全綠但 export 的呼叫端壞掉，網站會靜靜地什麼都不顯示。
+
+    實際發生過——build_cheap_days 的參數從 today 改成 now 之後，export_web 仍傳
+    today=，被那裡的 try/except 吞成一則 warning 加空清單。288 個單元測試全過，
+    但看板是空的。這個測試跨過那個接縫。
+    """
+    import json
+    from datetime import date as _date
+    from farehunter.export_web import export
+
+    store = Store(str(tmp_path / "p.db"))
+    base = _date.today() + timedelta(days=60)
+    fresh = _iso(0)
+    for i in range(21):
+        dep = (base + timedelta(days=i)).isoformat()
+        # 中間那天明顯比周圍便宜；其餘持平
+        price = 6000 if i == 10 else 10000
+        _obs(store, "TPE", "NRT", dep, (base + timedelta(days=i + 5)).isoformat(),
+             price, fresh)
+    store.close()
+
+    out = tmp_path / "data.json"
+    payload = export(str(tmp_path / "p.db"), str(out))
+    cheap = payload["cheap_days"]
+    assert cheap, "export 沒有產出 cheap_days——呼叫端可能又壞了"
+    assert cheap[0]["depart_date"] == (base + timedelta(days=10)).isoformat()
+    assert cheap[0]["discount_pct"] == 40.0
+    assert cheap[0]["observed_at"] and cheap[0]["return_date"]
+    # 寫進檔案的內容也要有（前端讀的是檔案，不是回傳值）
+    assert json.loads(out.read_text(encoding="utf-8"))["cheap_days"] == cheap
