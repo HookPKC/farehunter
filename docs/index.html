@@ -342,8 +342,9 @@ footer{margin-top:var(--s7);font-size:var(--fs-xs);color:var(--ink3);
 
 <h2 id="h-cheap">哪天特別便宜 <span class="count" id="cheap-count"></span></h2>
 <p class="howto">跟同航線前後 10 天比，明顯低於周圍的出發日。★＝落差 30% 以上。
-  只採計 24 小時內觀測到的價格——列出的每一筆都還訂得到。
-  這裡回答「哪天便宜」，上面的警報回答「該買了」。</p>
+  只採計 24 小時內觀測到的價格。標「快取估價」的來自 Aviasales 快取——實測它
+  對 Google 即時價的誤差中位數約 8%，所以請把落差百分比當成排序參考，
+  點進去以 Google 的實際報價為準。這裡回答「哪天便宜」，上面的警報回答「該買了」。</p>
 <div class="cheap" id="cheap" aria-labelledby="h-cheap">
   <div class="skel" style="height:40px;border-radius:0"></div>
 </div>
@@ -688,9 +689,10 @@ function render(data){
           <span class="star" aria-hidden="true">${c.notable?"★":""}</span>
           <span class="rt">${c.origin}→${c.destination}</span>
           <span class="dd">${cheapDate(c.depart_date)} ${weekday(c.depart_date)}</span>
-          <span class="pr">${fmt(c.price)}</span>
+          <span class="pr">${priceDisp(c.price, c.source)}</span>
           <span class="gap">−${Math.round(c.discount_pct)}%</span>
-          <span class="vs">周圍約 ${fmt(c.neighbour_median)}</span>
+          <span class="vs">周圍 ${priceDisp(c.neighbour_median, c.source)}${
+            isCacheSrc(c.source) ? '<span class="src-tag">快取估價</span>' : ''}</span>
           <span class="age">${ageTxt}</span></a>`;
       }).join("")
     : `<div class="empty"><b>目前沒有明顯比周圍便宜的日期。</b><br>

@@ -305,3 +305,54 @@ def test_runner_guard_skip_keeps_summary_shape(tmp_path, monkeypatch):
     assert summary["skipped"] is True
     assert summary["empty"] == 0
     assert summary["zero_record_routes"] == []
+
+
+# ---- sweep 全軍覆沒必須以非零結束碼失敗 --------------------------------------
+
+def test_total_failure_is_detected():
+    """實際發生過：SearchApi 額度用完後 gcal_sweep 連續五週回這個 summary，
+    而進入點無條件 exit 0，workflow 每週照樣綠燈。"""
+    assert health.sweep_failed_entirely(
+        {"searched": 16, "recorded": 0, "alerts": 0, "errors": 16}) is True
+    assert health.sweep_exit_code(
+        {"searched": 16, "recorded": 0, "errors": 16}, "gcal_sweep") == 1
+
+
+def test_thin_route_empty_result_is_not_a_failure():
+    """查得到但解析後回空是薄航線的正常現象（errors=0），不得誤判成故障。
+
+    PLAYBOOK 明訂它該被數但不該當成錯誤。
+    """
+    assert health.sweep_failed_entirely(
+        {"searched": 16, "recorded": 0, "alerts": 0, "errors": 0}) is False
+    assert health.sweep_exit_code({"searched": 16, "recorded": 0, "errors": 0}) == 0
+
+
+def test_partial_failure_is_not_a_failure():
+    """部分失敗屬正常波動——只有「每一次都失敗」才算壞掉。"""
+    assert health.sweep_failed_entirely(
+        {"searched": 16, "recorded": 5, "errors": 11}) is False
+    assert health.sweep_failed_entirely(
+        {"searched": 16, "recorded": 0, "errors": 15}) is False
+
+
+def test_no_queries_is_not_a_failure():
+    """沒查就沒失敗（例如當週沒有掃描窗）。"""
+    assert health.sweep_failed_entirely({"searched": 0, "recorded": 0, "errors": 0}) is False
+
+
+def test_alternative_recorded_field_names_count():
+    """不同 sweep 用不同欄位表示「有進帳」：dates_covered / verified。"""
+    assert health.sweep_failed_entirely(
+        {"searched": 8, "dates_covered": 3, "errors": 8}) is False
+    assert health.sweep_failed_entirely(
+        {"searched": 8, "verified": 2, "errors": 8}) is False
+    assert health.sweep_failed_entirely(
+        {"searched": 8, "dates_covered": 0, "verified": 0, "errors": 8}) is True
+
+
+def test_missing_keys_do_not_crash():
+    """summary 缺欄位時不得拋錯——這是觀測性程式碼，不能自己變成故障源。"""
+    assert health.sweep_failed_entirely({}) is False
+    assert health.sweep_exit_code({}) == 0
+    assert health.sweep_failed_entirely({"searched": None, "errors": None}) is False

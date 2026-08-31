@@ -9,6 +9,7 @@ from pathlib import Path
 from .scrapedo_flights import (search_flights, parse_cheapest_direct,
                                VERIFICATIONS_PER_DAY, ScrapeDoError)
 from .storage import Store
+from . import health
 
 log = logging.getLogger(__name__)
 
@@ -84,3 +85,6 @@ if __name__ == "__main__":
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     s = run(sys.argv[1] if len(sys.argv) > 1 else "prices.db")
     print(f"航空驗證完成: 查詢 {s['searched']} 次, 確認 {s['verified']} 筆, 錯誤 {s['errors']} 次")
+    # 全軍覆沒時以非零結束碼失敗——見 health.sweep_exit_code 的說明：
+    # SearchApi 額度用完後，這支程式曾連續五週回 0 記錄 16 錯誤而 workflow 全綠。
+    raise SystemExit(health.sweep_exit_code(s, "verify_airlines"))
