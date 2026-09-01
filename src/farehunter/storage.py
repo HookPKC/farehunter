@@ -33,6 +33,21 @@ CREATE TABLE IF NOT EXISTS alerts (
     reason      TEXT NOT NULL,
     sent_at     TEXT NOT NULL
 );
+
+-- 便宜日推播的去重紀錄（cheap_day_notify）。刻意不塞進 alerts：
+-- alerts 的身分/抑制邏輯是為了三種 reason 調校過的（實測把噪音從每週 42 則
+-- 降到 22 則），混進第四種語意會污染那套判斷。每個(航線,出發日)只留最新一次。
+--
+-- 也刻意寫在 SCHEMA 裡而不是用 CREATE TABLE IF NOT EXISTS 藏在方法內：
+-- long_range 就是那樣長出來的，結果沒人知道它存在、累積 1,277 筆零讀者。
+CREATE TABLE IF NOT EXISTS cheap_day_notices (
+    origin      TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    depart_date TEXT NOT NULL,
+    price       REAL NOT NULL,
+    notified_at TEXT NOT NULL,
+    PRIMARY KEY (origin, destination, depart_date)
+);
 """
 
 
@@ -276,6 +291,19 @@ class Store:
                 abs(new_ref - prev_ref) >= prev_ref * (improvement_pct / 100.0):
             return False                      # 參考價相對「上一則」有意義變化 → 重新通知
         return True
+
+    def record_cheap_day_notice(self, origin: str, destination: str,
+                                depart_date: str, price: float,
+                                notified_at: str) -> None:
+        """記下「這個便宜日已經推播過」。每個(航線,出發日)只留最新一次——
+        cheap_day_notify.should_notify 只需要「上次推的時間與價格」來決定
+        要不要重推，保留完整歷史沒有讀者（long_range 的教訓）。"""
+        self.conn.execute(
+            """INSERT INTO cheap_day_notices VALUES (?,?,?,?,?)
+               ON CONFLICT(origin, destination, depart_date) DO UPDATE SET
+                 price=excluded.price, notified_at=excluded.notified_at""",
+            (origin, destination, depart_date, price, notified_at))
+        self.conn.commit()
 
     def record_insight(self, origin: str, destination: str, depart_date: str,
                        price_level: str, typical_low: float | None,
