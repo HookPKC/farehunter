@@ -123,6 +123,26 @@ def probe(origin: str = "TPE", destination: str = "NRT",
                       if isinstance(v, list) and v}
             result["arrays"] = arrays
             result["rows"] = max(arrays.values()) if arrays else 0
+            # 第一次探測發現：查 TPE→NRT 回來的第一筆是 TPE→ISG，而
+            # search_parameters 只回聲 departure_id——這個引擎似乎忽略
+            # arrival_id，是「從這裡出發哪裡便宜」而不是「這條航線便宜嗎」。
+            # 命中率決定它對本專案（8 條固定航線）到底有沒有用，所以要量。
+            deals = payload.get("deals") or []
+            if deals:
+                dests: dict[str, int] = {}
+                for it in deals:
+                    if isinstance(it, dict):
+                        code = str(it.get("arrival_airport_code") or "?")
+                        dests[code] = dests.get(code, 0) + 1
+                result["destinations"] = dict(sorted(dests.items(),
+                                                     key=lambda kv: -kv[1]))
+                result["asked_for"] = destination
+                result["asked_for_hits"] = dests.get(destination, 0)
+                result["deal_sample"] = [
+                    {k: it.get(k) for k in
+                     ("arrival_airport_code", "outbound_date", "return_date",
+                      "price", "airline_code", "stops", "discount_percentage")}
+                    for it in deals[:8] if isinstance(it, dict)]
 
     if before is not None:
         try:
@@ -163,6 +183,13 @@ def main(argv=None) -> int:
     print(f"\n頂層欄位: {r.get('top_level_keys')}")
     print(f"陣列長度: {r.get('arrays')}")
     print(f"→ 這次查詢換到約 {r.get('rows')} 筆（對照：單日 google_flights 約 1.9 筆）")
+    if r.get("destinations") is not None:
+        print(f"\n--- 目的地分布（關鍵：這個引擎理不理 arrival_id）---")
+        print(f"要求的目的地 {r.get('asked_for')} 命中 {r.get('asked_for_hits')} 筆")
+        print(f"實際回傳: {r.get('destinations')}")
+        print("\n--- 前 8 筆 deal ---")
+        for d in r.get("deal_sample", []):
+            print(f"  {d}")
     print("\n--- 回應結構 ---")
     print(r.get("structure", "(無)"))
     return 0
