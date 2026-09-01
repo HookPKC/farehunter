@@ -78,26 +78,80 @@ def test_parse_account_survives_garbage():
 
 # ---- assess：判讀 -------------------------------------------------------
 
-def test_headroom_is_the_whole_point():
-    """實際情境：Starter 5,000/月，實測用量約 180/月 → 只用 3.6%。
+def test_the_production_false_alarm_is_gone():
+    """2026-09-01 的真實事故：this_month_usage=176、剩 74，因為當天是 1 號，
+    舊邏輯算成「每天 176 次」、外推 5,280、報 low 並寫「還需 5104 次」。
 
-    這個結論才是加這支程式的原因（原本註解誤寫 ~100/月，整個系統的
-    SEARCHES_PER_DAY=6 圍繞錯誤前提設計）。
+    根因：免費層不照日曆月重置（ADR 0001），this_month_usage 是**計費週期**
+    的累計，除以 day_of_month 毫無意義。現在只看續航天數，週期起點未知也不
+    影響：74 ÷ 6 ≈ 12 天，該是 ok 而不是警報。
     """
-    r = assess(parse_account(ACCOUNT), now=MID)
-    assert r["status"] == "headroom"
-    assert r["daily_rate"] == round(180 / 16, 2)
-    assert r["projected_month_usage"] == round(180 / 16 * 31, 1)
-    assert "餘裕" in r["note"]
+    q = Quota(plan_name="Free Plan", searches_per_month=250,
+              total_searches_left=74, this_month_usage=176)
+    r = assess(q, now=datetime(2026, 9, 1, 11, 33, tzinfo=timezone.utc))
+    assert r["status"] == "ok", r
+    assert r["runway_days"] == round(74 / 6.0, 1)
+    assert "5104" not in r["note"] and "月底" not in r["note"]
+    # 舊的錯誤欄位不該再出現，免得有人繼續拿它做判斷
+    assert "projected_month_usage" not in r and "daily_rate" not in r
 
 
-def test_low_when_the_month_will_not_finish():
-    """免費版 100/月、每日 6 次的情境：月中就該亮燈。"""
-    q = Quota(plan_name="Free", searches_per_month=100,
-              total_searches_left=4, this_month_usage=96)
-    r = assess(q, now=MID)
+def test_runway_is_independent_of_the_day_of_month():
+    """同樣的額度狀態，在月初或月中都該給同一個結論。這正是舊邏輯做不到的。"""
+    q = Quota(plan_name="P", searches_per_month=250,
+              total_searches_left=74, this_month_usage=176)
+    days = [assess(q, now=datetime(2026, 9, d, 12, tzinfo=timezone.utc))
+            for d in (1, 8, 15, 28)]
+    assert len({r["status"] for r in days}) == 1
+    assert len({r["runway_days"] for r in days}) == 1
+
+
+def test_burn_is_measured_from_the_previous_snapshot():
+    """實際跑幾次才算數——專案鐵律：排程表 ≠ 實際執行。
+
+    數字刻意選成「實測值 ≠ EXPECTED_DAILY」：原本用 170→176 跨一天＝6.0/天，
+    剛好等於預估值，於是把實測換成預估也照樣通過（突變測試抓到）。這裡兩天
+    燒 26 次＝13/天，只有真的做減法才算得出來。
+    """
+    prev = {"this_month_usage": 150,
+            "checked_at": "2026-08-30T11:33:00+00:00"}
+    q = Quota(plan_name="P", searches_per_month=250,
+              total_searches_left=74, this_month_usage=176)
+    r = assess(q, now=datetime(2026, 9, 1, 11, 33, tzinfo=timezone.utc), prev=prev)
+    assert r["burn_source"] == "measured"
+    assert r["burn_per_day"] == 13.0            # (176-150) / 2 天
+    assert r["burn_per_day"] != Q.EXPECTED_DAILY
+    assert r["runway_days"] == round(74 / 13.0, 1)
+    # 而且實測改變了結論：13/天 → 續航 5.7 天 → low；
+    # 若退回預估 6/天 → 12.3 天 → ok。這就是「量測勝過假設」的具體差別。
     assert r["status"] == "low"
-    assert "撐不到月底" in r["note"]
+    assert assess(q, now=datetime(2026, 9, 1, 11, 33,
+                                  tzinfo=timezone.utc))["status"] == "ok"
+
+
+def test_falls_back_to_expected_burn_without_history():
+    r = assess(Quota(total_searches_left=60, this_month_usage=190), now=MID)
+    assert r["burn_source"] == "expected" and r["burn_per_day"] == 6.0
+
+
+def test_period_reset_is_detected_and_recorded():
+    """用量倒退 = 計費週期剛重置。這是本專案唯一能觀測到重置日的方式。"""
+    prev = {"this_month_usage": 244, "checked_at": "2026-09-03T11:00:00+00:00"}
+    q = Quota(plan_name="P", searches_per_month=250,
+              total_searches_left=244, this_month_usage=6)
+    r = assess(q, now=datetime(2026, 9, 4, 11, 0, tzinfo=timezone.utc), prev=prev)
+    assert r["period_reset"] is True
+    assert "重置" in r["note"]
+    # 倒退的差值不得被當成燒用量（會算出負數或荒謬的續航）
+    assert r["burn_source"] == "expected" and r["burn_per_day"] > 0
+
+
+def test_low_when_the_runway_is_short():
+    """剩 12 次、每天 6 次 → 兩天就見底，該出聲。"""
+    r = assess(Quota(plan_name="Free", searches_per_month=250,
+                     total_searches_left=12, this_month_usage=238), now=MID)
+    assert r["status"] == "low"
+    assert "快見底" in r["note"]
 
 
 def test_exhausted_is_distinct_from_low():
@@ -109,37 +163,34 @@ def test_exhausted_is_distinct_from_low():
 
 def test_exhausted_wins_even_if_usage_missing():
     """剩餘為 0 是硬事實，不需要 usage 就能斷定。"""
-    r = assess(Quota(total_searches_left=0), now=MID)
-    assert r["status"] == "exhausted"
+    assert assess(Quota(total_searches_left=0), now=MID)["status"] == "exhausted"
 
 
-def test_ok_when_tight_but_sufficient():
-    """夠用但沒有大量餘裕 → 既不警報也不建議加量。"""
-    q = Quota(plan_name="Starter", searches_per_month=5000,
-              total_searches_left=2600, this_month_usage=2400)
-    r = assess(q, now=MID)
-    assert r["status"] == "ok"
+def test_headroom_when_the_runway_outlasts_a_billing_period():
+    """撐得過一整個週期（>30 天）就代表額度沒有在限制系統。"""
+    r = assess(Quota(plan_name="Starter", searches_per_month=5000,
+                     total_searches_left=4820, this_month_usage=180), now=MID)
+    assert r["status"] == "headroom"
+    assert "餘裕" in r["note"]
 
 
-def test_zero_usage_is_not_reported_as_headroom():
-    """用量 0 時 projected 也是 0，說「餘裕大」沒有資訊量，而且可能只是
-    SerpAPI 計數還沒更新——不該拿來當調整額度的依據。"""
-    q = Quota(plan_name="Starter", searches_per_month=5000,
-              total_searches_left=5000, this_month_usage=0)
-    assert assess(q, now=MID)["status"] == "ok"
+def test_ok_between_the_two_thresholds():
+    r = assess(Quota(plan_name="P", searches_per_month=250,
+                     total_searches_left=90, this_month_usage=160), now=MID)
+    assert r["status"] == "ok"            # 15 天：既不警報也不建議加量
 
 
-def test_rate_uses_measured_usage_not_configured_budget():
-    """專案鐵律：排程表 ≠ 實際執行。同一個方案、不同實際用量要給不同判讀。"""
-    cap = {"plan_name": "P", "searches_per_month": 1000}
-    # used + left = 1000，兩組唯一的差別就是實際跑了幾次
-    slow = assess(parse_account({**cap, "this_month_usage": 100,
-                                 "total_searches_left": 900}), now=MID)
-    fast = assess(parse_account({**cap, "this_month_usage": 600,
-                                 "total_searches_left": 400}), now=MID)
-    assert slow["daily_rate"] < fast["daily_rate"]
-    assert slow["status"] == "headroom"     # 預估 194/1000
-    assert fast["status"] == "low"          # 每日 37.5 次，剩 400 撐不完 15 天
+def test_missing_left_cannot_estimate_runway():
+    r = assess(Quota(plan_name="P", this_month_usage=100), now=MID)
+    assert r["runway_days"] is None
+    assert r["status"] == "unknown"
+
+
+def test_expected_daily_matches_the_real_consumer():
+    """EXPECTED_DAILY 刻意不 import SEARCHES_PER_DAY（避免循環依賴），
+    所以用測試釘住兩者一致——否則有人改了其中一個就會靜靜地不同步。"""
+    from farehunter.serpapi_flights import SEARCHES_PER_DAY
+    assert Q.EXPECTED_DAILY == float(SEARCHES_PER_DAY)
 
 
 # ---- fetch_quota --------------------------------------------------------

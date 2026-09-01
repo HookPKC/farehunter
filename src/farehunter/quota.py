@@ -20,7 +20,6 @@
 """
 from __future__ import annotations
 
-import calendar
 import json
 import logging
 import os
@@ -34,10 +33,30 @@ log = logging.getLogger(__name__)
 
 ACCOUNT_URL = "https://serpapi.com/account.json"
 
-#: 預估月底用量低於總額度的這個比例時，標記為「額度遠未用盡」。
-#: 這不是警報，是機會提示：若真有大量餘裕，SEARCHES_PER_DAY 就有調整空間
-#: （但調整前必須先看到真實數字，不能猜——猜著加是在賭使用者的錢）。
-HEADROOM_RATIO = 0.5
+#: 續航低於這麼多天就記 warning。這是「該處理了」的線，不是「用完了」——
+#: 留幾天餘裕才有時間反應。
+LOW_RUNWAY_DAYS = 7
+
+#: 續航超過這麼多天視為餘裕大（機會提示，非警報）。一個計費週期約 30 天，
+#: 撐得過一整個週期就代表額度沒有在限制系統。
+HEADROOM_RUNWAY_DAYS = 30
+
+#: 沒有上一份快照可比時的每日燒用量估計。fsc_snapshot 每天 SEARCHES_PER_DAY
+#: 次是唯一常態消耗來源；刻意不 import 以免形成循環依賴，改用測試釘住一致性。
+EXPECTED_DAILY = 6.0
+
+
+def _days_between(then: str | None, now: datetime) -> float | None:
+    """兩個時間戳之間的天數。無法解析回 None（不猜）。"""
+    if not then:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(then).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (now - ts).total_seconds() / 86400.0
 
 
 @dataclass(frozen=True)
@@ -86,22 +105,33 @@ def fetch_quota(api_key: str | None = None,
     return parse_account(resp.json())
 
 
-def assess(q: Quota, *, now: datetime | None = None) -> dict:
-    """依本月至今的用量推估月底是否夠用。
+def assess(q: Quota, *, now: datetime | None = None,
+           prev: dict | None = None,
+           expected_daily: float = EXPECTED_DAILY) -> dict:
+    """算「還能撐幾天」，而不是「撐不撐得到月底」。
+
+    **為什麼不看月底**（2026-09-01 的生產事故）：原本用
+    `this_month_usage / day_of_month` 當日均再外推到月底。但 SerpAPI 的免費層
+    不照日曆月重置——實測 8/31 剩 80、9/1 仍是 80，`this_month_usage` 是
+    **計費週期**的累計。9/1 那天 176 ÷ 1 = 每天 176 次、外推 5,280，於是報出
+    假的 low 警報和「還需 5104 次」這種荒謬數字。ADR 0001 記了「不照日曆月
+    重置」這個事實，但這裡的程式還在用錯的假設。
+
+    現在改成：週期起點未知也無所謂，只看「剩餘 ÷ 每日燒用量 = 還能撐幾天」。
+    每日燒用量優先用「與上一份快照的實測差值」（真實執行才算數，符合專案
+    鐵律：排程表 ≠ 實際執行），沒有上一份時退回 expected_daily。
 
     status:
       exhausted  剩餘為 0——已經在沉默失敗，或下一次查詢就會失敗
-      low        照目前速度撐不到月底
-      headroom   預估月底用量 < 總額度的 HEADROOM_RATIO（機會提示，非警報）
+      low        續航 < LOW_RUNWAY_DAYS 天，該處理了
+      headroom   續航 > HEADROOM_RUNWAY_DAYS 天（機會提示，非警報）
       ok         夠用
       unknown    欄位不足以判斷（例如 SerpAPI 改了回應格式）
 
-    用「本月至今平均日用量」外推，不用設定檔裡的 SEARCHES_PER_DAY——實際跑
-    幾次才算數。專案的鐵律：排程表 ≠ 實際執行。
+    prev: 上一份 quota.json 的內容。除了算燒用量，也用來偵測週期重置
+    （用量突然變小）——那是唯一能知道重置日的方法。
     """
     now = now or datetime.now(timezone.utc)
-    days_in_month = calendar.monthrange(now.year, now.month)[1]
-    day = now.day
     left = q.total_searches_left
     used = q.this_month_usage
     out = {
@@ -109,10 +139,10 @@ def assess(q: Quota, *, now: datetime | None = None) -> dict:
         "searches_per_month": q.searches_per_month,
         "total_searches_left": left,
         "this_month_usage": used,
-        "day_of_month": day,
-        "days_in_month": days_in_month,
-        "daily_rate": None,
-        "projected_month_usage": None,
+        "burn_per_day": None,
+        "burn_source": None,
+        "runway_days": None,
+        "period_reset": False,
         "status": "unknown",
         "note": "",
     }
@@ -120,30 +150,52 @@ def assess(q: Quota, *, now: datetime | None = None) -> dict:
         out["status"] = "exhausted"
         out["note"] = "額度已用盡——查詢會開始靜默失敗，請確認方案"
         return out
-    if used is None or day <= 0:
-        out["note"] = "回應缺少 this_month_usage，無法推估"
+
+    # 與上一份快照比較：實測燒用量，並偵測計費週期重置
+    burn, source, reset_note = None, None, ""
+    if prev and used is not None:
+        prev_used = prev.get("this_month_usage")
+        elapsed = _days_between(prev.get("checked_at"), now)
+        if isinstance(prev_used, (int, float)) and elapsed and elapsed > 0:
+            if used < prev_used:
+                # 用量倒退 = 計費週期剛重置。這是唯一能觀測到重置日的方式，
+                # 記下來，並且不要拿倒退的差值去算燒用量。
+                out["period_reset"] = True
+                # 用獨立變數收集，最後才併進 note。曾經直接寫 out["note"]，
+                # 結果被下面的狀態訊息整段蓋掉——而「重置日」是這支程式能
+                # 觀測到的最有價值的一件事，不能被順手覆寫。
+                reset_note = (f"計費週期已重置（用量 {prev_used:.0f} → "
+                              f"{used:.0f}）——記下這個日期")
+            else:
+                burn, source = (used - prev_used) / elapsed, "measured"
+
+    if burn is None or burn <= 0:
+        burn, source = expected_daily, "expected"
+    out["burn_per_day"] = round(burn, 2)
+    out["burn_source"] = source
+
+    def _note(text: str) -> str:
+        return f"{reset_note}；{text}" if reset_note else text
+
+    if left is None:
+        out["note"] = _note("回應缺少 total_searches_left，無法估續航")
         return out
 
-    rate = used / day
-    projected = rate * days_in_month
-    out["daily_rate"] = round(rate, 2)
-    out["projected_month_usage"] = round(projected, 1)
-
-    if left is not None and left < rate * (days_in_month - day):
+    runway = left / burn
+    out["runway_days"] = round(runway, 1)
+    tail = (f"剩餘 {left} 次、每日約 {burn:.1f} 次"
+            f"（{'實測' if source == 'measured' else '預估'}）"
+            f"→ 續航約 {runway:.0f} 天")
+    if runway < LOW_RUNWAY_DAYS:
         out["status"] = "low"
-        out["note"] = (f"照每日 {rate:.1f} 次的速度，剩餘 {left} 次撐不到月底"
-                       f"（還需 {rate * (days_in_month - day):.0f} 次）")
+        out["note"] = _note(f"額度快見底：{tail}")
         return out
-    cap = q.searches_per_month
-    # used > 0 才談餘裕：用量 0 時 projected 也是 0，說「餘裕大」沒有資訊量，
-    # 反而可能是 SerpAPI 的計數還沒更新，不該拿來當調整額度的依據。
-    if cap and used > 0 and projected < cap * HEADROOM_RATIO:
+    if runway > HEADROOM_RUNWAY_DAYS:
         out["status"] = "headroom"
-        out["note"] = (f"預估月底用量 {projected:.0f}/{cap} "
-                       f"（{projected / cap * 100:.0f}%），額度餘裕大。"
-                       f"若要提高解析度，這個數字就是依據")
+        out["note"] = _note(f"{tail}；額度餘裕大，若要提高解析度這個數字就是依據")
         return out
     out["status"] = "ok"
+    out["note"] = _note(tail)
     return out
 
 
@@ -165,9 +217,16 @@ def snapshot(path: str = "docs/quota.json", *,
         log.info("未設 SERPAPI_KEY，跳過額度檢查")
         return {"status": "skipped", "note": "no SERPAPI_KEY",
                 "checked_at": now.isoformat(timespec="seconds")}
+    # 讀上一份快照當基準：檔案就是自己的歷史，用來實測每日燒用量並偵測
+    # 計費週期重置。讀不到就退回預估值，不影響主要產出。
+    prev = None
+    try:
+        prev = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        pass
     try:
         q = fetch_quota(api_key=api_key, session=session)
-        result = assess(q, now=now)
+        result = assess(q, now=now, prev=prev)
     except Exception as exc:                     # noqa: BLE001 — 見 docstring
         log.warning("額度檢查失敗（不影響本輪抓價）: %s", exc)
         result = {"status": "error", "note": str(exc)[:300],
