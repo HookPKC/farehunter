@@ -72,7 +72,7 @@ def _too_old(observed_at: str, max_age_days: int, now: datetime) -> bool:
 
 def pick_candidates(store: Store, limit: int = VERIFICATIONS_PER_DAY,
                     max_age_days: int = CANDIDATE_MAX_AGE_DAYS,
-                    data_path: str = "docs/data.json",
+                    data_path: str | None = None,
                     today: _date | None = None,
                     now: datetime | None = None,
                     now_ref: str | None = None) -> list[dict]:
@@ -187,7 +187,7 @@ def _gap_note(cand: dict, real_price: float) -> str:
 
 
 def run(db_path: str = "prices.db",
-        data_path: str = "docs/data.json") -> dict:
+        data_path: str | None = None) -> dict:
     store = Store(db_path)
     summary = {"searched": 0, "verified": 0, "errors": 0,
                "cheap_day": 0, "unverified": 0}

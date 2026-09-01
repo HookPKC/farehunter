@@ -24,6 +24,7 @@ from datetime import date, timedelta
 import requests
 
 from .models import Offer
+from . import cheap_days as _cheap_days
 from .normalize import CACHE_SOURCES
 from .travelpayouts import FULL_SERVICE
 
@@ -306,7 +307,7 @@ def cta_candidates(ranked_path: str = "docs/ranked.json",
     return out
 
 
-def cheap_days_candidates(data_path: str = "docs/data.json",
+def cheap_days_candidates(data_path: str | None = None,
                           today: date | None = None, *,
                           require_notable: bool = True,
                           min_discount_pct: float = 0.0) -> list[dict]:
@@ -340,6 +341,8 @@ def cheap_days_candidates(data_path: str = "docs/data.json",
     損壞 / 欄位缺失一律回 []。
     """
     today = today or date.today()
+    # None → 解析成單一來源常數（見 cheap_days.DEFAULT_DATA_PATH 的說明）
+    data_path = data_path or _cheap_days.DEFAULT_DATA_PATH
     try:
         import json
         with open(data_path, encoding="utf-8") as fh:
@@ -402,7 +405,7 @@ def hero_candidates(conn, routes: list[dict],
 
 def build_verification_plans(conn, thresholds, routes,
                              ranked_path: str = "docs/ranked.json",
-                             data_path: str = "docs/data.json",
+                             data_path: str | None = None,
                              today: date | None = None,
                              claimed_trips: set | None = None,
                              max_slots: int = 3,

@@ -31,7 +31,7 @@ ROTATION_SLOTS = 3   # 固定保留,與 verification 完全解耦
 
 def build_plans(cfg: dict, store: Store, today: _date,
                 ranked_path: str = "docs/ranked.json",
-                data_path: str = "docs/data.json",
+                data_path: str | None = None,
                 now_ref: str | None = None) -> list[dict]:
     """先建計畫、後執行。純 DB/JSON 讀取,零 API。
 
@@ -69,7 +69,7 @@ def build_plans(cfg: dict, store: Store, today: _date,
 
 def run(config_path: str = "config.yaml", db_path: str = "prices.db",
         ranked_path: str = "docs/ranked.json",
-        data_path: str = "docs/data.json",
+        data_path: str | None = None,
         today: _date | None = None, now_ref: str | None = None,
         quota_path: str | None = "docs/quota.json") -> dict:
     cfg = load_config(config_path)

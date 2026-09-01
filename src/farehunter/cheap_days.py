@@ -56,6 +56,16 @@ MIN_NEIGHBOURS = 6
 #: 網站列表用 DROP_PCT（看板不吵人），推播用這條更嚴的線。
 NOTIFY_PCT = 30.0
 
+#: 看板檔案的預設路徑，**單一來源**。
+#:
+#: 為什麼是常數而不是各處寫死字串：讀取端的預設值一律是 None，到最底層才
+#: 解析成這個常數，於是測試可以在 conftest 用 monkeypatch 一次把整個專案的
+#: 看板讀取導向不存在的檔案。這個 bug 類別已經咬過三次（最後一次讓
+#: test_verification_prefers_route_diversity 在生產紅燈，而 monitor.yml 是
+#: 先跑 pytest 才抓價，等於每小時的價格收集全部停擺），不能再靠
+#: 「每個測試都記得傳 data_path」。
+DEFAULT_DATA_PATH = "docs/data.json"
+
 #: 只有這麼新的觀測才參與比較。與網站 hero / CTA 的 SLA 一致
 #: （current_price.SURFACE_SLA_HOURS），整站對「現價」用同一把尺。
 FRESH_HOURS = 24
