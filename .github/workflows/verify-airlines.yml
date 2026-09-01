@@ -52,6 +52,19 @@ jobs:
         run: PYTHONPATH=src python -m farehunter.verify_airlines
       - name: Export dashboard data
         run: python src/farehunter/export_web.py prices.db docs/data.json
+      # 順序是關鍵：verify 寫入實價 → export 重算看板（那個日期的 source 變成
+      # google）→ 這一步才推得出「實價背書」的便宜日。放到 export 之前的話
+      # 看板上還是快取估價，一則都不會合格。
+      #
+      # 也刻意放在 Commit 之前：推播會寫 cheap_day_notices 去重紀錄到
+      # prices.db，那筆必須跟著這輪一起 commit，否則下次跑會重推同一天。
+      - name: Notify verified cheap days
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: PYTHONPATH=src python -m farehunter.cheap_day_notify prices.db docs/data.json
       - name: Commit
         run: |
           git config user.name "farehunter-bot"
