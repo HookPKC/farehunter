@@ -15,4 +15,7 @@ Issues 記在 GitHub（`HookPKC/farehunter` 的 Issues）。See `docs/agents/iss
 
 ### Domain docs
 
-Single-context：根目錄一份 `CONTEXT.md` + `docs/adr/`（尚未建立，需要時才產生）。See `docs/agents/domain.md`.
+Single-context：根目錄一份 `CONTEXT.md` + `docs/adr/`。See `docs/agents/domain.md`.
+
+已記錄的決策（做同類評估前先讀，避免重跑已經有答案的實驗）：
+- `docs/adr/0001-google-flights-deals.md` — 為何不採用 SerpAPI 的 deals 引擎
