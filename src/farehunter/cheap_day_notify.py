@@ -32,6 +32,7 @@ import logging
 import sys
 from datetime import date as _date, datetime, timedelta, timezone
 
+from .cheap_days import DEFAULT_DATA_PATH
 from .notify import (WEEKDAYS, send_line, send_telegram, channels_configured,
                      _tw_stamp)
 from .storage import Store
@@ -180,7 +181,7 @@ def should_notify(store: Store, it: dict, *, now: datetime,
     return False
 
 
-def run(db_path: str = "prices.db", data_path: str = "docs/data.json",
+def run(db_path: str = "prices.db", data_path: str | None = None,
         *, now: datetime | None = None, dry_run: bool = False) -> dict:
     """讀看板 → 篩 → 去重 → 推送。
 
@@ -188,6 +189,8 @@ def run(db_path: str = "prices.db", data_path: str = "docs/data.json",
     summary 讓 workflow 看得到。
     """
     now = now or datetime.now(timezone.utc)
+    # None → 單一來源常數（見 cheap_days.DEFAULT_DATA_PATH）
+    data_path = data_path or DEFAULT_DATA_PATH
     summary = {"board": 0, "candidates": 0, "suppressed": 0,
                "sent": 0, "failed": 0, "dry_run": dry_run}
     try:

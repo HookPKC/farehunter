@@ -286,6 +286,78 @@ def test_verification_prefers_route_diversity(tmp_path):
         today=TEST_TODAY, now_ref=TEST_NOW_REF)
     routes_used = [(p["origin"], p["destination"]) for p in plans]
     assert len(set(routes_used)) == len(routes_used)   # 全不同 route
+    # Alert 池有兩個 TPE-NRT，只該取一個——這就是「先求 route 分散」
+    assert routes_used.count(("TPE", "NRT")) == 1
+
+
+# 9a. 同一個池子內就要先求 route 分散：強候選在已佔用的 route 上、弱候選在
+#     新 route 上時，應該挑弱的那個（換 route 的資訊量大於同 route 再驗一天）。
+#     這條是突變測試逼出來的：原本把第一輪的 allow_same_route 改成 True
+#     （等於完全放棄分散偏好）沒有任何測試會紅，因為每個池子剛好各有不同
+#     route，偏好從來沒被真正行使過。
+def test_diversity_preference_bites_within_a_single_pool(tmp_path):
+    store = _store(tmp_path)
+    dep_r, ret_r = _future(30), _future(35)
+    # rotation 已經佔了 TPE-NRT 這條 route
+    claimed = {("TPE", "NRT", dep_r, ret_r)}
+    # Alert 池：TPE-NRT 更便宜（排序在前），KHH-KIX 較貴（排序在後）
+    _seed_alert(store, o="TPE", d="NRT", dep=_future(40), ret=_future(45),
+                price=5000, reason="new_low", sent_hours_ago=1)
+    _seed_alert(store, o="KHH", d="KIX", dep=_future(41), ret=_future(46),
+                price=9000, reason="new_low", sent_hours_ago=2)
+    plans = build_verification_plans(
+        store.conn, THRESH, [], ranked_path=_no_ranked(tmp_path),
+        data_path=_no_data(tmp_path), today=TEST_TODAY,
+        claimed_trips=set(claimed), now_ref=TEST_NOW_REF)
+    assert len(plans) == 1
+    # 明明 TPE-NRT 的候選更強，但那條 route 已被佔用 → 該挑 KHH-KIX
+    assert (plans[0]["origin"], plans[0]["destination"]) == ("KHH", "KIX"), (
+        f"沒有行使 route 分散偏好: {plans}")
+
+
+# 9b. 但沒有別的 route 可換時，允許同 route 不同日期（build_verification_plans
+#     的文件明說「補位時才允許同 route」）。這條行為原本沒有測試守著：
+#     test_verification_prefers_route_diversity 斷言「全不同 route」其實比
+#     設計更嚴，只因為 cheap_day 池長期是空的才沒被發現。cheap_day 開始供料
+#     那天它就紅了，而且是紅在生產環境。
+def test_same_route_is_allowed_only_as_a_fallback(tmp_path):
+    store = _store(tmp_path)
+    # 兩個 alert 同 route 不同日期，且沒有 CTA / Hero / cheap_day 候選
+    _seed_alert(store, o="TPE", d="NRT", dep=_future(40), ret=_future(45),
+                price=6000, reason="new_low", sent_hours_ago=1)
+    _seed_alert(store, o="TPE", d="NRT", dep=_future(50), ret=_future(55),
+                price=6100, reason="new_low", sent_hours_ago=2)
+    plans = build_verification_plans(
+        store.conn, THRESH, [], ranked_path=_no_ranked(tmp_path),
+        data_path=_no_data(tmp_path), today=TEST_TODAY, now_ref=TEST_NOW_REF)
+    # Alert 池每輪只貢獻一個槽，所以這裡只會有一個 plan——重點是它不會因為
+    # 「同 route」而回 0 個，也不會硬湊到 3 個。
+    assert len(plans) == 1
+    assert (plans[0]["origin"], plans[0]["destination"]) == ("TPE", "NRT")
+
+
+# 9c. 看板供料時不得因為「同 route 已被 alert 佔用」而完全放棄該槽
+def test_cheap_day_may_reuse_a_claimed_route_when_nothing_else_is_left(tmp_path):
+    """回歸：生產紅燈的那組資料。alert 佔了 TPE-NRT，cheap_day 池也只有
+    TPE-NRT，於是走 fallback 產生第二個同 route 的計畫——那是設計行為，
+    不是 bug。這條測試把它釘住，並且明確傳 data_path（不吃真實看板）。"""
+    store = _store(tmp_path)
+    _seed_alert(store, o="TPE", d="NRT", dep=_future(40), ret=_future(45),
+                price=6000, reason="new_low", sent_hours_ago=1)
+    board = _data_file(tmp_path, [{
+        "origin": "TPE", "destination": "NRT",
+        "depart_date": _future(70), "return_date": _future(75),
+        "price": 6500, "discount_pct": 41.0, "neighbour_median": 11000.0,
+        "neighbours": 8, "notable": True, "source": "aviasales",
+        "observed_at": _iso(1)}])
+    plans = build_verification_plans(
+        store.conn, THRESH, [], ranked_path=_no_ranked(tmp_path),
+        data_path=board, today=TEST_TODAY, now_ref=TEST_NOW_REF)
+    kinds = [p.get("slot_kind") for p in plans]
+    assert "cheap_day" in kinds, f"cheap_day 槽被整個放棄了: {plans}"
+    assert len(plans) == 2
+    # 同 route 但不同出發日——trip 層級的去重仍然生效
+    assert len({(p["origin"], p["destination"], p["depart_date"]) for p in plans}) == 2
 
 
 # 10. 候選不足 → 可少於 3 個 verification(不硬湊)
