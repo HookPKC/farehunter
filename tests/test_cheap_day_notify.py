@@ -4,7 +4,7 @@
 使用者的原話是「我要的是 google 實價正確，不然點進去的價格不是正確的也沒有
 什麼用」。所以「快取估價被推出去」是這裡最嚴重的失效模式，測試密度也最高。
 """
-import sys, json, logging
+import sys, json, logging, re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -93,7 +93,11 @@ def test_unparseable_timestamp_is_treated_as_stale():
 
 
 def test_naive_timestamp_is_read_as_utc():
-    assert len(notifiable([_item(observed_at="2026-09-01T11:00:00")], now=NOW)) == 1
+    """重點是「沒有時區的字串要當成 UTC」，不是某個特定日期。所以時間戳
+    從 NOW 推導，不寫字面值——否則改 NOW 就會誤紅。"""
+    naive = (NOW - timedelta(hours=1)).replace(tzinfo=None).isoformat()
+    assert "+" not in naive and "Z" not in naive      # 確認真的沒有時區資訊
+    assert len(notifiable([_item(observed_at=naive)], now=NOW)) == 1
 
 
 # ---- 自洽性：訊息裡兩個數字不能互相矛盾 --------------------------------
@@ -323,10 +327,27 @@ def test_main_never_fails_the_workflow(tmp_path):
 # try/except 吞掉（288 測試全過、看板空的），以及 quota 檢查差點沒接上。
 # 這裡跨過 verify → export → notify 三段接縫，用真的 DB 和真的 export。
 
+# **跨到 export() 的測試必須注入時鐘：export(..., now=NOW)。**
+#
+# 這是我自己埋的定時炸彈（2026-09-02 生產紅燈）：種子的 observed_at 釘在
+# NOW=2026-09-01 12:00，但 export() 當時是用**真實時鐘**判斷新鮮度
+# （cheap_days.FRESH_HOURS = 24）。寫的那天綠，整整 24 小時後必紅——而
+# monitor.yml 先跑 pytest 才抓價，於是又賠掉一小時的價格資料。
+#
+# 正解不是「把種子改成相對真實時鐘」（那樣會綠，但不決定性，且測不了與時間
+# 有關的行為），而是用 export() 早就提供的 now= 注入——test_current_price.py
+# 的時間戳釘在 2026-07 卻從沒腐爛過，就是因為它一路都傳 now=NOW。
+# 同一個教訓也記在 test_fie.py 對「釘死日期 vs 滑動時鐘」的註解裡。
+
+def _ago(**kw):
+    """相對注入時鐘 NOW 的時間戳（例：_ago(minutes=5)）。"""
+    return (NOW - timedelta(**kw)).isoformat(timespec="seconds")
+
+
 def _seed(store, o, d, base, *, cheap_index=10, cheap_price=6000,
           normal=10000, observed_at=None, source="aviasales", carriers=""):
     from datetime import timedelta as _td
-    at = observed_at or NOW.isoformat(timespec="seconds")
+    at = observed_at or _ago(minutes=10)
     for i in range(21):
         dep = (base + _td(days=i)).isoformat()
         ret = (base + _td(days=i + 5)).isoformat()
@@ -340,19 +361,33 @@ def _seed(store, o, d, base, *, cheap_index=10, cheap_price=6000,
     store.conn.commit()
 
 
+def test_export_calls_in_this_file_all_inject_the_clock():
+    """守住上面那段註解講的規則，而且是在**寫壞的當下**紅，不是 24 小時後
+    在生產環境紅。2026-09-02 那次就是這樣賠掉一小時價格資料的。
+
+    做法：掃自己的原始碼。比起「相信註解」，這條會真的抓到漏傳 now= 的
+    export() 呼叫——包含以後才加的。
+    """
+    src = Path(__file__).read_text(encoding="utf-8")
+    calls = re.findall(r"export\(db,\s*out[^)]*\)", src)
+    assert calls, "找不到 export() 呼叫，這條守衛失效了"
+    missing = [c for c in calls if "now=" not in c]
+    assert not missing, f"這些 export() 呼叫沒有注入時鐘，會隨時間腐爛: {missing}"
+
+
 def test_cache_only_board_pushes_nothing_end_to_end(tmp_path, monkeypatch):
     """驗證還沒跑之前：看板有便宜日，但一則都不推。這就是使用者要的行為。"""
-    from datetime import date as _date, timedelta as _td
+    from datetime import timedelta as _td
     from farehunter.export_web import export
     monkeypatch.setattr(C, "send_line", lambda t, **k: True)
     monkeypatch.setattr(C, "channels_configured", lambda: True)
     db = str(tmp_path / "p.db")
     st = Store(db)
-    base = _date.today() + _td(days=60)
+    base = NOW.date() + _td(days=60)   # 錨在注入時鐘，不用真實今天
     _seed(st, "TPE", "NRT", base)
     st.close()
     out = str(tmp_path / "data.json")
-    payload = export(db, out)
+    payload = export(db, out, now=NOW)
     assert payload["cheap_days"], "看板本身該有便宜日"
     assert any(c["notable"] for c in payload["cheap_days"])
     s = run(db, out, now=NOW)
@@ -364,7 +399,7 @@ def test_verified_price_flows_all_the_way_to_a_push(tmp_path, monkeypatch):
 
     跨三段接縫：storage → export_web.export → cheap_day_notify.run。
     """
-    from datetime import date as _date, timedelta as _td
+    from datetime import timedelta as _td
     from farehunter.export_web import export
     sent = []
     monkeypatch.setattr(C, "send_line", lambda t, **k: sent.append(t) or True)
@@ -372,7 +407,7 @@ def test_verified_price_flows_all_the_way_to_a_push(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "channels_configured", lambda: True)
     db = str(tmp_path / "p.db")
     st = Store(db)
-    base = _date.today() + _td(days=60)
+    base = NOW.date() + _td(days=60)   # 錨在注入時鐘，不用真實今天
     cheap_dep = (base + _td(days=10)).isoformat()
     _seed(st, "TPE", "NRT", base)
     # verify_airlines 驗過那一天：較新的 google 觀測，實價 6,200（仍很便宜）
@@ -382,18 +417,18 @@ def test_verified_price_flows_all_the_way_to_a_push(tmp_path, monkeypatch):
         "provider) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         ("TPE", "NRT", cheap_dep, (base + _td(days=15)).isoformat(), 6200.0,
          "TWD", "BR", 0, "180",
-         (NOW + timedelta(minutes=1)).isoformat(timespec="seconds"),
+         _ago(minutes=1),
          "any", "google", "scrapedo"))
     st.conn.commit(); st.close()
 
     out = str(tmp_path / "data.json")
-    payload = export(db, out)
+    payload = export(db, out, now=NOW)
     hit = [c for c in payload["cheap_days"] if c["depart_date"] == cheap_dep]
     assert hit, "export 沒把驗證過的那天算進看板"
     assert hit[0]["source"] == "google", "export 沒把 source 換成實價"
     assert hit[0]["price"] == 6200.0
 
-    s = run(db, out, now=NOW + timedelta(minutes=2))
+    s = run(db, out, now=NOW)
     assert s["sent"] == 1, f"實價便宜日沒有推出去: {s}"
     assert "6,200 TWD" in sent[0] and "Google 實價" in sent[0]
 
@@ -404,14 +439,14 @@ def test_verification_that_kills_the_bargain_stops_the_push(tmp_path, monkeypatc
     不需要另外寫「別推假便宜」的邏輯——export 用實價重算 discount_pct，
     落差掉下來就自動不再 notable，推播自然不成立。
     """
-    from datetime import date as _date, timedelta as _td
+    from datetime import timedelta as _td
     from farehunter.export_web import export
     monkeypatch.setattr(C, "send_line",
                         lambda t, **k: (_ for _ in ()).throw(AssertionError("不該送")))
     monkeypatch.setattr(C, "channels_configured", lambda: True)
     db = str(tmp_path / "p.db")
     st = Store(db)
-    base = _date.today() + _td(days=60)
+    base = NOW.date() + _td(days=60)   # 錨在注入時鐘，不用真實今天
     cheap_dep = (base + _td(days=10)).isoformat()
     _seed(st, "TPE", "NRT", base)
     # 快取說 6,000，實際查出來是 9,800——根本不是特別便宜
@@ -421,13 +456,13 @@ def test_verification_that_kills_the_bargain_stops_the_push(tmp_path, monkeypatc
         "provider) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         ("TPE", "NRT", cheap_dep, (base + _td(days=15)).isoformat(), 9800.0,
          "TWD", "BR", 0, "180",
-         (NOW + timedelta(minutes=1)).isoformat(timespec="seconds"),
+         _ago(minutes=1),
          "any", "google", "scrapedo"))
     st.conn.commit(); st.close()
 
     out = str(tmp_path / "data.json")
-    payload = export(db, out)
+    payload = export(db, out, now=NOW)
     hit = [c for c in payload["cheap_days"] if c["depart_date"] == cheap_dep]
     assert not (hit and hit[0]["notable"]), "實價 9,800 不該還算 notable 便宜日"
-    s = run(db, out, now=NOW + timedelta(minutes=2))
+    s = run(db, out, now=NOW)
     assert s["sent"] == 0
