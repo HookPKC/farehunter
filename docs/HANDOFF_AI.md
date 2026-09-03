@@ -2,7 +2,7 @@
 
 **讀者**：接手本專案的任何 AI 模型（Claude Opus/Sonnet、Codex、GPT 系列或其他），
 以及想了解 AI 協作規範的人類。本文件不綁定任何特定模型；「你」指接手的 AI。
-最後更新：2026-08-31。
+最後更新：2026-09-03。
 
 ---
 
@@ -103,6 +103,16 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 - 首頁黃/紅提示條是誠實訊號不是 bug；出現時沿源頭排查（PLAYBOOK 1-6），
   不要去改提示條本身。
 - 手動 Run 後 log 出現「跳過本輪」是 guard 設計行為。
+- **Deploy Pages 偶發 `Failed to get ID Token`**：訊息結尾那句
+  `Ensure GITHUB_TOKEN has permission "id-token: write"` **會誤導** —— 該權限
+  本來就在 deploy-pages.yml 裡。真正的錯誤在上一行：`Request timeout:
+  /6//idtoken/...` at `OidcClient`，是 GitHub 取 OIDC token 逾時，平台偶發。
+  實測 2,129 次執行 22 次失敗（約 1%），從 2026-07 就是這個基準率，與任何
+  程式或 action 版本無關。
+  而且 `workflow_run` 會讓同一個 commit 觸發多次 deploy，失敗那次通常前一
+  分鐘已經有同 SHA 成功發佈（2026-09-03 04:18 成功 / 04:19 失敗，同 SHA）。
+  **判讀方式**：比對「最後一次成功 deploy 的 head_sha」與 main HEAD，一致就
+  沒事（§5 的三方 SHA 規則）。不要為此改 permissions 或 action 版本。
 - 「All jobs were cancelled」email：先套 §4 判讀表，多數可忽略。
 
 ## 7. 已知長期課題（P2，非急務）
