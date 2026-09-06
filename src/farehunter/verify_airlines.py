@@ -116,7 +116,8 @@ def pick_candidates(store: Store, limit: int = VERIFICATIONS_PER_DAY,
     if len(out) >= limit:
         return out
 
-    for c in _unverified_candidates(store, limit - len(out), max_age_days):
+    for c in _unverified_candidates(store, limit - len(out), max_age_days,
+                                    now_ref=now_ref):
         if (c["origin"], c["destination"]) in claimed_routes:
             continue
         claimed_routes.add((c["origin"], c["destination"]))
@@ -131,10 +132,19 @@ def pick_candidates(store: Store, limit: int = VERIFICATIONS_PER_DAY,
 
 
 def _unverified_candidates(store: Store, limit: int,
-                           max_age_days: int) -> list[dict]:
+                           max_age_days: int,
+                           now_ref: str = "now") -> list[dict]:
     """Cheapest unverified google-priced future dates, max one per route.
 
     只取 max_age_days 內的觀測——見 CANDIDATE_MAX_AGE_DAYS 的說明。
+
+    now_ref 是 SQL 的時間基準，必須由呼叫端一路傳進來。原本這裡的三處
+    date('now') / julianday('now') 寫死真實時鐘，而 pick_candidates 明明
+    收了 now_ref——**半套的注入**。後果是測試無法完整控制時間：
+    test_board_takes_precedence_over_unverified_pool 的種子觀測釘在
+    2026-09-01，一旦真實時間超過它 14 天（CANDIDATE_MAX_AGE_DAYS），
+    那筆就被這裡的真實時鐘濾掉，測試在 2026-09-16 準時轉紅。
+    同一個型態剛在 runner.py 造成 9 小時抓價停擺（2026-09-06）。
     """
     if limit <= 0:
         return []
@@ -145,21 +155,21 @@ def _unverified_candidates(store: Store, limit: int,
                                        ORDER BY observed_at DESC, rowid DESC) AS rk
              FROM observations
              WHERE source='google' AND fare_class='any'
-               AND depart_date BETWEEN date('now','+1 day') AND date('now','+330 days')
-               AND julianday(observed_at) >= julianday('now') - ?),
+               AND depart_date BETWEEN date(:ref,'+1 day') AND date(:ref,'+330 days')
+               AND julianday(observed_at) >= julianday(:ref) - :age),
            unverified AS (
              SELECT *, ROW_NUMBER() OVER (PARTITION BY origin, destination
                                           ORDER BY price ASC) AS pr
              FROM latest_google WHERE rk=1 AND carriers='' AND return_date != '')
            SELECT origin, destination, depart_date, return_date, price
-           FROM unverified WHERE pr=1 ORDER BY price ASC LIMIT ?""",
-        (max_age_days, limit)).fetchall()
+           FROM unverified WHERE pr=1 ORDER BY price ASC LIMIT :lim""",
+        {"ref": now_ref, "age": max_age_days, "lim": limit}).fetchall()
     if not rows:
         # 「沒有新鮮的待驗目標」與「壞掉了」是兩件事，要能分辨。
         stale = store.conn.execute(
             """SELECT COUNT(*) FROM observations
                WHERE source='google' AND fare_class='any' AND carriers=''
-                 AND depart_date > date('now')""").fetchone()[0]
+                 AND depart_date > date(?)""", (now_ref,)).fetchone()[0]
         if stale:
             # 已知且預期：SearchApi 日曆於 2026-08 移除，池底那批七月觀測不會
             # 再更新。用 info 而非 warning——這不是待處理的異常，每天發警報
