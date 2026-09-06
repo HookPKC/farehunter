@@ -70,6 +70,26 @@ GitHub 排程投遞不穩，fsc 名義上每日 06:10 UTC，實際觀測散落 1
 發現撞車幾乎不存在、該次 cancelled 另有原因，改 cron 的提案因此撤案。
 不要重蹈：先列出「若假設為真，run 紀錄應該長什麼樣」，再去撈紀錄比對。
 
+## 3b. 時鐘：注入要嘛完整、要嘛不要做
+
+**半套的時鐘注入比完全不注入更危險**——它讓人以為時間已經被控制住了。
+2026-09 五天內因此停擺兩次、損失 14 班觀測（monitor.yml 先跑 pytest 才抓價，
+測試紅燈＝抓價停擺）：
+
+| 日期 | 半套在哪 | 後果 |
+|---|---|---|
+| 09-02 | `export_web.export()` 有 `now=` 但測試沒傳 | 種子時間 24 小時後過期，缺 4 班 |
+| 09-06 | `runner.run(now=)` 沒蓋到 `today_iso` / `upcoming_months()` | 寫死的出發日隔天變「昨天」，缺 9 班 |
+
+規則：
+- 函式收了 `now` / `now_ref` / `today`，就要**貫穿到所有時間比較**，
+  包含 SQL 裡的 `date('now')` / `julianday('now')`（那些也要吃參數）。
+- 測試裡**不要寫死未來日期**。由注入的時鐘偏移導出（`NOW.date() + 40 天`），
+  否則真實時間走過去那天就會紅。
+- 改完跑 `scripts/time_travel_tests.sh`——它用 faketime 把整套測試放到未來
+  幾個時間點跑，會直接指出引爆日。**不要用 freezegun**：它只騙 Python，
+  SQLite 的 `date('now')` 仍是真實時間，會產生大量偽陽性（實測 7 個裡 6 個假）。
+
 ## 4. 判讀規範：缺一筆 hourly commit 的三種正常原因
 
 monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**缺一筆
