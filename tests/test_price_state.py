@@ -237,9 +237,20 @@ from farehunter.models import Offer              # noqa: E402
 from farehunter.notify import format_alert       # noqa: E402
 
 
+#: 這個檔案的單一時間基準。runner.run(now=RUN_NOW) 會注入它。
+RUN_NOW = datetime(2026, 7, 27, 6, 17, 0, tzinfo=timezone.utc)
+
+#: 出發日／回程日一律由 RUN_NOW 導出，**不寫字面值**。
+#: 原本釘死在 2026-09-05，真實時間走到 2026-09-06 那天它變成「昨天」，被
+#: runner 的 `offer.depart_date < today_iso` 正確濾掉，測試就紅了（並且擋掉
+#: 9 小時的抓價）。相對 RUN_NOW 的偏移永遠落在未來，不會隨真實日期腐爛。
+DEP = (RUN_NOW.date() + timedelta(days=40)).isoformat()
+RET = (RUN_NOW.date() + timedelta(days=43)).isoformat()
+
+
 def _offer(price=7761.0, source="aviasales", carriers="GK"):
-    return Offer(origin="KHH", destination="NRT", depart_date="2026-09-05",
-                 return_date="2026-09-08", price=price, currency="TWD",
+    return Offer(origin="KHH", destination="NRT", depart_date=DEP,
+                 return_date=RET, price=price, currency="TWD",
                  carriers=carriers, stops=0, duration="180",
                  fare_class="any", source=source)
 
@@ -290,7 +301,6 @@ def test_format_alert_without_state_keeps_legacy_unverified_copy():
 import farehunter.runner as runner_mod            # noqa: E402
 from farehunter.storage import Store              # noqa: E402
 
-RUN_NOW = datetime(2026, 7, 27, 6, 17, 0, tzinfo=timezone.utc)
 
 
 def _cfg(tmp_path, threshold=8000):
@@ -308,7 +318,7 @@ def _seed_google(db_path, price, observed_at):
         "INSERT INTO observations (origin,destination,depart_date,return_date,"
         "price,currency,carriers,stops,duration,observed_at,fare_class,source,"
         "provider) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("KHH", "NRT", "2026-09-05", "2026-09-08", price, "TWD", "GK", 0, 180,
+        ("KHH", "NRT", DEP, RET, price, "TWD", "GK", 0, 180,
          observed_at.isoformat(timespec="seconds"), "any", "google", "serpapi"))
     st.conn.commit()
     st.close()
