@@ -157,13 +157,21 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
     # 全空而 workflow 從頭到尾綠燈。
     summary = {"searched": 0, "recorded": 0, "alerts": 0, "errors": 0,
                "empty": 0, "zero_record_routes": []}
-    today_iso = date.today().isoformat()
+    # 日期基準一律由 now 導出，讓 run(now=) 是**完整**的時鐘注入。
+    # 2026-09-06 生產事故：原本這裡與 upcoming_months() 各自取
+    # date.today()（真實時鐘），但 run(now=) 只蓋到 _resolve_state 與
+    # health。於是測試注入 RUN_NOW=2026-07-27、卻用寫死的出發日
+    # 2026-09-05，等真實時間走到 09-06 那天出發日變成「昨天」被這行
+    # 濾掉，測試轉紅——而 monitor.yml 先跑 pytest 才抓價，抓價停了 9 小時。
+    # 半套的注入比完全不注入更危險：它讓人以為時鐘已經被控制住了。
+    today_iso = now.date().isoformat()
 
     try:
         for route in cfg["routes"]:
             origin, dest = route["origin"], route["destination"]
             merged = {**defaults, **route}
-            months = upcoming_months(merged.get("months_ahead", 6))
+            months = upcoming_months(merged.get("months_ahead", 6),
+                                     today=now.date())
             # 兩組基準，都取自本輪寫入之前的狀態：
             #   route_stats     整條航線 → new_low（史上最低是極值事件）
             #   stats_by_date   單一出發日 → big_drop（反常便宜是相對事件）
