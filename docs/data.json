@@ -1,21 +1,21 @@
 {
- "generated_at": "2026-09-06T10:48:49+00:00",
+ "generated_at": "2026-09-06T11:18:05+00:00",
  "env": "aviasales",
  "totals": {
-  "observations": 231366,
+  "observations": 231535,
   "routes": 8,
   "alerts_24h": 4
  },
  "health": {
-  "checked_at": "2026-09-06T10:48:49+00:00",
+  "checked_at": "2026-09-06T11:18:05+00:00",
   "thresholds": {
    "stale_after_hours": 24.0,
    "dead_after_hours": 72.0
   },
   "counts": {
    "ok": 7,
-   "stale": 1,
-   "dead": 0,
+   "stale": 0,
+   "dead": 1,
    "never_observed": 0
   },
   "degraded": [
@@ -26,7 +26,7 @@
     "route": "TPE-NRT",
     "origin": "TPE",
     "destination": "NRT",
-    "last_observed_at": "2026-09-06T10:48:44+00:00",
+    "last_observed_at": "2026-09-06T11:17:35+00:00",
     "age_hours": 0.0,
     "status": "ok"
    },
@@ -34,15 +34,15 @@
     "route": "TPE-KIX",
     "origin": "TPE",
     "destination": "KIX",
-    "last_observed_at": "2026-09-06T10:17:38+00:00",
-    "age_hours": 0.5,
+    "last_observed_at": "2026-09-06T11:17:42+00:00",
+    "age_hours": 0.0,
     "status": "ok"
    },
    {
     "route": "KHH-NRT",
     "origin": "KHH",
     "destination": "NRT",
-    "last_observed_at": "2026-09-06T10:48:48+00:00",
+    "last_observed_at": "2026-09-06T11:17:48+00:00",
     "age_hours": 0.0,
     "status": "ok"
    },
@@ -50,7 +50,7 @@
     "route": "KHH-KIX",
     "origin": "KHH",
     "destination": "KIX",
-    "last_observed_at": "2026-09-06T10:48:30+00:00",
+    "last_observed_at": "2026-09-06T11:17:53+00:00",
     "age_hours": 0.0,
     "status": "ok"
    },
@@ -58,7 +58,7 @@
     "route": "KHH-CTS",
     "origin": "KHH",
     "destination": "CTS",
-    "last_observed_at": "2026-09-06T10:48:32+00:00",
+    "last_observed_at": "2026-09-06T11:17:55+00:00",
     "age_hours": 0.0,
     "status": "ok"
    },
@@ -66,7 +66,7 @@
     "route": "KHH-FUK",
     "origin": "KHH",
     "destination": "FUK",
-    "last_observed_at": "2026-09-06T10:48:38+00:00",
+    "last_observed_at": "2026-09-06T11:17:58+00:00",
     "age_hours": 0.0,
     "status": "ok"
    },
@@ -74,7 +74,7 @@
     "route": "KHH-OKA",
     "origin": "KHH",
     "destination": "OKA",
-    "last_observed_at": "2026-09-06T10:48:41+00:00",
+    "last_observed_at": "2026-09-06T11:18:03+00:00",
     "age_hours": 0.0,
     "status": "ok"
    },
@@ -83,8 +83,8 @@
     "origin": "KHH",
     "destination": "NGO",
     "last_observed_at": "2026-09-03T11:06:17+00:00",
-    "age_hours": 71.7,
-    "status": "stale"
+    "age_hours": 72.2,
+    "status": "dead"
    }
   ]
  },
@@ -93,9 +93,9 @@
    "origin": "KHH",
    "destination": "CTS",
    "stats": {
-    "n": 2018,
+    "n": 2019,
     "min": 10765.0,
-    "avg": 21548.1,
+    "avg": 21544.7,
     "median": 20545.0
    },
    "latest": [
@@ -605,9 +605,9 @@
    "origin": "KHH",
    "destination": "FUK",
    "stats": {
-    "n": 5330,
+    "n": 5334,
     "min": 7919.0,
-    "avg": 20743.6,
+    "avg": 20752.2,
     "median": 20622.0
    },
    "latest": [
@@ -654,7 +654,7 @@
      "currency": "TWD",
      "carriers": "BR",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:51+00:00",
+     "observed_at": "2026-09-06T11:17:56+00:00",
      "source": "aviasales",
      "full_price": 37855.0,
      "full_carriers": "BR"
@@ -700,7 +700,7 @@
      "currency": "TWD",
      "carriers": "BR",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:51+00:00",
+     "observed_at": "2026-09-06T11:17:57+00:00",
      "source": "aviasales",
      "full_price": 29987.0,
      "full_carriers": "BR"
@@ -913,8 +913,8 @@
     "state": "fresh_estimate",
     "price": 29987.0,
     "source": "aviasales",
-    "observed_at": "2026-09-06T10:17:51+00:00",
-    "age_hours": 0.5,
+    "observed_at": "2026-09-06T11:17:57+00:00",
+    "age_hours": 0.0,
     "depart_date": "2026-11-12",
     "return_date": "2026-11-15",
     "reference_price": null,
@@ -924,8 +924,8 @@
     "eligible_for_hero": true,
     "eligible_for_cta": true,
     "eligible_for_route_primary": true,
-    "last_observed_price": 37855.0,
-    "last_observed_at": "2026-09-06T10:17:51+00:00"
+    "last_observed_price": 29987.0,
+    "last_observed_at": "2026-09-06T11:17:57+00:00"
    },
    "fsc_latest": {
     "depart_date": "2027-01-08",
@@ -1285,9 +1285,9 @@
    "origin": "KHH",
    "destination": "KIX",
    "stats": {
-    "n": 14830,
+    "n": 14839,
     "min": 6387.0,
-    "avg": 11625.3,
+    "avg": 11626.3,
     "median": 10479.0
    },
    "latest": [
@@ -1340,7 +1340,7 @@
      "currency": "TWD",
      "carriers": "AK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:45+00:00",
+     "observed_at": "2026-09-06T11:17:51+00:00",
      "source": "aviasales"
     },
     {
@@ -1404,7 +1404,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:45+00:00",
+     "observed_at": "2026-09-06T11:17:51+00:00",
      "source": "aviasales"
     },
     {
@@ -1414,7 +1414,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:45+00:00",
+     "observed_at": "2026-09-06T11:17:51+00:00",
      "source": "aviasales"
     },
     {
@@ -1424,7 +1424,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:45+00:00",
+     "observed_at": "2026-09-06T11:17:51+00:00",
      "source": "aviasales"
     },
     {
@@ -1562,7 +1562,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:46+00:00",
+     "observed_at": "2026-09-06T11:17:52+00:00",
      "source": "aviasales"
     },
     {
@@ -1684,7 +1684,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:47+00:00",
+     "observed_at": "2026-09-06T11:17:52+00:00",
      "source": "aviasales"
     },
     {
@@ -1702,8 +1702,8 @@
     "state": "fresh_estimate",
     "price": 8582.0,
     "source": "aviasales",
-    "observed_at": "2026-09-06T10:17:45+00:00",
-    "age_hours": 0.5,
+    "observed_at": "2026-09-06T11:17:51+00:00",
+    "age_hours": 0.0,
     "depart_date": "2026-10-30",
     "return_date": "2026-11-04",
     "reference_price": null,
@@ -1713,8 +1713,8 @@
     "eligible_for_hero": true,
     "eligible_for_cta": true,
     "eligible_for_route_primary": true,
-    "last_observed_price": 10234.0,
-    "last_observed_at": "2026-09-06T10:17:47+00:00"
+    "last_observed_price": 11428.0,
+    "last_observed_at": "2026-09-06T11:17:52+00:00"
    },
    "fsc_latest": {
     "depart_date": "2026-10-11",
@@ -2359,9 +2359,9 @@
    "origin": "KHH",
    "destination": "NRT",
    "stats": {
-    "n": 76007,
+    "n": 76044,
     "min": 7049.0,
-    "avg": 10902.4,
+    "avg": 10903.0,
     "median": 10455.0
    },
    "latest": [
@@ -2404,7 +2404,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:45+00:00",
      "source": "aviasales"
     },
     {
@@ -2414,7 +2414,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:45+00:00",
      "source": "aviasales",
      "full_price": 11228.0,
      "full_carriers": "UA"
@@ -2426,7 +2426,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:45+00:00",
      "source": "aviasales"
     },
     {
@@ -2436,7 +2436,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:45+00:00",
      "source": "aviasales"
     },
     {
@@ -2562,7 +2562,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:45+00:00",
      "source": "aviasales"
     },
     {
@@ -2582,7 +2582,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:45+00:00",
      "source": "aviasales"
     },
     {
@@ -2592,7 +2592,7 @@
      "currency": "TWD",
      "carriers": "UA",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:45+00:00",
      "source": "aviasales",
      "full_price": 15334.0,
      "full_carriers": "UA"
@@ -2800,7 +2800,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:46+00:00",
      "source": "aviasales"
     },
     {
@@ -2854,7 +2854,7 @@
      "currency": "TWD",
      "carriers": "FD",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:46+00:00",
      "source": "aviasales"
     },
     {
@@ -2896,7 +2896,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:46+00:00",
      "source": "aviasales",
      "full_price": 13535.0,
      "full_carriers": "BR"
@@ -2908,7 +2908,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:41+00:00",
+     "observed_at": "2026-09-06T11:17:46+00:00",
      "source": "aviasales",
      "full_price": 12810.0,
      "full_carriers": "UA"
@@ -3061,7 +3061,7 @@
     "price": 8669.0,
     "source": "aviasales",
     "observed_at": "2026-09-05T10:17:37+00:00",
-    "age_hours": 24.5,
+    "age_hours": 25.0,
     "depart_date": "2026-11-26",
     "return_date": "2026-12-02",
     "reference_price": null,
@@ -3071,8 +3071,8 @@
     "eligible_for_hero": false,
     "eligible_for_cta": false,
     "eligible_for_route_primary": true,
-    "last_observed_price": 10367.0,
-    "last_observed_at": "2026-09-06T10:48:48+00:00"
+    "last_observed_price": 13125.0,
+    "last_observed_at": "2026-09-06T11:17:46+00:00"
    },
    "fsc_latest": {
     "depart_date": "2026-09-20",
@@ -3440,9 +3440,9 @@
    "origin": "KHH",
    "destination": "OKA",
    "stats": {
-    "n": 10669,
+    "n": 10680,
     "min": 5442.0,
-    "avg": 10785.4,
+    "avg": 10783.8,
     "median": 10214.0
    },
    "latest": [
@@ -3453,7 +3453,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:54+00:00",
+     "observed_at": "2026-09-06T11:18:00+00:00",
      "source": "aviasales"
     },
     {
@@ -3529,7 +3529,7 @@
      "currency": "TWD",
      "carriers": "SL",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:54+00:00",
+     "observed_at": "2026-09-06T11:18:00+00:00",
      "source": "aviasales"
     },
     {
@@ -3639,7 +3639,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:55+00:00",
+     "observed_at": "2026-09-06T11:18:00+00:00",
      "source": "aviasales"
     },
     {
@@ -3711,7 +3711,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:55+00:00",
+     "observed_at": "2026-09-06T11:18:00+00:00",
      "source": "aviasales"
     },
     {
@@ -3811,8 +3811,8 @@
     "state": "price_conflict",
     "price": 6056.0,
     "source": "aviasales",
-    "observed_at": "2026-09-06T10:17:54+00:00",
-    "age_hours": 0.5,
+    "observed_at": "2026-09-06T11:18:00+00:00",
+    "age_hours": 0.0,
     "depart_date": "2026-10-20",
     "return_date": "2026-10-23",
     "reference_price": 7278.0,
@@ -3822,8 +3822,8 @@
     "eligible_for_hero": true,
     "eligible_for_cta": true,
     "eligible_for_route_primary": true,
-    "last_observed_price": 7210.0,
-    "last_observed_at": "2026-09-06T10:17:55+00:00"
+    "last_observed_price": 6956.0,
+    "last_observed_at": "2026-09-06T11:18:00+00:00"
    },
    "fsc_latest": {
     "depart_date": "2026-09-27",
@@ -4191,9 +4191,9 @@
    "origin": "TPE",
    "destination": "KIX",
    "stats": {
-    "n": 44847,
+    "n": 44884,
     "min": 5535.0,
-    "avg": 9487.5,
+    "avg": 9488.6,
     "median": 8577.0
    },
    "latest": [
@@ -4238,7 +4238,7 @@
      "currency": "TWD",
      "carriers": "D7",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:34+00:00",
+     "observed_at": "2026-09-06T11:17:38+00:00",
      "source": "aviasales"
     },
     {
@@ -4248,7 +4248,7 @@
      "currency": "TWD",
      "carriers": "D7",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:34+00:00",
+     "observed_at": "2026-09-06T11:17:38+00:00",
      "source": "aviasales"
     },
     {
@@ -4302,7 +4302,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:34+00:00",
+     "observed_at": "2026-09-06T11:17:38+00:00",
      "source": "aviasales"
     },
     {
@@ -4426,7 +4426,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:35+00:00",
+     "observed_at": "2026-09-06T11:17:38+00:00",
      "source": "aviasales"
     },
     {
@@ -4436,7 +4436,7 @@
      "currency": "TWD",
      "carriers": "VZ",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:35+00:00",
+     "observed_at": "2026-09-06T11:17:38+00:00",
      "source": "aviasales"
     },
     {
@@ -4456,7 +4456,7 @@
      "currency": "TWD",
      "carriers": "D7",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:35+00:00",
+     "observed_at": "2026-09-06T11:17:38+00:00",
      "source": "aviasales"
     },
     {
@@ -4598,7 +4598,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:35+00:00",
+     "observed_at": "2026-09-06T11:17:39+00:00",
      "source": "aviasales",
      "full_price": 13867.0,
      "full_carriers": "CI"
@@ -4630,7 +4630,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:35+00:00",
+     "observed_at": "2026-09-06T11:17:39+00:00",
      "source": "aviasales"
     },
     {
@@ -4660,7 +4660,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:35+00:00",
+     "observed_at": "2026-09-06T11:17:39+00:00",
      "source": "aviasales"
     },
     {
@@ -4760,8 +4760,8 @@
     "state": "fresh_estimate",
     "price": 6423.0,
     "source": "aviasales",
-    "observed_at": "2026-09-06T10:17:35+00:00",
-    "age_hours": 0.5,
+    "observed_at": "2026-09-06T11:17:38+00:00",
+    "age_hours": 0.0,
     "depart_date": "2026-10-28",
     "return_date": "2026-11-04",
     "reference_price": null,
@@ -4771,8 +4771,8 @@
     "eligible_for_hero": true,
     "eligible_for_cta": true,
     "eligible_for_route_primary": true,
-    "last_observed_price": 6423.0,
-    "last_observed_at": "2026-09-06T10:17:35+00:00"
+    "last_observed_price": 8289.0,
+    "last_observed_at": "2026-09-06T11:17:39+00:00"
    },
    "fsc_latest": {
     "depart_date": "2026-10-02",
@@ -5140,9 +5140,9 @@
    "origin": "TPE",
    "destination": "NRT",
    "stats": {
-    "n": 65044,
+    "n": 65101,
     "min": 5612.0,
-    "avg": 10361.4,
+    "avg": 10361.3,
     "median": 9638.0
    },
    "latest": [
@@ -5185,7 +5185,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales"
     },
     {
@@ -5195,7 +5195,7 @@
      "currency": "TWD",
      "carriers": "TR",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales"
     },
     {
@@ -5269,7 +5269,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales"
     },
     {
@@ -5289,7 +5289,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales",
      "full_price": 11010.0,
      "full_carriers": "JX"
@@ -5301,7 +5301,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales"
     },
     {
@@ -5311,7 +5311,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales"
     },
     {
@@ -5371,7 +5371,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales"
     },
     {
@@ -5381,7 +5381,7 @@
      "currency": "TWD",
      "carriers": "SL",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales",
      "full_price": 13446.0,
      "full_carriers": "JX"
@@ -5393,7 +5393,7 @@
      "currency": "TWD",
      "carriers": "TR",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales"
     },
     {
@@ -5437,7 +5437,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales"
     },
     {
@@ -5447,7 +5447,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:31+00:00",
      "source": "aviasales"
     },
     {
@@ -5551,7 +5551,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:32+00:00",
      "source": "aviasales"
     },
     {
@@ -5561,7 +5561,7 @@
      "currency": "TWD",
      "carriers": "IT",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:32+00:00",
      "source": "aviasales"
     },
     {
@@ -5655,7 +5655,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:32+00:00",
      "source": "aviasales"
     },
     {
@@ -5677,7 +5677,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:32+00:00",
      "source": "aviasales"
     },
     {
@@ -5697,7 +5697,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:32+00:00",
      "source": "aviasales"
     },
     {
@@ -5707,7 +5707,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:32+00:00",
      "source": "aviasales"
     },
     {
@@ -5717,7 +5717,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:32+00:00",
      "source": "aviasales"
     },
     {
@@ -5727,7 +5727,7 @@
      "currency": "TWD",
      "carriers": "GK",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:28+00:00",
+     "observed_at": "2026-09-06T11:17:32+00:00",
      "source": "aviasales",
      "full_price": 11672.0,
      "full_carriers": "CI"
@@ -5813,7 +5813,7 @@
      "currency": "TWD",
      "carriers": "MM",
      "stops": 0,
-     "observed_at": "2026-09-06T10:17:29+00:00",
+     "observed_at": "2026-09-06T11:17:33+00:00",
      "source": "aviasales"
     },
     {
@@ -5831,8 +5831,8 @@
     "state": "fresh_estimate",
     "price": 6496.0,
     "source": "aviasales",
-    "observed_at": "2026-09-06T10:17:28+00:00",
-    "age_hours": 0.5,
+    "observed_at": "2026-09-06T11:17:31+00:00",
+    "age_hours": 0.0,
     "depart_date": "2026-10-29",
     "return_date": "2026-11-05",
     "reference_price": null,
@@ -5843,7 +5843,7 @@
     "eligible_for_cta": true,
     "eligible_for_route_primary": true,
     "last_observed_price": 6718.0,
-    "last_observed_at": "2026-09-06T10:17:29+00:00"
+    "last_observed_at": "2026-09-06T11:17:33+00:00"
    },
    "fsc_latest": {
     "depart_date": "2026-09-29",
@@ -6374,28 +6374,28 @@
   {
    "origin": "TPE",
    "destination": "NRT",
+   "depart_date": "2026-09-29",
+   "price": 7182.0,
+   "neighbour_median": 12968.0,
+   "discount_pct": 44.6,
+   "neighbours": 7,
+   "notable": true,
+   "observed_at": "2026-09-06T11:17:30+00:00",
+   "return_date": "2026-10-02",
+   "source": "aviasales"
+  },
+  {
+   "origin": "TPE",
+   "destination": "NRT",
    "depart_date": "2026-09-30",
    "price": 7451.0,
    "neighbour_median": 12968.0,
    "discount_pct": 42.5,
    "neighbours": 7,
    "notable": true,
-   "observed_at": "2026-09-06T10:17:27+00:00",
+   "observed_at": "2026-09-06T11:17:30+00:00",
    "return_date": "2026-10-03",
    "source": "aviasales"
-  },
-  {
-   "origin": "TPE",
-   "destination": "NRT",
-   "depart_date": "2026-09-29",
-   "price": 8120.0,
-   "neighbour_median": 12968.0,
-   "discount_pct": 37.4,
-   "neighbours": 7,
-   "notable": true,
-   "observed_at": "2026-09-06T10:48:44+00:00",
-   "return_date": "2026-10-02",
-   "source": "google"
   },
   {
    "origin": "TPE",
@@ -6406,7 +6406,7 @@
    "discount_pct": 35.9,
    "neighbours": 9,
    "notable": true,
-   "observed_at": "2026-09-06T10:17:27+00:00",
+   "observed_at": "2026-09-06T11:17:30+00:00",
    "return_date": "2026-09-24",
    "source": "aviasales"
   },
@@ -6419,7 +6419,7 @@
    "discount_pct": 26.6,
    "neighbours": 6,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:28+00:00",
+   "observed_at": "2026-09-06T11:17:31+00:00",
    "return_date": "2026-11-06",
    "source": "aviasales"
   },
@@ -6432,7 +6432,7 @@
    "discount_pct": 25.1,
    "neighbours": 17,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:40+00:00",
+   "observed_at": "2026-09-06T11:17:44+00:00",
    "return_date": "2026-09-25",
    "source": "aviasales"
   },
@@ -6445,7 +6445,7 @@
    "discount_pct": 24.4,
    "neighbours": 16,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:40+00:00",
+   "observed_at": "2026-09-06T11:17:44+00:00",
    "return_date": "2026-09-24",
    "source": "aviasales"
   },
@@ -6458,7 +6458,7 @@
    "discount_pct": 23.6,
    "neighbours": 10,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:29+00:00",
+   "observed_at": "2026-09-06T11:17:33+00:00",
    "return_date": "2026-12-10",
    "source": "aviasales"
   },
@@ -6471,7 +6471,7 @@
    "discount_pct": 22.2,
    "neighbours": 6,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:28+00:00",
+   "observed_at": "2026-09-06T11:17:31+00:00",
    "return_date": "2026-10-19",
    "source": "aviasales"
   },
@@ -6484,8 +6484,21 @@
    "discount_pct": 22.1,
    "neighbours": 16,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:40+00:00",
+   "observed_at": "2026-09-06T11:17:44+00:00",
    "return_date": "2026-09-23",
+   "source": "aviasales"
+  },
+  {
+   "origin": "KHH",
+   "destination": "NRT",
+   "depart_date": "2026-09-16",
+   "price": 8326.0,
+   "neighbour_median": 10661.0,
+   "discount_pct": 21.9,
+   "neighbours": 15,
+   "notable": false,
+   "observed_at": "2026-09-06T11:17:44+00:00",
+   "return_date": "2026-09-21",
    "source": "aviasales"
   },
   {
@@ -6497,7 +6510,7 @@
    "discount_pct": 21.1,
    "neighbours": 9,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:28+00:00",
+   "observed_at": "2026-09-06T11:17:32+00:00",
    "return_date": "2026-11-19",
    "source": "aviasales"
   },
@@ -6510,21 +6523,8 @@
    "discount_pct": 21.0,
    "neighbours": 8,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:28+00:00",
+   "observed_at": "2026-09-06T11:17:31+00:00",
    "return_date": "2026-10-21",
-   "source": "aviasales"
-  },
-  {
-   "origin": "KHH",
-   "destination": "NRT",
-   "depart_date": "2026-09-16",
-   "price": 8326.0,
-   "neighbour_median": 10499.5,
-   "discount_pct": 20.7,
-   "neighbours": 16,
-   "notable": false,
-   "observed_at": "2026-09-06T10:17:40+00:00",
-   "return_date": "2026-09-21",
    "source": "aviasales"
   },
   {
@@ -6536,7 +6536,7 @@
    "discount_pct": 18.6,
    "neighbours": 17,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:40+00:00",
+   "observed_at": "2026-09-06T11:17:44+00:00",
    "return_date": "2026-09-24",
    "source": "aviasales"
   },
@@ -6549,7 +6549,7 @@
    "discount_pct": 17.4,
    "neighbours": 7,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:28+00:00",
+   "observed_at": "2026-09-06T11:17:31+00:00",
    "return_date": "2026-10-20",
    "source": "aviasales"
   },
@@ -6562,7 +6562,7 @@
    "discount_pct": 16.3,
    "neighbours": 9,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:29+00:00",
+   "observed_at": "2026-09-06T11:17:33+00:00",
    "return_date": "2026-12-09",
    "source": "aviasales"
   },
@@ -6575,7 +6575,7 @@
    "discount_pct": 16.0,
    "neighbours": 10,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:41+00:00",
+   "observed_at": "2026-09-06T11:17:45+00:00",
    "return_date": "2026-10-07",
    "source": "aviasales"
   },
@@ -6588,7 +6588,7 @@
    "discount_pct": 15.0,
    "neighbours": 6,
    "notable": false,
-   "observed_at": "2026-09-06T10:17:28+00:00",
+   "observed_at": "2026-09-06T11:17:32+00:00",
    "return_date": "2026-11-22",
    "source": "aviasales"
   }
