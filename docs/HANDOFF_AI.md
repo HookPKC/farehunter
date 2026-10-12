@@ -2,7 +2,7 @@
 
 **讀者**：接手本專案的任何 AI 模型（Claude Opus/Sonnet、Codex、GPT 系列或其他），
 以及想了解 AI 協作規範的人類。本文件不綁定任何特定模型；「你」指接手的 AI。
-最後更新：2026-09-03。
+最後更新：2026-10-12。
 
 ---
 
@@ -46,7 +46,7 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 4. 維運者端：monitor 尾端 optional 心跳（repo secret `HC_PING_URL`，未設即休眠）
    ＋ cron-job.org 失敗 email
 
-**concurrency**：monitor/fsc/verify 共用 `farehunter` 群組
+**concurrency**：monitor/fsc/verify/archive-db 共用 `farehunter` 群組
 （`cancel-in-progress: false`＝排隊不互砍）；deploy-pages 獨立 `pages` 群組。
 
 ## 2. 絕對禁區（違反任一項＝事故）
@@ -137,9 +137,12 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 
 ## 7. 已知長期課題（P2，非急務）
 
-- **prices.db 成長**：SQLite 檔案每小時隨 commit 進 repo（2026-07 已 12,000+
-  筆觀測）。一兩年尺度 repo 會肥大、clone 變慢。可能方向：歷史歸檔、shallow
-  clone 指引、或改存放策略——屬大改，需完整提案與使用者明確核准，勿順手做。
+- **prices.db 成長**：2026-10 已處理（ADR 0002）。出發日已過 30 天的觀測由
+  `archive-db` 每日搬到 `archive/`，現行檔穩定在 30–35 MiB；全歷史查詢讀
+  `observations_all`。git 歷史不是問題（SQLite 版本間差異很小，50 版只佔
+  8.25 MiB）。剩下的長期課題：SQLite 一次最多掛 10 個封存檔，照每年約 2.5 個
+  新檔，約 3–4 年後到頂——封存檔到第 8 個時開始提案。封存檔遺失或筆數不符
+  時的還原步驟見 ADR 0002「維運」。
 - 實價來源（fsc/verify）僅靠 GitHub 排程、時間漂移嚴重。已評估過
   「比照 monitor 加外部觸發」：因付費 API 消耗與低頻本質，**判定不值得**，
   維持現狀。除非使用者重新立案，不要主動重提。

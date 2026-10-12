@@ -16,6 +16,8 @@ config.yaml ──> runner ──> Aviasales Data API ──> parse ──> SQLi
 
 - `src/farehunter/travelpayouts.py` — Aviasales prices_for_dates 客戶端，含 429 重試
 - `src/farehunter/storage.py` — SQLite 價格觀察與警報紀錄
+- `src/farehunter/archive.py` — 出發日已過 30 天的觀測搬到 `archive/`，讓 `prices.db`
+  不會撞到 GitHub 100 MiB 單檔上限（見 `docs/adr/0002-prices-db-archive.md`）
 - `src/farehunter/analyzer.py` — 低價判斷規則
 - `src/farehunter/notify.py`  — Telegram Bot API / LINE Messaging API push
 - `src/farehunter/runner.py`  — 主流程與日期取樣
@@ -94,6 +96,8 @@ python -m pytest tests/ -v           # 跑測試（15 個，不需網路與金�
    防重複 guard 會跳過其中重複的那一次），`prices.db` 與 `docs/data.json`
    會自動 commit 回 repo。維運判斷見 `docs/HANDOFF_AI.md`：連續 ≥2 小時沒有
    新的 `chore: price observations` commit 才算異常
+5. `Archive DB` 每天把出發日已過 30 天的觀測搬到 `archive/`（commit 訊息
+   `chore: archive observations`）。漏跑幾天沒關係；它壞了也不影響每小時抓價
 
 ## 手機 App（GitHub Pages + PWA）
 
@@ -138,6 +142,9 @@ python -m pytest tests/ -v           # 跑測試（15 個，不需網路與金�
   薄航線的多數出發日可能長期累積不到 30 筆而始終不觸發——實測 6 週後 KHH→CTS
   只有 8/73 個出發日達標、KHH→NGO 只有 4/33。這是刻意設計（見 `storage.py` 的
   `route_stats_by_date` docstring），不是故障
+- **直接打開 `prices.db` 只看得到近幾個月**：出發日已過 30 天的觀測在
+  `archive/` 裡。程式裡的全歷史統計（new_low、首頁統計與趨勢圖）照樣算全部；
+  自己查詢時用 `archive.attach(conn)` 後查 `observations_all`（見 ADR 0002）
 - 尚未涵蓋：飯店、Error Fare 交叉比價、價格預測——這些是 v2+ 範圍，
   等歷史資料累積起來才有意義
 
