@@ -85,10 +85,10 @@ monitor / fsc / verify 三個 writer 的 commit 全部失敗，整條抓價停�
 ## 維運
 
 **封存檔不見或筆數不符**（log 出現 `ArchiveIntegrityError`，monitor 變紅）：
-不要重跑封存、不要手改 manifest。從 git 歷史把封存檔還原到「最後一個正常
-版本」：`git log --oneline -- archive/<檔名>` 找出異動紀錄，用
-`git checkout <正常的那筆> -- archive/<檔名>` 還原、commit、push。還原後的筆數
-必須等於 manifest 記的筆數（錯誤訊息裡兩個數字都有）。
+不要重跑封存、不要手改 manifest。只有 archive-db 會寫 `archive/`，而 manifest
+也只在封存時改變，所以把整個 `archive/` 還原成最後一筆
+`chore: archive observations` commit 的版本，筆數就一定對得上 manifest。
+逐步指令（已實測）見 `docs/RUNBOOK_HOOK.md` §3b。
 
 **本機查全部歷史**：直接打開 prices.db 只看得到近幾個月。Python 用
 `archive.attach(conn)` 後查 `observations_all`；sqlite3 CLI 用

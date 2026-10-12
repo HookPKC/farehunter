@@ -113,7 +113,7 @@ def _attach_entries(conn: sqlite3.Connection, base: Path,
         if not path.is_file():
             raise ArchiveIntegrityError(
                 f"封存檔 {path} 不見了（manifest 記 {rows} 筆）。不要重跑封存；"
-                "請從 git 歷史還原這個檔案，見 docs/adr/0002-prices-db-archive.md")
+                "照 docs/RUNBOOK_HOOK.md §3b 從 git 歷史還原 archive/")
         alias = f"arc{i}"
         if alias not in attached:
             if conn.in_transaction:
@@ -123,7 +123,7 @@ def _attach_entries(conn: sqlite3.Connection, base: Path,
         if actual != rows:
             raise ArchiveIntegrityError(
                 f"封存檔 {path} 有 {actual} 筆，manifest 記 {rows} 筆。不要重跑封存；"
-                "請從 git 歷史還原這個檔案，見 docs/adr/0002-prices-db-archive.md")
+                "照 docs/RUNBOOK_HOOK.md §3b 從 git 歷史還原 archive/")
         aliases.append(alias)
     return aliases
 
