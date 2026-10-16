@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from . import archive
+
 log = logging.getLogger(__name__)
 
 # 門檻。monitor 每小時一班，健康航線的觀測齡正常在 1 小時內；薄航線
@@ -66,10 +68,14 @@ def last_observed_at(conn, origin: str, destination: str) -> str | None:
 
     刻意不濾 source：問的是「這條航線還有沒有任何管道在供料」，
     不是「主價夠不夠新鮮」（後者是 current_price 的職責）。
+
+    讀 observations_all（含封存）：一條斷線很久的航線，現行檔裡可能已經
+    一筆都不剩，只看現行檔會把「斷線 N 天」誤報成「從未觀測」。
     """
     try:
+        archive.attach(conn)
         row = conn.execute(
-            "SELECT MAX(observed_at) FROM observations "
+            "SELECT MAX(observed_at) FROM observations_all "
             "WHERE origin=? AND destination=?",
             (origin, destination)).fetchone()
     except Exception as exc:                      # noqa: BLE001 — fail-open

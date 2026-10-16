@@ -41,7 +41,45 @@
 Pages 偶爾一次性抽風（歷史上發生過，artifact 都建好了最後一步掛掉）。
 Actions → **Deploy Pages** → 點進紅色那筆 → 右上 **Re-run all jobs**。重跑幾乎必過。
 
-若紅的是 **FareHunter Monitor** 本身：點進 log 看第一個紅色步驟——若是「Run monitor」且訊息提到 401/token，多半是 Travelpayouts token 過期，到 repo Settings → Secrets 更新 `TRAVELPAYOUTS_TOKEN`。
+若紅的是 **FareHunter Monitor** 本身：點進 log 看第一個紅色步驟——若是「Run monitor」且訊息提到 401/token，多半是 Travelpayouts token 過期，到 repo Settings → Secrets 更新 `TRAVELPAYOUTS_TOKEN`。若訊息是 `ArchiveIntegrityError`，照下面 §3b。
+
+## 3b. 封存檔出錯時（`ArchiveIntegrityError`）
+
+背景：`prices.db` 只放近幾個月的觀測，出發日已過 30 天的舊資料每天由
+**Archive DB** 搬到 `archive/` 資料夾（為了不撞到 GitHub 100 MiB 的單檔上限，
+細節見 `docs/adr/0002-prices-db-archive.md`）。`prices.db` 裡記著每個封存檔
+應該有幾筆；兩邊對不上時，程式會**故意停下來報錯**，而不是少算歷史資料去
+亂發「史上最低」通知。
+
+**怎麼認出來**：Monitor（或 FSC / Verify）紅燈，log 裡有 `ArchiveIntegrityError`，
+後面接「封存檔 … 不見了」或「封存檔 … 有 X 筆，manifest 記 Y 筆」。
+此時每小時抓價會停，healthchecks 會在 3 小時後寄信。
+
+**絕對不要做**：重跑 Archive DB（它會報同一個錯，修不好）、刪掉 `archive/`
+裡的檔案、手動改 `prices.db`。
+
+**修法：把 `archive/` 還原成最後一次正常封存時的樣子**（需要能用 git 的電腦，約 5 分鐘）：
+
+```bash
+git clone --filter=blob:none https://github.com/HookPKC/farehunter
+cd farehunter
+# 最後一次正常封存的 commit（只有 Archive DB 會寫 archive/）
+SHA=$(git log -1 --format=%H --grep='^chore: archive observations' -- archive/)
+git checkout "$SHA" -- archive/
+git commit -m "fix: 還原封存檔（ArchiveIntegrityError）"
+git push            # 被拒的話先 git pull --rebase 再 push
+```
+
+然後照 §2 手動跑一次 **FareHunter Monitor**，變綠勾＝復原。若還是同一個錯，
+把 log 的錯誤訊息整段交給 AI 處理（ADR 0002「維運」段落有完整說明）。
+
+**若紅的是 Archive DB 本身**：不急，抓價不受影響，漏跑或紅幾天都沒關係。
+- 錯誤是「搬移前後不一致…已 rollback」→ 什麼都沒被改動，隔天會自動重試；
+  連續幾天都這樣再找 AI 看。
+- 錯誤是「不見了」或「manifest 記」→ 跟上面同一件事，照上面還原。
+- 紅在「Commit」且 log 有 `NON-FAST-FORWARD` → 剛好跟別的 workflow 撞到，
+  沒有任何資料被改，隔天會自動重做。
+- 紅在「Run tests」→ 跟 Monitor 的測試是同一套，Monitor 也會紅，照 §0 處理。
 
 若紅的是 **FSC Snapshot**（或其 log 出現 401 / quota / Invalid API key）：到 SerpAPI dashboard 確認本月額度與 key 狀態（每日最多 6 次、月理論最多約 186 次，方案額度 250，見 dashboard），必要時產生新 key → repo Settings → Secrets 更新 `SERPAPI_KEY` → 舊 key 到 SerpAPI 端撤銷。key 一律不要貼進對話、文件或截圖。
 
@@ -138,6 +176,9 @@ token 存自己 Google 帳號的 Script Properties，用 UrlFetchApp 發同一�
 ## 7. 沒有 AI 之後的日常維護（每週 1 分鐘）
 
 - 每週開一次首頁：沒提示條＝健康，關掉即可
+- （每月一次，可選）Actions → **Archive DB** 最近一次 log 的最後兩行：現行檔
+  應在 30–35 MiB 左右。超過 45 MiB，或封存檔編號到 `observations-008.db`，
+  就找 AI 看（原因見 ADR 0002「已知限制」）
 - 收到 healthchecks 或 cron-job.org email → 照第 0 節三步走
 - 三步走了還是不行 → `docs/PLAYBOOK.md` 案例 1-6 有完整排查法
   （順序：Scheduled run 是否存在 → workflow state → 手動 dispatch 是否正常）
@@ -164,4 +205,5 @@ Flights 為準」字樣就是在標示這件事。
 | 免疫 | 55 分鐘防重複 guard（fail-open） | 多觸發源不重複燒 API；guard 壞掉時寧可重複、絕不停擺 |
 | 偵測（使用者） | 首頁黃/紅新鮮度提示 | 任何人都能看出資料是舊的 |
 | 偵測（Hook） | healthchecks 心跳 ＋ cron-job.org 失敗通知 | 停擺 3 小時內 email 到你 |
+| 容量 | Archive DB 每日封存（ADR 0002） | `prices.db` 不會撞到 GitHub 100 MiB 單檔上限 |
 | 復原 | 本 RUNBOOK 第 0 節三步 | 人類 30 秒可執行 |

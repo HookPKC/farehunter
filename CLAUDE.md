@@ -19,3 +19,4 @@ Single-context：根目錄一份 `CONTEXT.md` + `docs/adr/`。See `docs/agents/d
 
 已記錄的決策（做同類評估前先讀，避免重跑已經有答案的實驗）：
 - `docs/adr/0001-google-flights-deals.md` — 為何不採用 SerpAPI 的 deals 引擎
+- `docs/adr/0002-prices-db-archive.md` — prices.db 依出發日封存到 `archive/`（防 GitHub 100 MiB 單檔上限）

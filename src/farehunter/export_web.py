@@ -32,6 +32,11 @@ try:
 except ImportError:                     # pragma: no cover
     from . import cheap_days
 
+try:
+    from farehunter import archive
+except ImportError:                     # pragma: no cover
+    from . import archive
+
 
 # 首頁「權威近期價格日曆」的單一真相來源(SSOT)。每個 depart_date 一格,
 # 排序規則:14 天內的 fresh google 無條件優先,其次最新觀測。Hero 大字 =
@@ -189,10 +194,13 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
     _now = now or datetime.now(timezone.utc)   # 可注入,供測試固定時鐘
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    # 全歷史（航線清單、統計、趨勢、總筆數）讀 observations_all＝現行＋封存；
+    # 其餘查詢只看未來出發日或近期觀測，封存的列不在範圍內（見 archive.py）。
+    archive.attach(conn)
 
     routes = []
     route_rows = conn.execute(
-        "SELECT DISTINCT origin, destination FROM observations ORDER BY origin, destination"
+        "SELECT DISTINCT origin, destination FROM observations_all ORDER BY origin, destination"
     ).fetchall()
 
     for rr in route_rows:
@@ -200,10 +208,10 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
 
         # stats over full history
         srow = conn.execute(
-            "SELECT COUNT(*) n, MIN(price) mn, AVG(price) av FROM observations "
+            "SELECT COUNT(*) n, MIN(price) mn, AVG(price) av FROM observations_all "
             "WHERE origin=? AND destination=? AND fare_class='any'", (o, d)).fetchone()
         prices = [r["price"] for r in conn.execute(
-            "SELECT price FROM observations WHERE origin=? AND destination=? "
+            "SELECT price FROM observations_all WHERE origin=? AND destination=? "
             "AND fare_class='any' ORDER BY price", (o, d))]
         mid = len(prices) // 2
         median = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
@@ -264,7 +272,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
         # trend: daily minimum across all departure dates
         history = [dict(r) for r in conn.execute(
             """SELECT substr(observed_at, 1, 10) AS day, MIN(price) AS min_price
-               FROM observations WHERE origin=? AND destination=? AND fare_class='any'
+               FROM observations_all WHERE origin=? AND destination=? AND fare_class='any'
                GROUP BY day ORDER BY day""", (o, d))]
 
         # monthly low across the planning horizon. Two-stage so a stale cache low
@@ -313,7 +321,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
     alerts_24h = conn.execute(
         "SELECT COUNT(*) c FROM alerts WHERE sent_at >= datetime('now','-24 hours')"
     ).fetchone()["c"]
-    total_obs = conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"]
+    total_obs = conn.execute("SELECT COUNT(*) c FROM observations_all").fetchone()["c"]
 
     # 航線健康。放進 data.json 而非另開檔案:五個 writer 都只 git add
     # prices.db + docs/data.json（+ 各自的 report），新檔案不會被 commit,
