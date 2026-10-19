@@ -1,7 +1,7 @@
 """prices.db 封存：出發日早已過去的觀測搬進 archive/，全歷史統計照樣看得到。
 
 存在理由（決策紀錄見 docs/adr/0002-prices-db-archive.md）：prices.db 每小時
-隨 commit 進 repo，2026-08→10 從 16 MiB 長到 45 MiB（每月約 +11 MB）。GitHub
+隨 commit 進 repo，2026-08→10 從 16 MiB 長到 45 MiB（9→10 月每月約 +11 MB）。GitHub
 拒收超過 100 MiB 的單一檔案——撞到那天，三個 writer 的 commit 全部失敗，整條
 抓價停擺。git 歷史本身不是問題：SQLite 原檔的版本間差異很小，50 個版本的
 pack 只有 8.25 MiB。卡住的只有「單一檔案大小」。
@@ -11,15 +11,18 @@ pack 只有 8.25 MiB。卡住的只有「單一檔案大小」。
 - **寫**：`archive_old()` 把 depart_date 早於（今天 − MARGIN_DAYS）的列從
   prices.db 搬到 archive/observations-NNN.db（滿 ROLL_BYTES 換新檔），每個
   封存檔的筆數記在 prices.db 的 archive_manifest。由 archive-db.yml 執行，
-  刻意不在每小時抓價的路徑上：Archive DB 這支 job 失敗（交易 rollback、不
-  commit）不影響抓價。但 repo 裡的 archive/ 與 manifest 對不上時，所有讀者
-  會故意報錯（ArchiveIntegrityError），那是另一回事，見 RUNBOOK §3b。
+  刻意不在每小時抓價的路徑上：Archive DB 這支 job 失敗時不 commit，不影響
+  抓價。但 repo 裡的 archive/ 與 manifest 對不上時，所有讀者會故意報錯
+  （ArchiveIntegrityError），那是另一回事，見 RUNBOOK §3b。
 - **讀**：`attach(conn)` 掛上 manifest 列出的封存檔，建 TEMP VIEW
   `observations_all` ＝ main.observations ∪ 各封存檔。只有「全歷史」查詢讀它
   （new_low 的航線史上最低、首頁統計與趨勢、FIE 的歷史錨點、航線健康）。
   其餘查詢只看未來出發日或近期觀測，封存的列本來就不在它們的範圍內，
   所以繼續讀 observations，一個字都不用改。view 沒有 rowid（讀出來是
   NULL），日後把查詢改讀 observations_all 時，排序的平手判定要用 id。
+  view 在 attach 那一刻就定型：同一份 checkout 上不要讓封存與其他 writer 同時
+  跑（CI 靠 concurrency 群組排隊，本機自己注意），否則換新檔那天，已開著的
+  連線看不到新檔裡的列。
 
 **不能單純 revert**：封存跑過之後，prices.db 只剩近幾個月的資料。把讀者改回
 只讀 observations（revert 這組改動，或把某個全歷史查詢改回去）不會報任何錯，
@@ -70,7 +73,8 @@ ROLL_BYTES = 40 * 1024 * 1024
 
 #: 現行檔比「壓實後」大超過這個比例才 VACUUM（第一次封存則一律 VACUUM）。
 #: 每次都 VACUUM 會讓每次封存 commit 都整檔重寫、git 差異變大；不 VACUUM
-#: 則現行檔照樣長（見模組說明）。10% 約等於兩週的浪費，也就是約兩週做一次。
+#: 則現行檔照樣長（見模組說明）。10% 約是 2–3 週的浪費（重播與前推模擬實測
+#: 14–20 天做一次）。
 VACUUM_WASTE_RATIO = 0.10
 
 #: 也宣告在 storage.SCHEMA 裡（不藏在方法內，long_range 的教訓）。
@@ -142,13 +146,19 @@ def _attach_entries(conn: sqlite3.Connection, base: Path,
         if not path.is_file():
             raise ArchiveIntegrityError(
                 f"封存檔 {path} 不見了（manifest 記 {rows} 筆）。不要重跑封存；"
-                "照 docs/RUNBOOK_HOOK.md §3b 從 git 歷史還原 archive/")
+                "照 docs/RUNBOOK_HOOK.md §3b 從 git 歷史還原 archive/。"
+                "（若你是把 prices.db 複製到別處，要連 archive/ 一起複製。）")
         alias = f"arc{i}"
-        if alias not in attached:
-            if conn.in_transaction:
-                raise RuntimeError("archive.attach() 必須在交易之外呼叫（ATTACH 的限制）")
-            conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(path),))
-        actual = conn.execute(f"SELECT COUNT(*) FROM {alias}.observations").fetchone()[0]
+        if alias not in attached and conn.in_transaction:
+            raise RuntimeError("archive.attach() 必須在交易之外呼叫（ATTACH 的限制）")
+        try:
+            if alias not in attached:
+                conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(path),))
+            actual = conn.execute(f"SELECT COUNT(*) FROM {alias}.observations").fetchone()[0]
+        except sqlite3.DatabaseError as exc:      # 不是 SQLite 檔、截斷、空檔……
+            raise ArchiveIntegrityError(
+                f"封存檔 {path} 無法讀取（{exc}）。不要重跑封存；"
+                "照 docs/RUNBOOK_HOOK.md §3b 從 git 歷史還原 archive/") from exc
         if actual != rows:
             raise ArchiveIntegrityError(
                 f"封存檔 {path} 有 {actual} 筆，manifest 記 {rows} 筆。不要重跑封存；"
@@ -316,7 +326,8 @@ def archive_old(db_path: str = "prices.db", now: datetime | None = None,
         try:
             if created is not None:
                 _create_archive_table(conn, target_alias)
-            _sync_columns(conn, target_alias)
+            for alias in check_aliases:    # 已滿的舊檔也補，view 補值只是過渡
+                _sync_columns(conn, alias)
             cols = ", ".join(_columns(conn, "main"))
             n = conn.execute("SELECT COUNT(*) FROM main.observations WHERE depart_date < ?",
                              (cutoff,)).fetchone()[0]
@@ -349,14 +360,25 @@ def archive_old(db_path: str = "prices.db", now: datetime | None = None,
         created = None                     # 已提交，新檔留著
         summary.update({"moved": n, "file": target_name})
 
-        if not entries:
-            vacuum = True
-        else:
-            summary["compact_bytes"] = _compact_bytes(conn)
-            vacuum = os.path.getsize(db_path) > summary["compact_bytes"] * (1 + vacuum_waste_ratio)
-        if vacuum:
-            conn.execute("VACUUM main")
-            summary["vacuumed"] = True
+        # VACUUM 與 VACUUM INTO 在 SQLite 內部各要佔一個 ATTACH 名額；不先卸下
+        # 封存檔的話，第 10 個檔那天就會撞上限（實測）。
+        for alias in check_aliases:
+            conn.execute(f"DETACH DATABASE {alias}")
+        # 搬移已提交且通過核對；壓實只是省空間。這裡失敗（例如暫存空間不足）
+        # 不該讓整支 job 變紅、把今天已經搬好的成果丟掉——VACUUM 本身是原子的，
+        # 失敗時主檔原封不動，下次再試。
+        try:
+            if not entries:
+                vacuum = True
+            else:
+                summary["compact_bytes"] = _compact_bytes(conn)
+                vacuum = os.path.getsize(db_path) > summary["compact_bytes"] * (1 + vacuum_waste_ratio)
+            if vacuum:
+                conn.execute("VACUUM main")
+                summary["vacuumed"] = True
+        except sqlite3.Error as exc:
+            log.warning("搬移已完成，但壓實失敗（%s）；這次不 VACUUM，下次再試", exc)
+            summary["compact_bytes"] = None
         return _finish(summary, conn, db_path, base)
     finally:
         conn.close()

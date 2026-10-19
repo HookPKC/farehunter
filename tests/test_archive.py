@@ -315,7 +315,7 @@ def test_missing_archive_file_raises_everywhere(tmp_path):
     (tmp_path / "archive" / "observations-001.db").unlink()
 
     # Store 一開檔就核對：writer 在打付費 API 之前就停下
-    with pytest.raises(ArchiveIntegrityError, match="不見了"):
+    with pytest.raises(ArchiveIntegrityError, match="不見了.*一起複製"):
         Store(str(db))
     with pytest.raises(ArchiveIntegrityError):
         export(str(db), str(tmp_path / "d.json"), now=now)
@@ -323,6 +323,18 @@ def test_missing_archive_file_raises_everywhere(tmp_path):
         build_ranked(str(db))                            # FIE 的歷史錨點
     with pytest.raises(ArchiveIntegrityError):
         archive_old(str(db), now=now)
+
+
+@pytest.mark.parametrize("damage", [b"", b"\x00garbage" * 500], ids=["empty", "garbage"])
+def test_damaged_archive_file_raises_integrity_error(tmp_path, damage):
+    """封存檔被換成空檔或亂碼（合併失誤、編輯器改寫……）也走同一條路：
+    ArchiveIntegrityError，RUNBOOK §3b 只要認這一個名字。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    archive_old(str(db), now=NOW)
+    (tmp_path / "archive" / "observations-001.db").write_bytes(damage)
+    with pytest.raises(ArchiveIntegrityError, match="無法讀取"):
+        Store(str(db))
 
 
 def test_archive_row_count_mismatch_raises(tmp_path):
@@ -403,6 +415,25 @@ def test_column_added_with_default_reads_the_default(tmp_path):
     conn.close()
 
 
+def test_migration_reaches_every_archive_file(tmp_path):
+    """已經滿了、不再寫入的舊封存檔也要補欄位——view 補值只是過渡。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    archive_old(str(db), now=NOW - timedelta(days=90), roll_bytes=1)
+    archive_old(str(db), now=NOW - timedelta(days=60), roll_bytes=1)
+    conn = sqlite3.connect(str(db))
+    conn.execute("ALTER TABLE observations ADD COLUMN cabin TEXT DEFAULT 'Y'")
+    conn.commit()
+    conn.close()
+    third = archive_old(str(db), now=NOW)
+    assert third["moved"] > 0 and third["file"] == "observations-002.db"
+    for f in ("observations-001.db", "observations-002.db"):
+        arc = sqlite3.connect(str(tmp_path / "archive" / f))
+        cols = {r[1]: r[4] for r in arc.execute("PRAGMA table_info(observations)")}
+        arc.close()
+        assert cols.get("cabin") == "'Y'", f
+
+
 def test_health_still_sees_a_route_whose_rows_were_all_archived(tmp_path):
     """斷線很久的航線，現行檔可能一筆不剩；健康報告要說「斷線 N 天」，
     不能變成「從未觀測」。"""
@@ -437,3 +468,44 @@ def test_cli_archives_the_given_path(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "封存完成" in out and "observations-001.db" in out and "現行檔" in out
     assert len(_manifest_matches_files(db)) == 1
+
+
+def test_ten_archive_files_fit_and_the_eleventh_is_refused_cleanly(tmp_path):
+    """SQLite 一次最多 ATTACH 10 個檔。VACUUM／VACUUM INTO 在內部各要佔一個名額，
+    所以壓實前一定要先卸下封存檔，否則第 10 個檔那天就撞上限（實測過）。
+    第 11 個在建檔時就被拒絕，什麼都不動、不留空殼。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW, n=1200, dep_days=(-340, 0))
+    start = NOW - timedelta(days=340 - archive.MARGIN_DAYS)
+    for k in range(1, 11):
+        s = archive_old(str(db), now=start + timedelta(days=31 * k), roll_bytes=1)
+        assert s["moved"] > 0 and s["file"] == f"observations-{k:03d}.db", k
+        # 壓實失敗只會記警告（見下一個測試），所以要確認每次都真的量到了
+        assert k == 1 or s["compact_bytes"] is not None, k
+    before = _count(db)
+    with pytest.raises(sqlite3.OperationalError, match="too many attached"):
+        archive_old(str(db), now=start + timedelta(days=31 * 11), roll_bytes=1)
+    assert _count(db) == before
+    assert len(_manifest_matches_files(db)) == 10
+    assert not (tmp_path / "archive" / "observations-011.db").exists()
+    store = Store(str(db))                               # 讀者照樣能掛滿 10 個
+    assert store.route_stats("TPE", "NRT")["n"] > 0
+    store.close()
+
+
+def test_compaction_failure_after_commit_is_not_fatal(tmp_path, monkeypatch):
+    """搬移提交、核對都過了之後，壓實失敗（例如暫存空間不足）只少一次 VACUUM，
+    不能讓 job 變紅、把已經搬好的成果丟掉。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    ids_before = _ids(db)
+    archive_old(str(db), now=NOW - timedelta(days=60))
+
+    def full(conn):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(archive, "_compact_bytes", full)
+    s = archive_old(str(db), now=NOW)
+    assert s["moved"] > 0 and not s["vacuumed"] and s["compact_bytes"] is None
+    assert len(_manifest_matches_files(db)) == 1
+    assert _ids(db) == ids_before
