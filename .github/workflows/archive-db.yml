@@ -1,19 +1,21 @@
 name: Archive DB
 
 # 把出發日已過 30 天的觀測從 prices.db 搬到 archive/（見 src/farehunter/archive.py
-# 與 docs/adr/0002-prices-db-archive.md）。目的：讓 prices.db 停在 30–35 MiB，
+# 與 docs/adr/0002-prices-db-archive.md）。目的：讓 prices.db 維持在約 35–40 MiB，
 # 不會撞到 GitHub 的 100 MiB 單檔上限。
 #
-# 刻意獨立成一支、不放進 monitor：封存壞了，每小時抓價照跑——最壞情況只是
-# 檔案像以前一樣繼續長，離上限還有好幾個月。也因此 GitHub 排程漏跑幾天
-# 無所謂：每次執行都是冪等的，沒有可搬的列就什麼都不 commit。
+# 刻意獨立成一支、不放進 monitor：這支 job 失敗（交易 rollback、不 commit）時，
+# 每小時抓價照跑——最壞情況只是檔案像以前一樣繼續長，離上限還有好幾個月。
+# 也因此 GitHub 排程漏跑幾天無所謂：每次執行都是冪等的，沒有可搬的列就什麼
+# 都不 commit。（另一回事：repo 裡的 archive/ 若與 manifest 對不上，所有讀者
+# 都會故意報錯——見 RUNBOOK §3b。）
 #
 # 不跑 export：封存前後的看板輸出完全相同（tests/test_archive.py 鎖定），
 # 重寫 data.json 只會把 generated_at 改成「現在」，假裝有新價格（PLAYBOOK 1-4）。
 
 on:
   schedule:
-    - cron: "43 2 * * *"      # 每日 02:43 UTC（台灣 10:43）；避開 monitor 的 :07/:17
+    - cron: "43 2 * * *"      # 每日 02:43 UTC（台灣 10:43）。GitHub 排程常晚到數小時，撞到別的 writer 也沒關係：同一個 concurrency 群組排隊、不互砍
   workflow_dispatch:
 
 permissions:

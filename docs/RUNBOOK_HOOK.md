@@ -43,6 +43,16 @@ Actions → **Deploy Pages** → 點進紅色那筆 → 右上 **Re-run all jobs
 
 若紅的是 **FareHunter Monitor** 本身：點進 log 看第一個紅色步驟——若是「Run monitor」且訊息提到 401/token，多半是 Travelpayouts token 過期，到 repo Settings → Secrets 更新 `TRAVELPAYOUTS_TOKEN`。若訊息是 `ArchiveIntegrityError`，照下面 §3b。
 
+若紅的是 **FSC Snapshot**（或其 log 出現 401 / quota / Invalid API key）：到 SerpAPI dashboard 確認本月額度與 key 狀態（每日最多 6 次、月理論最多約 186 次，方案額度 250，見 dashboard），必要時產生新 key → repo Settings → Secrets 更新 `SERPAPI_KEY` → 舊 key 到 SerpAPI 端撤銷。key 一律不要貼進對話、文件或截圖。
+
+**FSC 每日槽位（每日最多 6 次 SerpAPI）**：固定 3 個輪替槽（Rotation）＋ 最多 3 個實價驗證槽（Verification：Alert 最強低價警報／CTA 首頁推薦按鈕／Hero 首頁大字）。候選不足時驗證槽會少於 3、當天總查詢可能低於 6，屬正常，不是故障。看 log 末行「快照完成」那行的計數：`輪替 3/驗證 N`、`alert/cta/hero` 各幾槽、`API 成功/錯誤/成功無航班`。
+
+**FSC 紅燈 vs 綠燈 warning 判讀**：
+- 紅燈（run failed）：只有在「當天所有查詢都失敗」時才會發生（通常是 key 失效 401、額度用盡 quota、或網路問題）——照上一段換 key。**例外**：log 是 `ArchiveIntegrityError` → 跟 key 無關，照 §3b，不要換 key、不要重跑。
+- 綠燈但 log 有 `API OK but no matching flight` warning：API 有成功、只是那天那條航線剛好沒有直飛航班可記錄——**這不是故障**，不需處理。
+
+**手動重跑 FSC 注意**：每手動 dispatch 一次最多消耗 6 次額度。偶爾為之無妨（月餘裕約 64 次），但**避免連續多天手動重跑**，以免壓線。若擔心用量，到 SerpAPI dashboard 看當月累計即可。
+
 ## 3b. 封存檔出錯時（`ArchiveIntegrityError`）
 
 背景：`prices.db` 只放近幾個月的觀測，出發日已過 30 天的舊資料每天由
@@ -51,12 +61,17 @@ Actions → **Deploy Pages** → 點進紅色那筆 → 右上 **Re-run all jobs
 應該有幾筆；兩邊對不上時，程式會**故意停下來報錯**，而不是少算歷史資料去
 亂發「史上最低」通知。
 
-**怎麼認出來**：Monitor（或 FSC / Verify）紅燈，log 裡有 `ArchiveIntegrityError`，
-後面接「封存檔 … 不見了」或「封存檔 … 有 X 筆，manifest 記 Y 筆」。
-此時每小時抓價會停，healthchecks 會在 3 小時後寄信。
+**怎麼認出來**：Monitor 紅燈，log 裡有 `ArchiveIntegrityError`，後面接
+「封存檔 … 不見了」或「封存檔 … 有 X 筆，manifest 記 Y 筆」。
+
+**影響範圍**：Monitor、FSC、Verify 一開始讀資料庫就停，**還沒打任何付費 API**
+（不會白花額度），但這段期間沒有任何新價格進 repo、首頁時間戳不動。
+healthchecks 約 3 小時後寄信；cron-job.org 不會寄（觸發本身是成功的）。
+Deploy Pages 照常跑，只是重發沒變的舊資料。**當天處理**。
 
 **絕對不要做**：重跑 Archive DB（它會報同一個錯，修不好）、刪掉 `archive/`
-裡的檔案、手動改 `prices.db`。
+裡的檔案、手動改 `prices.db`、把程式改回「只讀 prices.db」（那樣不會報錯，
+但「史上最低」會悄悄算錯，見 ADR 0002「已知限制」）。
 
 **修法：把 `archive/` 還原成最後一次正常封存時的樣子**（需要能用 git 的電腦，約 5 分鐘）：
 
@@ -65,7 +80,8 @@ git clone --filter=blob:none https://github.com/HookPKC/farehunter
 cd farehunter
 # 最後一次正常封存的 commit（只有 Archive DB 會寫 archive/）
 SHA=$(git log -1 --format=%H --grep='^chore: archive observations' -- archive/)
-git checkout "$SHA" -- archive/
+# 讓 archive/ 跟那個 commit 一模一樣（多出來的檔案也會一併移除）
+git restore --source="$SHA" --staged --worktree -- archive/
 git commit -m "fix: 還原封存檔（ArchiveIntegrityError）"
 git push            # 被拒的話先 git pull --rebase 再 push
 ```
@@ -77,19 +93,15 @@ git push            # 被拒的話先 git pull --rebase 再 push
 - 錯誤是「搬移前後不一致…已 rollback」→ 什麼都沒被改動，隔天會自動重試；
   連續幾天都這樣再找 AI 看。
 - 錯誤是「不見了」或「manifest 記」→ 跟上面同一件事，照上面還原。
-- 紅在「Commit」且 log 有 `NON-FAST-FORWARD` → 剛好跟別的 workflow 撞到，
-  沒有任何資料被改，隔天會自動重做。
+- 錯誤是「已存在但不在 manifest 裡」→ `archive/` 裡多了一個沒登記的檔案。
+  通常是有人在自己電腦上跑封存跑到一半中斷留下的；**不要自己刪**，交給 AI
+  確認裡面是否為空再處理（錯誤訊息裡有判斷方式）。
+- 錯誤是 `too many attached databases` → 封存檔已經滿 10 個（ADR 0002 預估
+  約 2.5–3.5 年後）。抓價不受影響，但 `prices.db` 會重新開始變大；找 AI 依
+  ADR 0002「已知限制」提案。
+- 紅在「Commit」且 log 有 `NON-FAST-FORWARD` → 封存期間有人（或合併 PR）
+  另外推了 commit。沒有任何資料被改，隔天會自動重做。
 - 紅在「Run tests」→ 跟 Monitor 的測試是同一套，Monitor 也會紅，照 §0 處理。
-
-若紅的是 **FSC Snapshot**（或其 log 出現 401 / quota / Invalid API key）：到 SerpAPI dashboard 確認本月額度與 key 狀態（每日最多 6 次、月理論最多約 186 次，方案額度 250，見 dashboard），必要時產生新 key → repo Settings → Secrets 更新 `SERPAPI_KEY` → 舊 key 到 SerpAPI 端撤銷。key 一律不要貼進對話、文件或截圖。
-
-**FSC 每日槽位（每日最多 6 次 SerpAPI）**：固定 3 個輪替槽（Rotation）＋ 最多 3 個實價驗證槽（Verification：Alert 最強低價警報／CTA 首頁推薦按鈕／Hero 首頁大字）。候選不足時驗證槽會少於 3、當天總查詢可能低於 6，屬正常，不是故障。看 log 末行「快照完成」那行的計數：`輪替 3/驗證 N`、`alert/cta/hero` 各幾槽、`API 成功/錯誤/成功無航班`。
-
-**FSC 紅燈 vs 綠燈 warning 判讀**：
-- 紅燈（run failed）：只有在「當天所有查詢都失敗」時才會發生（通常是 key 失效 401、額度用盡 quota、或網路問題）——照上一段換 key。
-- 綠燈但 log 有 `API OK but no matching flight` warning：API 有成功、只是那天那條航線剛好沒有直飛航班可記錄——**這不是故障**，不需處理。
-
-**手動重跑 FSC 注意**：每手動 dispatch 一次最多消耗 6 次額度。偶爾為之無妨（月餘裕約 64 次），但**避免連續多天手動重跑**，以免壓線。若擔心用量，到 SerpAPI dashboard 看當月累計即可。
 
 ## 4. 設定卡：cron-job.org 外部排程（讓更新不再依賴 GitHub 排程器）
 
@@ -162,7 +174,8 @@ token 存自己 Google 帳號的 Script Properties，用 UrlFetchApp 發同一�
 2. 真的舊了 → Actions 看 FareHunter Monitor 最近的 run：**零 run**＝觸發層問題
    （查 cron-job.org 儀表板該 job 的執行歷史與 token 是否過期）；**有 run 但紅**＝
    執行層問題（點進去看第一個紅色步驟；「Run monitor」紅且 log 提 401/token
-   ＝ Travelpayouts token 過期，去 Secrets 更新 `TRAVELPAYOUTS_TOKEN`）；
+   ＝ Travelpayouts token 過期，去 Secrets 更新 `TRAVELPAYOUTS_TOKEN`；log 是
+   `ArchiveIntegrityError` ＝照 §3b）；
    **run 綠但首頁沒變**＝ deploy 問題（照 §3 Re-run）。
 3. 照 §0 三步手動補一次資料，恢復後再回頭追原因。
 
@@ -176,8 +189,9 @@ token 存自己 Google 帳號的 Script Properties，用 UrlFetchApp 發同一�
 ## 7. 沒有 AI 之後的日常維護（每週 1 分鐘）
 
 - 每週開一次首頁：沒提示條＝健康，關掉即可
-- （每月一次，可選）Actions → **Archive DB** 最近一次 log 的最後兩行：現行檔
-  應在 30–35 MiB 左右。超過 45 MiB，或封存檔編號到 `observations-008.db`，
+- （每月一次，可選）Actions → **Archive DB** 最近一次 run →「Archive old
+  observations」步驟的最後兩行：現行檔應在 35–40 MiB 左右（每兩三週 VACUUM
+  一次時會掉回 35 上下）。超過 45 MiB，或封存檔編號到 `observations-008.db`，
   就找 AI 看（原因見 ADR 0002「已知限制」）
 - 收到 healthchecks 或 cron-job.org email → 照第 0 節三步走
 - 三步走了還是不行 → `docs/PLAYBOOK.md` 案例 1-6 有完整排查法

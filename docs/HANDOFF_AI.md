@@ -108,6 +108,9 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 
 - 部署驗收＝**三方 SHA 一致**：main HEAD ＝ Deploy Pages run 的 `head_sha` ＝
   github-pages environment 最新 deployment 的 SHA。缺一不可。
+  唯一的合法落差：main HEAD 是 `chore: archive observations` 時。Deploy Pages
+  只跟在 Monitor／FSC／Verify 之後跑，封存也不改 `docs/`，所以不會為它部署；
+  以下一班 Monitor 觸發的 deploy 為準（通常一小時內），屆時三方會對上。
 - 手機版 UI 改動需使用者 iOS 實機最終確認。
 - token：fine-grained、只限本 repo、短效期、用完提醒使用者刪除。改一般檔案＝
   Contents RW；動 `.github/workflows/` 必須加 Workflows RW（缺了 push 會被拒）；
@@ -132,17 +135,19 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
   而且 `workflow_run` 會讓同一個 commit 觸發多次 deploy，失敗那次通常前一
   分鐘已經有同 SHA 成功發佈（2026-09-03 04:18 成功 / 04:19 失敗，同 SHA）。
   **判讀方式**：比對「最後一次成功 deploy 的 head_sha」與 main HEAD，一致就
-  沒事（§5 的三方 SHA 規則）。不要為此改 permissions 或 action 版本。
+  沒事（§5 的三方 SHA 規則；main HEAD 剛好是封存 commit 時見 §5 的例外）。不要為此改 permissions 或 action 版本。
 - 「All jobs were cancelled」email：先套 §4 判讀表，多數可忽略。
 
 ## 7. 已知長期課題（P2，非急務）
 
 - **prices.db 成長**：2026-10 已處理（ADR 0002）。出發日已過 30 天的觀測由
-  `archive-db` 每日搬到 `archive/`，現行檔穩定在 30–35 MiB；全歷史查詢讀
-  `observations_all`。git 歷史不是問題（SQLite 版本間差異很小，50 版只佔
-  8.25 MiB）。剩下的長期課題：SQLite 一次最多掛 10 個封存檔，照每年約 2.5 個
-  新檔，約 3–4 年後到頂——封存檔到第 8 個時開始提案。封存檔遺失或筆數不符
-  時的還原步驟見 ADR 0002「維運」。
+  `archive-db` 每日搬到 `archive/`，現行檔超過壓實大小 10% 才 VACUUM，預估
+  維持在約 35–40 MiB（隨每日觀測量變動）；全歷史查詢讀 `observations_all`。
+  封存讓 git 歷史長得比不封存更慢（ADR 0002「複查」）。剩下的長期課題：SQLite
+  一次最多掛 10 個封存檔，照每年 2.5–3.7 個新檔，約 2.5–3.5 年後到頂——封存檔
+  到第 8 個時開始提案。**不能單純 revert 這組改動**：封存跑過之後，讀者改回只讀
+  prices.db 不會報錯，但「史上最低」會悄悄算錯。封存檔遺失或筆數不符時的還原
+  步驟見 RUNBOOK §3b。
 - 實價來源（fsc/verify）僅靠 GitHub 排程、時間漂移嚴重。已評估過
   「比照 monitor 加外部觸發」：因付費 API 消耗與低頻本質，**判定不值得**，
   維持現狀。除非使用者重新立案，不要主動重提。

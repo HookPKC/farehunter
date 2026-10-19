@@ -97,7 +97,9 @@ python -m pytest tests/ -v           # 跑測試（15 個，不需網路與金�
    會自動 commit 回 repo。維運判斷見 `docs/HANDOFF_AI.md`：連續 ≥2 小時沒有
    新的 `chore: price observations` commit 才算異常
 5. `Archive DB` 每天把出發日已過 30 天的觀測搬到 `archive/`（commit 訊息
-   `chore: archive observations`）。漏跑幾天沒關係；它壞了也不影響每小時抓價
+   `chore: archive observations`）。漏跑幾天沒關係；這支 job 失敗也不影響每小時
+   抓價。但 `archive/` 內容若與 `prices.db` 的帳本對不上，所有排程會故意停下來
+   報錯，照 `docs/RUNBOOK_HOOK.md` §3b 還原
 
 ## 手機 App（GitHub Pages + PWA）
 
