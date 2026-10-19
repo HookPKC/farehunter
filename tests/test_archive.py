@@ -509,3 +509,114 @@ def test_compaction_failure_after_commit_is_not_fatal(tmp_path, monkeypatch):
     assert s["moved"] > 0 and not s["vacuumed"] and s["compact_bytes"] is None
     assert len(_manifest_matches_files(db)) == 1
     assert _ids(db) == ids_before
+
+
+# ---- 第三輪複查補的測試 ---------------------------------------------------------
+
+def test_default_vacuum_threshold_is_ten_percent(tmp_path, monkeypatch):
+    """預設門檻要真的生效：壓實後小 5% 不做、小 15% 才做。比例寫錯（例如
+    compact × ratio）會變成天天整檔重寫。"""
+    import os
+    assert archive.VACUUM_WASTE_RATIO == 0.10
+    db = tmp_path / "prices.db"
+    _seed(db, NOW, n=2000)
+    archive_old(str(db), now=NOW - timedelta(days=90))
+    monkeypatch.setattr(archive, "_compact_bytes", lambda conn: int(os.path.getsize(db) / 1.05))
+    assert not archive_old(str(db), now=NOW - timedelta(days=60))["vacuumed"]
+    monkeypatch.setattr(archive, "_compact_bytes", lambda conn: int(os.path.getsize(db) / 1.15))
+    assert archive_old(str(db), now=NOW - timedelta(days=30))["vacuumed"]
+
+
+def test_first_archive_of_a_pre_pr_database(tmp_path):
+    """main 現在的 prices.db 還沒有 archive_manifest 表——合併後第一次封存的真實狀態。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    conn = sqlite3.connect(str(db))
+    conn.execute("DROP TABLE archive_manifest")
+    conn.commit()
+    conn.close()
+    s = archive_old(str(db), now=NOW)
+    assert s["moved"] > 0 and s["file"] == "observations-001.db"
+    assert len(_manifest_matches_files(db)) == 1
+
+
+class _VacuumFails:
+    """包住 archive_old 的連線，讓 `VACUUM main` 拋出指定的錯誤。"""
+
+    def __init__(self, conn, exc):
+        self._conn, self._exc = conn, exc
+
+    def execute(self, sql, *args):
+        if sql.strip().upper() == "VACUUM MAIN":
+            raise self._exc
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def _fail_vacuum_with(monkeypatch, exc):
+    import types
+    real = sqlite3.connect
+    shim = types.SimpleNamespace(**{k: getattr(sqlite3, k) for k in dir(sqlite3)
+                                    if not k.startswith("__")})
+    shim.connect = lambda *a, **k: _VacuumFails(real(*a, **k), exc)
+    monkeypatch.setattr(archive, "sqlite3", shim)
+
+
+def test_vacuum_main_running_out_of_space_is_not_fatal(tmp_path, monkeypatch):
+    """實際遇到空間不足時，失敗的通常是 VACUUM main 本身（不是 VACUUM INTO）。
+    第一次封存與平常的封存兩條路徑都要能過。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    ids_before = _ids(db)
+    _fail_vacuum_with(monkeypatch, sqlite3.OperationalError("database or disk is full"))
+    first = archive_old(str(db), now=NOW - timedelta(days=60))          # 第一次：一律 VACUUM
+    assert first["moved"] > 0 and not first["vacuumed"]
+    later = archive_old(str(db), now=NOW, vacuum_waste_ratio=0.0)       # 量過、決定做、失敗
+    assert later["moved"] > 0 and not later["vacuumed"] and later["compact_bytes"] is None
+    monkeypatch.undo()
+    assert len(_manifest_matches_files(db)) == 1
+    assert _ids(db) == ids_before
+
+
+def test_corrupt_database_during_compaction_stays_fatal(tmp_path, monkeypatch):
+    """損毀（malformed）不是「空間不足」：吞掉的話，損毀的 prices.db 會被
+    commit 上去。VACUUM 是整條流程裡唯一讀遍整個檔案的地方。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    _fail_vacuum_with(monkeypatch, sqlite3.DatabaseError("database disk image is malformed"))
+    with pytest.raises(sqlite3.DatabaseError, match="malformed"):
+        archive_old(str(db), now=NOW)
+
+
+def test_locked_archive_is_reported_as_locked_not_damaged(tmp_path):
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    archive_old(str(db), now=NOW)
+    holder = sqlite3.connect(str(tmp_path / "archive" / "observations-001.db"),
+                             isolation_level=None)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        conn = sqlite3.connect(str(db), timeout=0.1)
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            archive.attach(conn)
+        conn.close()
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+
+
+def test_attach_refuses_to_build_the_view_inside_a_transaction(tmp_path):
+    """在呼叫端交易裡建的 TEMP VIEW 會隨 rollback 消失。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    archive_old(str(db), now=NOW)
+    conn = sqlite3.connect(str(db))
+    conn.execute("INSERT INTO alerts (origin, destination, depart_date, price, reason,"
+                 " sent_at) VALUES ('TPE','NRT','2099-01-01',1,'x','2026-01-01')")
+    assert conn.in_transaction
+    with pytest.raises(RuntimeError, match="交易之外"):
+        archive.attach(conn)
+    conn.rollback()
+    conn.close()

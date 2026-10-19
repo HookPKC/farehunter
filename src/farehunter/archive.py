@@ -150,12 +150,18 @@ def _attach_entries(conn: sqlite3.Connection, base: Path,
                 "（若你是把 prices.db 複製到別處，要連 archive/ 一起複製。）")
         alias = f"arc{i}"
         if alias not in attached and conn.in_transaction:
-            raise RuntimeError("archive.attach() 必須在交易之外呼叫（ATTACH 的限制）")
+            # 在呼叫端的交易裡建的 TEMP VIEW，會隨那個交易的 rollback 一起消失，
+            # 之後的查詢只剩「no such table」。所以一律在交易外建（Store 一開檔就建）。
+            raise RuntimeError("archive.attach() 必須在交易之外呼叫（view 會隨 rollback 消失）")
         try:
             if alias not in attached:
                 conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(path),))
             actual = conn.execute(f"SELECT COUNT(*) FROM {alias}.observations").fetchone()[0]
         except sqlite3.DatabaseError as exc:      # 不是 SQLite 檔、截斷、空檔……
+            # 被別的程序鎖住、ATTACH 名額滿了，都不是檔案壞掉：照原樣拋出，
+            # 不要叫人去「從 git 還原」。空檔讀起來是「no such table」，要算進來。
+            if isinstance(exc, sqlite3.OperationalError) and "no such table" not in str(exc):
+                raise
             raise ArchiveIntegrityError(
                 f"封存檔 {path} 無法讀取（{exc}）。不要重跑封存；"
                 "照 docs/RUNBOOK_HOOK.md §3b 從 git 歷史還原 archive/") from exc
@@ -320,8 +326,9 @@ def archive_old(db_path: str = "prices.db", now: datetime | None = None,
             conn.execute(f"ATTACH DATABASE ? AS {target_alias}", (str(created),))
             check_aliases = aliases + [target_alias]
 
-        # ATTACH 只能在交易外；其餘全部（建表、補欄位、計數、指紋）都在交易內，
-        # 這樣 rollback 才真的「完全沒動」，也不會跟其他寫入者交錯。
+        # ATTACH 放在交易外（attach() 的規則，見那裡）；其餘全部（建表、補欄位、
+        # 計數、指紋）都在交易內，這樣 rollback 才真的「完全沒動」，也不會跟其他
+        # 寫入者交錯。
         conn.execute("BEGIN IMMEDIATE")
         try:
             if created is not None:
@@ -364,9 +371,11 @@ def archive_old(db_path: str = "prices.db", now: datetime | None = None,
         # 封存檔的話，第 10 個檔那天就會撞上限（實測）。
         for alias in check_aliases:
             conn.execute(f"DETACH DATABASE {alias}")
-        # 搬移已提交且通過核對；壓實只是省空間。這裡失敗（例如暫存空間不足）
-        # 不該讓整支 job 變紅、把今天已經搬好的成果丟掉——VACUUM 本身是原子的，
-        # 失敗時主檔原封不動，下次再試。
+        # 搬移已提交且通過核對；壓實只是省空間。空間不足、I/O 這類失敗
+        # （OperationalError）不該讓整支 job 變紅、把今天已經搬好的成果丟掉——
+        # VACUUM 本身是原子的，失敗時主檔原封不動，下次再試。但檔案損毀
+        # （malformed／not a database，是 DatabaseError）照樣讓它失敗：VACUUM INTO
+        # 是整條流程裡唯一讀遍整個檔案的地方，吞掉就等於把損毀的檔 commit 上去。
         try:
             if not entries:
                 vacuum = True
@@ -376,7 +385,7 @@ def archive_old(db_path: str = "prices.db", now: datetime | None = None,
             if vacuum:
                 conn.execute("VACUUM main")
                 summary["vacuumed"] = True
-        except sqlite3.Error as exc:
+        except sqlite3.OperationalError as exc:
             log.warning("搬移已完成，但壓實失敗（%s）；這次不 VACUUM，下次再試", exc)
             summary["compact_bytes"] = None
         return _finish(summary, conn, db_path, base)

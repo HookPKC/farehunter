@@ -92,7 +92,7 @@ class Store:
         # 一開檔就核對封存檔（ADR 0002）。所有 writer（monitor／FSC／Verify／
         # cheap_day_notify）都在打任何付費 API 之前建 Store，封存檔不完整時在
         # 這裡就停，不會先花掉額度、最後才在 export 報錯把結果丟掉。也確保
-        # 第一次 ATTACH 一定發生在交易之外。
+        # view 一定建在交易之外（建在交易裡的 TEMP VIEW 會隨 rollback 消失）。
         archive.attach(self.conn)
 
     def close(self):

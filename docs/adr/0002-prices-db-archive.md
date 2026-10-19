@@ -58,8 +58,10 @@ monitor / fsc / verify 三個 writer 的 commit 全部失敗，整條抓價停�
    空間幾乎不會被重用——不再 VACUUM 的話，現行檔仍以原速的約 93% 成長。
    VACUUM 與 VACUUM INTO 在 SQLite 內部各要佔一個 ATTACH 名額，所以壓實前先
    卸下封存檔（不卸的話，第 10 個封存檔那天就撞上限——第二輪複查實測抓到）。
-   搬移提交之後的壓實若失敗（例如暫存空間不足）只記警告：搬移已經完成並通過
-   核對，不該為了少一次 VACUUM 讓整支 job 變紅、把成果丟掉。
+   搬移提交之後的壓實若因空間不足、I/O 失敗（OperationalError）只記警告：搬移
+   已經完成並通過核對，不該為了少一次 VACUUM 讓整支 job 變紅、把成果丟掉。但
+   檔案損毀（malformed）照樣失敗——VACUUM 是整條流程裡唯一讀遍整個檔案的地方，
+   吞掉就等於把損毀的 prices.db commit 上去。
 6. 封存檔缺檔或筆數與 manifest 不符時，讀者一律拋 `ArchiveIntegrityError`，
    **不默默少算**——全歷史變小會讓 new_low 誤發。（使用者 2026-10-12 決定：
    寧可 monitor 變紅、healthchecks 寄信，也不要只停用 new_low 繼續跑。）
@@ -67,7 +69,9 @@ monitor / fsc / verify 三個 writer 的 commit 全部失敗，整條抓價停�
    付費 API 之前建 Store，所以出錯時不會先花掉額度、最後才在 export 失敗把
    結果丟掉。只有 health 是 fail-open（它只是報告，且呼叫端都已核對過）。
    封存檔被換成空檔或亂碼（不是 SQLite 檔、截斷）也轉成同一個錯誤
-   （「無法讀取」），RUNBOOK 只要認一個名字。
+   （「無法讀取」），RUNBOOK 只要認一個名字。被別的程序鎖住、ATTACH 名額滿了
+   則照原樣報（`database is locked`／`too many attached databases`），不叫人去
+   「從 git 還原」一個沒壞的檔。
 7. 封存檔缺少的欄位（封存之後 main 才 migration 新增的）在 `observations_all`
    補 **main 的 DEFAULT**，沒有 DEFAULT 才補 NULL；下次封存時把欄位連同
    DEFAULT／NOT NULL 補進**每一個**封存檔（含已滿的舊檔，view 補值只是過渡
@@ -109,7 +113,7 @@ monitor / fsc / verify 三個 writer 的 commit 全部失敗，整條抓價停�
 
   100 天重播（07-10 起）最大 37.8 MiB。**往後看會再大一點**：第二輪複查以
   目前的觀測量（每天約 2,934 筆，10-18 的實際量）前推 21 天，壓實大小每天
-  +0.12 MiB、第 15 天 VACUUM（40.5 → 37.1 MiB）；推估壓實大小在 2027-02 前後
+  +0.12 MiB、第 15 天 VACUUM（40.9 → 37.1 MiB）；推估壓實大小在 2027-02 前後
   到頂約 40 MiB，VACUUM 前的高點約 44 MiB。所以平常會在 **約 37–45 MiB** 之間
   起伏，隨每日觀測量變動。
 - **git 歷史成本（真實資料 10-12 起逐小時重播 3 天、每小時 commit，四種做法
@@ -123,7 +127,9 @@ monitor / fsc / verify 三個 writer 的 commit 全部失敗，整條抓價停�
   比壓實後大約 11%，邊際成本每列約 170 B（第一次整批搬入時約 139 B）。目前
   每天實際搬走約 2,000 筆（約 120 MiB／年、每年 3 個檔）；長期搬走量會趕上每日
   觀測量（約 2,900 筆，約 175 MiB／年、每年 4–4.5 個檔）。
-- **其他**：兩輪突變測試共 25 種退化全部被測試抓到；RUNBOOK §3b 的還原指令在
+- **其他**：三輪突變測試（第三輪單獨 70 種）裡，所有非等價的退化都被測試抓到——
+  第三輪找到的 3 個漏網（預設 10% 門檻、沒有 manifest 表的舊資料庫、VACUUM main
+  本身失敗）已補測試；RUNBOOK §3b 的還原指令在
   「刪除／改名多出一檔／內容被改／多一個未登記檔／推送時被搶先」五種情境
   實測可還原（git 2.43）；封存檔壞掉時 monitor／FSC／Verify 都在付費 API 呼叫
   數為 0 時就停；MARGIN_DAYS=30 是下限（export 的 route_common 回看 30 天

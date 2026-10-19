@@ -74,8 +74,9 @@ Deploy Pages 照常跑，只是重發沒變的舊資料。**當天處理**。
 但「史上最低」會悄悄算錯，見 ADR 0002「已知限制」）。
 
 **修法：把 `archive/` 還原成最後一次正常封存時的樣子**（約 5 分鐘）。需要：
-git 2.23 以上（`git --version`）、bash 或 zsh（Windows 用 Git Bash）、能推送到
-本 repo 的 GitHub 登入（**不是** cron-job.org 那顆只開 Actions 權限的 token）。
+bash 或 zsh（Windows 用 Git Bash）、能推送到本 repo 的 GitHub 登入（**不是**
+cron-job.org 那顆只開 Actions 權限的 token）。git 2.23 以上直接照下面做；更舊
+的 git（`git --version`）用下方的替代指令。
 
 ```bash
 git clone --filter=blob:none https://github.com/HookPKC/farehunter
@@ -97,7 +98,7 @@ git 太舊、沒有 `git restore` 時，把那一行換成
 **若紅的是 Archive DB 本身**：不急，抓價不受影響，漏跑或紅幾天都沒關係。
 - 錯誤是「搬移前後不一致…已 rollback」→ 什麼都沒被改動，隔天會自動重試；
   連續幾天都這樣再找 AI 看。
-- 錯誤是「不見了」或「manifest 記」→ 跟上面同一件事，照上面還原。
+- 錯誤是「不見了」「manifest 記」或「無法讀取」→ 跟上面同一件事，照上面還原。
 - 錯誤是「已存在但不在 manifest 裡」→ `archive/` 裡多了一個沒登記的檔案。
   通常是有人在自己電腦上跑封存跑到一半中斷留下的；**不要自己刪**，交給 AI
   確認裡面是否為空再處理（錯誤訊息裡有判斷方式）。
