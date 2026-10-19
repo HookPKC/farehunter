@@ -17,6 +17,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import archive
 from .normalize import from_observation, is_valid
 from .ranking import rank, BALANCED
 from .reliability import ReliabilityStore
@@ -55,9 +56,15 @@ def _select_sql(conn) -> str:
 
 
 def _route_context(conn, origin, destination, reliability_of, now=None) -> RouteContext:
-    """Historical price anchors for the route (matches export_web's stats)."""
+    """Historical price anchors for the route (matches export_web's stats).
+
+    Full history includes archived rows, hence observations_all (see archive.py).
+    Deliberately fail-closed (no try/except): anchors computed on a truncated
+    history would skew ranking, so an incomplete archive must raise (ADR 0002).
+    """
+    archive.attach(conn)
     prices = [r[0] for r in conn.execute(
-        "SELECT price FROM observations WHERE origin=? AND destination=? "
+        "SELECT price FROM observations_all WHERE origin=? AND destination=? "
         "AND fare_class='any' ORDER BY price", (origin, destination))]
     n = len(prices)
     if n:

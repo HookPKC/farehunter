@@ -2,7 +2,7 @@
 
 **讀者**：接手本專案的任何 AI 模型（Claude Opus/Sonnet、Codex、GPT 系列或其他），
 以及想了解 AI 協作規範的人類。本文件不綁定任何特定模型；「你」指接手的 AI。
-最後更新：2026-09-03。
+最後更新：2026-10-19。
 
 ---
 
@@ -46,7 +46,7 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 4. 維運者端：monitor 尾端 optional 心跳（repo secret `HC_PING_URL`，未設即休眠）
    ＋ cron-job.org 失敗 email
 
-**concurrency**：monitor/fsc/verify 共用 `farehunter` 群組
+**concurrency**：monitor/fsc/verify/archive-db 共用 `farehunter` 群組
 （`cancel-in-progress: false`＝排隊不互砍）；deploy-pages 獨立 `pages` 群組。
 
 ## 2. 絕對禁區（違反任一項＝事故）
@@ -108,6 +108,10 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 
 - 部署驗收＝**三方 SHA 一致**：main HEAD ＝ Deploy Pages run 的 `head_sha` ＝
   github-pages environment 最新 deployment 的 SHA。缺一不可。
+  自動 commit 裡唯一的合法落差：main HEAD 是 `chore: archive observations` 時
+  （合併 PR 等人工 commit 同理）。Deploy Pages 只跟在 Monitor／FSC／Verify 之後
+  跑，封存也不改 `docs/`，所以不會為它部署；以下一班 Monitor 觸發的 deploy 為準
+  （通常一小時內），屆時三方會對上。
 - 手機版 UI 改動需使用者 iOS 實機最終確認。
 - token：fine-grained、只限本 repo、短效期、用完提醒使用者刪除。改一般檔案＝
   Contents RW；動 `.github/workflows/` 必須加 Workflows RW（缺了 push 會被拒）；
@@ -132,14 +136,19 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
   而且 `workflow_run` 會讓同一個 commit 觸發多次 deploy，失敗那次通常前一
   分鐘已經有同 SHA 成功發佈（2026-09-03 04:18 成功 / 04:19 失敗，同 SHA）。
   **判讀方式**：比對「最後一次成功 deploy 的 head_sha」與 main HEAD，一致就
-  沒事（§5 的三方 SHA 規則）。不要為此改 permissions 或 action 版本。
+  沒事（§5 的三方 SHA 規則；main HEAD 剛好是封存 commit 時見 §5 的例外）。不要為此改 permissions 或 action 版本。
 - 「All jobs were cancelled」email：先套 §4 判讀表，多數可忽略。
 
 ## 7. 已知長期課題（P2，非急務）
 
-- **prices.db 成長**：SQLite 檔案每小時隨 commit 進 repo（2026-07 已 12,000+
-  筆觀測）。一兩年尺度 repo 會肥大、clone 變慢。可能方向：歷史歸檔、shallow
-  clone 指引、或改存放策略——屬大改，需完整提案與使用者明確核准，勿順手做。
+- **prices.db 成長**：2026-10 已處理（ADR 0002）。出發日已過 30 天的觀測由
+  `archive-db` 每日搬到 `archive/`，現行檔超過壓實大小 10% 才 VACUUM，預估
+  在約 37–45 MiB 之間起伏（隨每日觀測量變動）；全歷史查詢讀 `observations_all`。
+  封存讓 git 歷史長得比不封存更慢（ADR 0002「複查」）。剩下的長期課題：SQLite
+  一次最多掛 10 個封存檔，照每年 3–4.5 個新檔，約 2–3 年後到頂——封存檔
+  到第 8 個時開始提案。**不能單純 revert 這組改動**：封存跑過之後，讀者改回只讀
+  prices.db 不會報錯，但「史上最低」會悄悄算錯。封存檔遺失或筆數不符時的還原
+  步驟見 RUNBOOK §3b。
 - 實價來源（fsc/verify）僅靠 GitHub 排程、時間漂移嚴重。已評估過
   「比照 monitor 加外部觸發」：因付費 API 消耗與低頻本質，**判定不值得**，
   維持現狀。除非使用者重新立案，不要主動重提。

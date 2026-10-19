@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
+from . import archive
 from .models import Offer
 
 SCHEMA = """
@@ -48,7 +49,7 @@ CREATE TABLE IF NOT EXISTS cheap_day_notices (
     notified_at TEXT NOT NULL,
     PRIMARY KEY (origin, destination, depart_date)
 );
-"""
+""" + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
 
 
 class Store:
@@ -88,6 +89,11 @@ class Store:
             if col not in acols:
                 self.conn.execute(ddl)
         self.conn.commit()
+        # 一開檔就核對封存檔（ADR 0002）。所有 writer（monitor／FSC／Verify／
+        # cheap_day_notify）都在打任何付費 API 之前建 Store，封存檔不完整時在
+        # 這裡就停，不會先花掉額度、最後才在 export 報錯把結果丟掉。也確保
+        # view 一定建在交易之外（建在交易裡的 TEMP VIEW 會隨 rollback 消失）。
+        archive.attach(self.conn)
 
     def close(self):
         self.conn.close()
@@ -114,16 +120,21 @@ class Store:
         「這條航線史上最便宜」是一個極值事件——罕見、明確、值得打擾使用者。
         實測 5 週只觸發 3 次。這個語意必須用整條航線的資料才成立；改成單日
         基準會讓它退化成「這個日期又刷新自己的紀錄」，實測暴增到 147 次。
+
+        「整條航線」包含已封存的歷史，所以讀 observations_all（見 archive.py）。
+        刻意 fail-closed、不包 try/except：封存檔不完整時少算歷史會讓 new_low
+        誤發，寧可整輪失敗（ADR 0002 決定 6）。health 是唯一 fail-open 的讀者。
         """
+        archive.attach(self.conn)
         row = self.conn.execute(
             """SELECT COUNT(*) AS n, MIN(price) AS min_price, AVG(price) AS avg_price
-               FROM observations WHERE origin=? AND destination=? AND fare_class='any'""",
+               FROM observations_all WHERE origin=? AND destination=? AND fare_class='any'""",
             (origin, destination),
         ).fetchone()
         median = None
         if row["n"]:
             prices = [r["price"] for r in self.conn.execute(
-                "SELECT price FROM observations WHERE origin=? AND destination=? "
+                "SELECT price FROM observations_all WHERE origin=? AND destination=? "
                 "AND fare_class='any' ORDER BY price",
                 (origin, destination))]
             mid = len(prices) // 2
@@ -142,6 +153,9 @@ class Store:
 
         歷史不足 min_history 的出發日不觸發 big_drop（absolute 與 new_low
         不受影響），這正是期望行為。
+
+        刻意只讀現行的 observations：封存的是出發日已過 30 天的列，而
+        big_drop 只拿未來出發日來查，那些日期一筆都不會被封存。
         """
         out: dict[str, dict] = {}
         cur_date: Optional[str] = None

@@ -1,0 +1,108 @@
+name: Archive DB
+
+# 把出發日已過 30 天的觀測從 prices.db 搬到 archive/（見 src/farehunter/archive.py
+# 與 docs/adr/0002-prices-db-archive.md）。目的：讓 prices.db 維持在約 37–45 MiB，
+# 不會撞到 GitHub 的 100 MiB 單檔上限。
+#
+# 刻意獨立成一支、不放進 monitor：這支 job 失敗時（不 commit），
+# 每小時抓價照跑——最壞情況只是檔案像以前一樣繼續長，離上限還有好幾個月。
+# 也因此 GitHub 排程漏跑幾天無所謂：每次執行都是冪等的，沒有可搬的列就什麼
+# 都不 commit。（另一回事：repo 裡的 archive/ 若與 manifest 對不上，所有讀者
+# 都會故意報錯——見 RUNBOOK §3b。）
+#
+# 不跑 export：封存前後的看板輸出完全相同（tests/test_archive.py 鎖定），
+# 重寫 data.json 只會把 generated_at 改成「現在」，假裝有新價格（PLAYBOOK 1-4）。
+
+on:
+  schedule:
+    - cron: "43 2 * * *"      # 每日 02:43 UTC（台灣 10:43）。GitHub 排程常晚到數小時，撞到別的 writer 也沒關係：同一個 concurrency 群組排隊、不互砍
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: farehunter
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Sync to latest main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --prune --depth=1 origin \
+            +refs/heads/main:refs/remotes/origin/main
+          git checkout -B main refs/remotes/origin/main
+          git reset --hard refs/remotes/origin/main
+          test -z "$(git status --porcelain)" || {
+            echo "Working tree is not clean before archiving"
+            git status --short
+            exit 1
+          }
+          LOCAL_SHA="$(git rev-parse HEAD)"
+          REMOTE_SHA="$(git rev-parse refs/remotes/origin/main)"
+          echo "Synced main: ${LOCAL_SHA}"
+          test "${LOCAL_SHA}" = "${REMOTE_SHA}" || {
+            echo "HEAD is not equal to origin/main before archiving"
+            exit 1
+          }
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests
+        run: pip install pytest && python -m pytest tests/ -q
+      - name: Archive old observations
+        run: PYTHONPATH=src python -m farehunter.archive prices.db
+      - name: Commit
+        run: |
+          git config user.name "farehunter-bot"
+          git config user.email "bot@users.noreply.github.com"
+          set -euo pipefail
+          BASE_SHA="$(git rev-parse refs/remotes/origin/main)"
+          git add prices.db
+          # 第一次執行前 archive/ 還不存在，git add 不存在的路徑會失敗，所以先判斷。
+          # 刻意不用 `|| true`：prices.db 的 manifest 已經記了新封存檔，若只有
+          # prices.db 進 commit 而封存檔沒進，所有讀者都會報 ArchiveIntegrityError。
+          if [ -d archive ]; then
+            git add archive
+          fi
+          if git diff --cached --quiet; then
+            echo "No data changes to commit"
+            exit 0
+          fi
+          git commit -m "chore: archive observations $(date -u +'%Y-%m-%dT%H:%MZ')"
+          LOCAL_SHA="$(git rev-parse HEAD)"
+          if git push origin HEAD:main; then
+            echo "Push succeeded: ${LOCAL_SHA}"
+          else
+            echo "Initial push did not return success; checking remote state"
+            git fetch --no-tags --prune --depth=1 origin \
+              +refs/heads/main:refs/remotes/origin/main
+            REMOTE_SHA="$(git rev-parse refs/remotes/origin/main)"
+            if [ "${REMOTE_SHA}" = "${LOCAL_SHA}" ]; then
+              echo "Push already reached remote; treating run as successful"
+            elif [ "${REMOTE_SHA}" = "${BASE_SHA}" ]; then
+              echo "Remote did not advance; retrying the same push once after backoff"
+              sleep 5
+              git push origin HEAD:main
+            else
+              echo "NON-FAST-FORWARD: refusing to merge binary prices.db"
+              echo "workflow=${GITHUB_WORKFLOW}"
+              echo "run_id=${GITHUB_RUN_ID}"
+              echo "base=${BASE_SHA}"
+              echo "local=${LOCAL_SHA}"
+              echo "remote=${REMOTE_SHA}"
+              exit 1
+            fi
+          fi
