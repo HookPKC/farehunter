@@ -59,6 +59,8 @@ def _route_context(conn, origin, destination, reliability_of, now=None) -> Route
     """Historical price anchors for the route (matches export_web's stats).
 
     Full history includes archived rows, hence observations_all (see archive.py).
+    Deliberately fail-closed (no try/except): anchors computed on a truncated
+    history would skew ranking, so an incomplete archive must raise (ADR 0002).
     """
     archive.attach(conn)
     prices = [r[0] for r in conn.execute(

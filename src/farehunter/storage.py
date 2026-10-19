@@ -89,6 +89,11 @@ class Store:
             if col not in acols:
                 self.conn.execute(ddl)
         self.conn.commit()
+        # 一開檔就核對封存檔（ADR 0002）。所有 writer（monitor／FSC／Verify／
+        # cheap_day_notify）都在打任何付費 API 之前建 Store，封存檔不完整時在
+        # 這裡就停，不會先花掉額度、最後才在 export 報錯把結果丟掉。也確保
+        # 第一次 ATTACH 一定發生在交易之外。
+        archive.attach(self.conn)
 
     def close(self):
         self.conn.close()
@@ -117,6 +122,8 @@ class Store:
         基準會讓它退化成「這個日期又刷新自己的紀錄」，實測暴增到 147 次。
 
         「整條航線」包含已封存的歷史，所以讀 observations_all（見 archive.py）。
+        刻意 fail-closed、不包 try/except：封存檔不完整時少算歷史會讓 new_low
+        誤發，寧可整輪失敗（ADR 0002 決定 6）。health 是唯一 fail-open 的讀者。
         """
         archive.attach(self.conn)
         row = self.conn.execute(

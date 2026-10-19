@@ -4,6 +4,7 @@
 new_low / big_drop 的統計、FIE 的歷史錨點必須完全相同。這條是「封存不改任何
 語意」的證明（ADR 0002），不是實作細節——它紅了就代表通知或首頁數字會變。
 """
+import hashlib
 import random
 import shutil
 import sqlite3
@@ -21,14 +22,14 @@ NOW = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
 ROUTES = (("TPE", "NRT"), ("KHH", "OKA"))
 
 
-def _seed(db, now, n=600, seed=7, routes=ROUTES):
-    """出發日落在 now−150～now+200 天，觀測時間一律早於出發日且不晚於 now
+def _seed(db, now, n=600, seed=7, routes=ROUTES, dep_days=(-150, 200)):
+    """出發日落在 now + dep_days 天之間，觀測時間一律早於出發日且不晚於 now
     （真實資料的樣子：沒有人能在出發日之後觀測到那天的票價）。"""
     rng = random.Random(seed)
     store = Store(str(db))
     for i in range(n):
         o, d = routes[i % len(routes)]
-        dep = now.date() + timedelta(days=rng.randint(-150, 200))
+        dep = now.date() + timedelta(days=rng.randint(*dep_days))
         dep_dt = datetime(dep.year, dep.month, dep.day, tzinfo=timezone.utc)
         obs = min(dep_dt - timedelta(days=rng.randint(1, 120)),
                   now - timedelta(hours=rng.randint(1, 72)))
@@ -62,6 +63,20 @@ def _ids(db):
         conn.close()
 
 
+def _manifest_matches_files(db):
+    """manifest 記的筆數＝封存檔實際筆數（每次附加之後都要成立）。"""
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute("SELECT file, rows FROM archive_manifest").fetchall()
+    conn.close()
+    for f, n in rows:
+        assert _count(db.parent / "archive" / f) == n, f
+    return rows
+
+
+def _md5(path):
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
 # ---- 讀：沒有封存時 ---------------------------------------------------------
 
 def test_without_archive_view_is_the_live_table(tmp_path):
@@ -88,10 +103,18 @@ def test_outputs_identical_after_archive(tmp_path):
     (tmp_path / "b").mkdir()
     a, b = tmp_path / "a" / "prices.db", tmp_path / "b" / "prices.db"
     _seed(a, now, n=1500)
+    # 第三條航線的出發日全部早於門檻：封存後現行檔一筆不剩，它仍必須留在
+    # 首頁的航線清單、統計與趨勢圖裡。
+    _seed(a, now, n=60, seed=11, routes=(("KHH", "CTS"),),
+          dep_days=(-150, -archive.MARGIN_DAYS - 5))
     shutil.copy(a, b)
 
     s = archive_old(str(b), now=now)
     assert s["moved"] > 100 and _count(b) < _count(a)    # 真的有搬
+    conn = sqlite3.connect(str(b))
+    assert conn.execute("SELECT COUNT(*) FROM observations WHERE origin='KHH' "
+                        "AND destination='CTS'").fetchone()[0] == 0
+    conn.close()
 
     def snapshot(db):
         data = export(str(db), str(db) + ".json", now=now,
@@ -102,17 +125,24 @@ def test_outputs_identical_after_archive(tmp_path):
         stats = {(o, d): (st.route_stats(o, d),
                           {k: v for k, v in st.route_stats_by_date(o, d).items()
                            if k >= today})
-                 for o, d in ROUTES}
+                 for o, d in ROUTES + (("KHH", "CTS"),)}
         st.close()
         anchors = {r["route"]: (r["route_stats"], r["n_offers"]) for r in ranked["routes"]}
         return data, stats, anchors
 
-    data_a, stats_a, anchors_a = snapshot(a)
-    data_b, stats_b, anchors_b = snapshot(b)
-    assert data_b == data_a              # 看板：統計、趨勢圖、總筆數、健康、日曆
+    # 兩次快照之間若剛好跨過 UTC 午夜，SQL 的 date('now') 視窗會差一天——
+    # monitor 是「測試沒過就不抓價」，偶發紅燈等於漏一小時，所以跨日就重拍一次。
+    for _ in range(2):
+        day = datetime.now(timezone.utc).date()
+        snap_a, snap_b = snapshot(a), snapshot(b)
+        if datetime.now(timezone.utc).date() == day:
+            break
+    (data_a, stats_a, anchors_a), (data_b, stats_b, anchors_b) = snap_a, snap_b
+    assert data_b == data_a              # 看板：航線清單、統計、趨勢圖、總筆數、健康、日曆
     assert stats_b == stats_a            # new_low（整條航線）與 big_drop（未來出發日）
     assert anchors_b == anchors_a        # FIE 的歷史錨點
-    assert data_a["totals"]["observations"] == 1500
+    assert data_a["totals"]["observations"] == 1560
+    assert "KHH-CTS" in {f"{r['origin']}-{r['destination']}" for r in data_b["routes"]}
 
 
 # ---- 寫：搬移 ----------------------------------------------------------------
@@ -135,44 +165,79 @@ def test_moves_only_rows_past_cutoff_and_keeps_ids(tmp_path):
     conn = sqlite3.connect(str(db))
     assert conn.execute("SELECT COUNT(*) FROM observations WHERE depart_date < ?",
                         (cutoff,)).fetchone()[0] == 0
-    assert conn.execute("SELECT file, rows FROM archive_manifest").fetchall() == \
-        [("observations-001.db", s["moved"])]
     conn.close()
+    assert _manifest_matches_files(db) == [("observations-001.db", s["moved"])]
     assert _ids(db) == ids_before        # 不多、不少、id 不變
 
 
-def test_rerun_moves_nothing(tmp_path):
+def test_margin_keeps_rows_inside_the_30_day_window(tmp_path):
+    """MARGIN_DAYS 是下限（export 的 route_common 回看 30 天觀測），不是保險。"""
+    assert archive.MARGIN_DAYS >= 30
+    db = tmp_path / "prices.db"
+    store = Store(str(db))
+    for days_ago in (29, 30, 31):
+        dep = (NOW.date() - timedelta(days=days_ago)).isoformat()
+        store.conn.execute(
+            "INSERT INTO observations (origin, destination, depart_date, price, currency,"
+            " observed_at) VALUES ('TPE','NRT',?,9000,'TWD',?)",
+            (dep, (NOW - timedelta(days=days_ago + 3)).isoformat(timespec="seconds")))
+    store.conn.commit()
+    store.close()
+    s = archive_old(str(db), now=NOW)
+    assert s["moved"] == 1                                # 只有 31 天前那筆
+    assert _count(db) == 2
+
+
+def test_rerun_with_nothing_to_move_writes_nothing(tmp_path):
     db = tmp_path / "prices.db"
     _seed(db, NOW)
     first = archive_old(str(db), now=NOW)
+    arc = tmp_path / "archive" / "observations-001.db"
+    before = (_md5(db), _md5(arc))
     second = archive_old(str(db), now=NOW)
-    assert first["moved"] > 0 and second["moved"] == 0
-    assert second["archives"] == [{"file": "observations-001.db", "rows": first["moved"],
-                                   "bytes": first["archives"][0]["bytes"]}]
+    assert first["moved"] > 0 and second["moved"] == 0 and second["file"] is None
+    assert (_md5(db), _md5(arc)) == before              # 不會產生空 commit
 
 
-def test_only_first_archive_vacuums(tmp_path):
+def test_vacuum_policy_first_always_then_only_when_wasteful(tmp_path):
+    """不 VACUUM 的話現行檔照樣長（新列接在 B-tree 最右邊，舊列散在各頁，
+    騰出的空間幾乎不會被重用）；每次都 VACUUM 又讓 git 差異變大。"""
     db = tmp_path / "prices.db"
     _seed(db, NOW, n=3000)
+    ids_before = _ids(db)
     size_before = db.stat().st_size
-    first = archive_old(str(db), now=NOW - timedelta(days=60))
-    assert first["vacuumed"] and db.stat().st_size < size_before
-    second = archive_old(str(db), now=NOW)
-    assert second["moved"] > 0 and not second["vacuumed"]
+
+    first = archive_old(str(db), now=NOW - timedelta(days=90))
+    assert first["vacuumed"] and first["compact_bytes"] is None
+    assert db.stat().st_size < size_before
+
+    lazy = archive_old(str(db), now=NOW - timedelta(days=45), vacuum_waste_ratio=1e9)
+    assert lazy["moved"] > 0 and not lazy["vacuumed"]
+    assert lazy["live_bytes"] > lazy["compact_bytes"]    # 搬走的列留下了空洞
+
+    eager = archive_old(str(db), now=NOW, vacuum_waste_ratio=0.0)
+    assert eager["moved"] > 0 and eager["vacuumed"]
+    assert eager["live_bytes"] <= eager["compact_bytes"]
+
+    # 兩次附加到同一個封存檔之後，manifest 與檔案仍一致、全歷史一筆不差
+    assert len(_manifest_matches_files(db)) == 1
+    assert _ids(db) == ids_before
 
 
 def test_rolls_to_new_file_when_current_is_full(tmp_path):
     db = tmp_path / "prices.db"
     _seed(db, NOW)
-    total = _count(db)
+    ids_before = _ids(db)
     first = archive_old(str(db), now=NOW - timedelta(days=60), roll_bytes=1)
-    second = archive_old(str(db), now=NOW, roll_bytes=1)
+    second = archive_old(str(db), now=NOW, roll_bytes=1, vacuum_waste_ratio=1e9)
     assert (first["file"], second["file"]) == ("observations-001.db", "observations-002.db")
+    assert not second["vacuumed"]                         # 換新檔不等於「第一次封存」
     assert [a["rows"] for a in second["archives"]] == [first["moved"], second["moved"]]
+    assert len(_manifest_matches_files(db)) == 2
     conn = sqlite3.connect(str(db))
     assert archive.attach(conn) == 2
-    assert conn.execute("SELECT COUNT(*) FROM observations_all").fetchone()[0] == total
     conn.close()
+    assert _ids(db) == ids_before
 
 
 def test_failed_move_changes_nothing(tmp_path, monkeypatch):
@@ -195,23 +260,69 @@ def test_failed_move_changes_nothing(tmp_path, monkeypatch):
     assert not (tmp_path / "archive" / "observations-001.db").exists()
 
 
+def test_failed_append_leaves_existing_archive_byte_identical(tmp_path, monkeypatch):
+    """補欄位（ALTER）也在交易內：rollback 之後封存檔連 schema 都沒變。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    archive_old(str(db), now=NOW - timedelta(days=60))
+    arc = tmp_path / "archive" / "observations-001.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("ALTER TABLE observations ADD COLUMN cabin TEXT")
+    conn.commit()
+    conn.close()
+    before = (_md5(db), _md5(arc))
+    real = archive._fingerprint
+    calls = []
+    monkeypatch.setattr(archive, "_fingerprint", lambda c, a: (
+        calls.append(1), real(c, a) + ([("drift",)] if len(calls) > 1 else []))[1])
+    with pytest.raises(ArchiveIntegrityError, match="rollback"):
+        archive_old(str(db), now=NOW)
+    assert (_md5(db), _md5(arc)) == before
+
+
+def test_fingerprint_catches_altered_prices(tmp_path, monkeypatch):
+    """指紋不只數筆數：搬移途中價格被改，也要擋下來。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    before = _count(db)
+    real = archive._create_archive_table
+
+    def corrupting(conn, alias):
+        real(conn, alias)
+        conn.execute(f"CREATE TRIGGER {alias}.corrupt AFTER INSERT ON observations "
+                     "WHEN NEW.id % 7 = 0 BEGIN "
+                     "UPDATE observations SET price = price + 1 WHERE id = NEW.id; END")
+
+    monkeypatch.setattr(archive, "_create_archive_table", corrupting)
+    with pytest.raises(ArchiveIntegrityError, match="指紋不同"):
+        archive_old(str(db), now=NOW)
+    assert _count(db) == before
+    assert not (tmp_path / "archive" / "observations-001.db").exists()
+
+
 # ---- 完整性：封存檔不見或被改動，一律報錯，絕不默默少算 ------------------
 
 def test_missing_archive_file_raises_everywhere(tmp_path):
     from farehunter.export_web import export
+    from farehunter.intelligence import build_ranked
+    # build_ranked 只替「未來出發日」窗內有報價的航線算錨點，窗用的是 SQLite 的
+    # 真實 date('now')——資料必須相對真實時鐘建，否則日子一久窗內沒報價、根本
+    # 走不到核對（time_travel_tests 在 2027-04 抓到過）。
+    now = datetime.now(timezone.utc).replace(microsecond=0)
     db = tmp_path / "prices.db"
-    _seed(db, NOW)
-    archive_old(str(db), now=NOW)
+    _seed(db, now)
+    archive_old(str(db), now=now)
     (tmp_path / "archive" / "observations-001.db").unlink()
 
-    store = Store(str(db))
+    # Store 一開檔就核對：writer 在打付費 API 之前就停下
     with pytest.raises(ArchiveIntegrityError, match="不見了"):
-        store.route_stats("TPE", "NRT")              # new_low 的基準
-    store.close()
+        Store(str(db))
     with pytest.raises(ArchiveIntegrityError):
-        export(str(db), str(tmp_path / "d.json"), now=NOW)
+        export(str(db), str(tmp_path / "d.json"), now=now)
     with pytest.raises(ArchiveIntegrityError):
-        archive_old(str(db), now=NOW)
+        build_ranked(str(db))                            # FIE 的歷史錨點
+    with pytest.raises(ArchiveIntegrityError):
+        archive_old(str(db), now=now)
 
 
 def test_archive_row_count_mismatch_raises(tmp_path):
@@ -228,19 +339,30 @@ def test_archive_row_count_mismatch_raises(tmp_path):
     conn.close()
 
 
-def test_unlisted_file_in_the_way_raises(tmp_path):
+def test_unlisted_file_in_the_way_is_refused_and_kept(tmp_path):
     db = tmp_path / "prices.db"
     _seed(db, NOW)
+    other = tmp_path / "other.db"
+    _seed(other, NOW, n=30, seed=3)
     (tmp_path / "archive").mkdir()
-    (tmp_path / "archive" / "observations-001.db").write_bytes(b"")
+    in_the_way = tmp_path / "archive" / "observations-001.db"
+    shutil.copy(other, in_the_way)
+    before = _md5(in_the_way)
     with pytest.raises(ArchiveIntegrityError, match="不在 manifest"):
         archive_old(str(db), now=NOW)
+    assert _md5(in_the_way) == before                   # 不是自己建的，絕不刪
+    assert _count(db) == 600
+
+
+def test_missing_db_path_creates_nothing(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        archive_old(str(tmp_path / "price.db"), now=NOW)
+    assert list(tmp_path.iterdir()) == []
 
 
 # ---- 欄位演進與其他讀者 -----------------------------------------------------
 
-def test_column_added_after_archiving(tmp_path):
-    """main 日後 migration 新增欄位：舊封存列讀出 NULL，下次封存把欄位補進封存檔。"""
+def test_column_added_without_default_reads_null(tmp_path):
     db = tmp_path / "prices.db"
     _seed(db, NOW)
     first = archive_old(str(db), now=NOW - timedelta(days=60))
@@ -252,11 +374,33 @@ def test_column_added_after_archiving(tmp_path):
                         ).fetchone()[0] == _count(db) + first["moved"]
     conn.close()
 
-    second = archive_old(str(db), now=NOW)
+
+def test_column_added_with_default_reads_the_default(tmp_path):
+    """fare_class 當年就是 ADD COLUMN ... DEFAULT 'any'，全歷史查詢都濾它。
+    封存列若讀成 NULL，會悄悄掉出統計，筆數卻對得上、不會報錯。"""
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    total = _count(db)
+    archive_old(str(db), now=NOW - timedelta(days=60))
+    conn = sqlite3.connect(str(db))
+    conn.execute("ALTER TABLE observations ADD COLUMN cabin TEXT NOT NULL DEFAULT 'Y'")
+    conn.commit()
+    archive.attach(conn)
+    assert conn.execute("SELECT COUNT(*) FROM observations_all WHERE cabin='Y'"
+                        ).fetchone()[0] == total
+    conn.close()
+
+    second = archive_old(str(db), now=NOW)               # 附加時把欄位補進封存檔
     assert second["moved"] > 0 and second["file"] == "observations-001.db"
     arc = sqlite3.connect(str(tmp_path / "archive" / "observations-001.db"))
-    assert "cabin" in [r[1] for r in arc.execute("PRAGMA table_info(observations)")]
+    col = [r for r in arc.execute("PRAGMA table_info(observations)") if r[1] == "cabin"][0]
+    assert (col[3], col[4]) == (1, "'Y'")                # NOT NULL DEFAULT 'Y'
     arc.close()
+    conn = sqlite3.connect(str(db))
+    archive.attach(conn)
+    assert conn.execute("SELECT COUNT(*) FROM observations_all WHERE cabin='Y'"
+                        ).fetchone()[0] == total
+    conn.close()
 
 
 def test_health_still_sees_a_route_whose_rows_were_all_archived(tmp_path):
@@ -278,3 +422,18 @@ def test_health_still_sees_a_route_whose_rows_were_all_archived(tmp_path):
     conn.close()
     assert block["routes"][0]["last_observed_at"] == last
     assert block["routes"][0]["status"] == health.DEAD
+
+
+# ---- 常數與 CLI（archive-db.yml 實際跑的入口） ------------------------------
+
+def test_roll_size_stays_below_github_warning():
+    assert archive.ROLL_BYTES <= 50 * 1024 * 1024        # GitHub 50 MiB 起出警告
+
+
+def test_cli_archives_the_given_path(tmp_path, capsys):
+    db = tmp_path / "prices.db"
+    _seed(db, NOW)
+    assert archive.main([str(db)]) == 0
+    out = capsys.readouterr().out
+    assert "封存完成" in out and "observations-001.db" in out and "現行檔" in out
+    assert len(_manifest_matches_files(db)) == 1

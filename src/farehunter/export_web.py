@@ -196,6 +196,8 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
     conn.row_factory = sqlite3.Row
     # 全歷史（航線清單、統計、趨勢、總筆數）讀 observations_all＝現行＋封存；
     # 其餘查詢只看未來出發日或近期觀測，封存的列不在範圍內（見 archive.py）。
+    # 刻意 fail-closed、不包 try/except：封存檔不完整時寧可整份 export 失敗，
+    # 也不輸出少算歷史的統計（ADR 0002 決定 6）。
     archive.attach(conn)
 
     routes = []

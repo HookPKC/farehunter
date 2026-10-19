@@ -11,17 +11,30 @@ pack 只有 8.25 MiB。卡住的只有「單一檔案大小」。
 - **寫**：`archive_old()` 把 depart_date 早於（今天 − MARGIN_DAYS）的列從
   prices.db 搬到 archive/observations-NNN.db（滿 ROLL_BYTES 換新檔），每個
   封存檔的筆數記在 prices.db 的 archive_manifest。由 archive-db.yml 執行，
-  刻意不在每小時抓價的路徑上：封存壞了，抓價照跑。
+  刻意不在每小時抓價的路徑上：Archive DB 這支 job 失敗（交易 rollback、不
+  commit）不影響抓價。但 repo 裡的 archive/ 與 manifest 對不上時，所有讀者
+  會故意報錯（ArchiveIntegrityError），那是另一回事，見 RUNBOOK §3b。
 - **讀**：`attach(conn)` 掛上 manifest 列出的封存檔，建 TEMP VIEW
   `observations_all` ＝ main.observations ∪ 各封存檔。只有「全歷史」查詢讀它
   （new_low 的航線史上最低、首頁統計與趨勢、FIE 的歷史錨點、航線健康）。
   其餘查詢只看未來出發日或近期觀測，封存的列本來就不在它們的範圍內，
-  所以繼續讀 observations，一個字都不用改。
+  所以繼續讀 observations，一個字都不用改。view 沒有 rowid（讀出來是
+  NULL），日後把查詢改讀 observations_all 時，排序的平手判定要用 id。
+
+**不能單純 revert**：封存跑過之後，prices.db 只剩近幾個月的資料。把讀者改回
+只讀 observations（revert 這組改動，或把某個全歷史查詢改回去）不會報任何錯，
+但 new_low 的「史上最低」、首頁統計與趨勢圖會悄悄只算現行檔。要回退得先把
+archive/ 併回 prices.db（另開提案），見 ADR 0002「已知限制」。
 
 為什麼封存「出發日」而不是「觀測時間」：觀測一定早於出發日，所以出發日已過
 30 天的列，觀測時間也一定早於 30 天前——兩種視窗（未來出發日、近期觀測）
 都碰不到它們。以觀測時間切則會切到仍在未來的出發日，big_drop 的單日基準就
 少了資料。
+
+為什麼還要不定期 VACUUM：id 是 AUTOINCREMENT，新觀測永遠接在表的最右邊；
+被搬走的舊列卻散在整棵 B-tree 的各頁裡，騰出的頁內空間幾乎不會被重用。
+真實資料逐日重播 14 天：不 VACUUM 時現行檔每天仍長約 0.28 MiB，壓實後的
+大小每天只長約 0.07 MiB——等於封存只省下一次性的那一截。見 VACUUM_WASTE_RATIO。
 """
 from __future__ import annotations
 
@@ -30,6 +43,7 @@ import os
 import re
 import sqlite3
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -41,14 +55,23 @@ HISTORY = "observations_all"
 ARCHIVE_DIRNAME = "archive"
 FILE_FMT = "observations-{:03d}.db"
 
-#: 出發日要過多久才封存。理論上 0 就不影響任何視窗查詢（見模組說明），
-#: 多留 30 天是保險：時區、時鐘偏移、晚到的回程比對都不會踩到邊界。
-#: 代價只是現行檔多放約一個月的資料（約 4 MiB）。
+#: 出發日要過多久才封存。**30 是下限，不是保險**：export_web 的 route_common
+#: （首頁 carriers 參考的備援）只讀現行表、只限 observed_at ≥ now − 30 天、
+#: 不看出發日。觀測一定早於出發日，所以出發日 ≥ now − 30 天的列才可能落在
+#: 那個視窗裡；margin 小於 30 就會把視窗內的列搬走、改變它的輸入（實測
+#: margin 29 少 8 筆——observed_at 用 'T'、SQL 用空白，整個邊界日都算在窗內；
+#: margin 0 少 11,792 筆）。日後新增「只讀現行表、以觀測時間回看 N 天」的
+#: 查詢，N 不得超過這個值。代價：現行檔多放約一個月的資料（約 8 MiB）。
 MARGIN_DAYS = 30
 
 #: 封存檔滿這個大小就換新檔。GitHub 50 MiB 起會出警告、100 MiB 拒收；
 #: 40 MiB 離警告線還有餘裕，離拒收線一倍以上。
 ROLL_BYTES = 40 * 1024 * 1024
+
+#: 現行檔比「壓實後」大超過這個比例才 VACUUM（第一次封存則一律 VACUUM）。
+#: 每次都 VACUUM 會讓每次封存 commit 都整檔重寫、git 差異變大；不 VACUUM
+#: 則現行檔照樣長（見模組說明）。10% 約等於兩週的浪費，也就是約兩週做一次。
+VACUUM_WASTE_RATIO = 0.10
 
 #: 也宣告在 storage.SCHEMA 裡（不藏在方法內，long_range 的教訓）。
 MANIFEST_DDL = """
@@ -99,6 +122,12 @@ def _columns(conn: sqlite3.Connection, schema: str) -> list[str]:
     return [r[1] for r in conn.execute(f"PRAGMA {schema}.table_info(observations)")]
 
 
+def _column_info(conn: sqlite3.Connection, schema: str) -> dict[str, tuple]:
+    """欄位名 → (型別, notnull, 預設值的 SQL 字面量或 None)。"""
+    return {r[1]: (r[2], r[3], r[4]) for r in conn.execute(
+        f"PRAGMA {schema}.table_info(observations)")}
+
+
 def _attached(conn: sqlite3.Connection) -> set[str]:
     return {r[1] for r in conn.execute("PRAGMA database_list")}
 
@@ -131,13 +160,18 @@ def _attach_entries(conn: sqlite3.Connection, base: Path,
 def _union_sql(conn: sqlite3.Connection, aliases: list[str], cols: list[str]) -> str:
     """main.observations ∪ 各封存檔，欄位以 main 為準。
 
-    封存檔缺少的欄位（封存之後 main 才 migration 新增的）補 NULL——跟 main
-    裡 migration 前的舊列讀出來一樣，語意一致。
+    封存檔缺少的欄位（封存之後 main 才 migration 新增的）補 main 的 DEFAULT，
+    沒有 DEFAULT 才補 NULL——跟 main 裡 migration 前的舊列讀出來一樣。這點
+    重要：fare_class 當年就是 `ADD COLUMN ... DEFAULT 'any'`，而全歷史查詢都
+    濾 fare_class='any'；補 NULL 會讓封存列悄悄掉出統計，筆數卻照樣對得上。
     """
+    info = _column_info(conn, "main")
     selects = [f"SELECT {', '.join(cols)} FROM main.observations"]
     for alias in aliases:
         have = set(_columns(conn, alias))
-        sel = ", ".join(c if c in have else f"NULL AS {c}" for c in cols)
+        sel = ", ".join(
+            c if c in have else f"{info[c][2] if info[c][2] is not None else 'NULL'} AS {c}"
+            for c in cols)
         selects.append(f"SELECT {sel} FROM {alias}.observations")
     return " UNION ALL ".join(selects)
 
@@ -198,21 +232,57 @@ def _create_archive_table(conn: sqlite3.Connection, alias: str) -> None:
                  "ON observations (origin, destination, depart_date)")
 
 
+def _sync_columns(conn: sqlite3.Connection, alias: str) -> None:
+    """main 後來 migration 新增的欄位補進封存檔，連同 DEFAULT 與 NOT NULL，
+    讓封存檔裡的舊列讀出來跟 main 的舊列一樣（見 _union_sql）。"""
+    have = set(_columns(conn, alias))
+    for c, (ctype, notnull, dflt) in _column_info(conn, "main").items():
+        if c in have:
+            continue
+        ddl = f"ALTER TABLE {alias}.observations ADD COLUMN {c} {ctype}"
+        if dflt is not None:
+            ddl += (" NOT NULL" if notnull else "") + f" DEFAULT {dflt}"
+        conn.execute(ddl)
+
+
+def _compact_bytes(conn: sqlite3.Connection) -> int:
+    """主檔「壓實後」的大小：VACUUM INTO 一份暫存檔量出來，原檔不動。"""
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "compact.db")
+        conn.execute("VACUUM main INTO ?", (out,))
+        return os.path.getsize(out)
+
+
+def _claim_new_file(path: Path) -> None:
+    """獨佔建立新封存檔（O_EXCL）。檔案已存在就拒絕，而不是接手——
+    接手別人的檔案、失敗時又把它刪掉，會讓已提交的封存列憑空消失。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+    except FileExistsError:
+        raise ArchiveIntegrityError(
+            f"封存檔 {path} 已存在但不在 manifest 裡。若它是先前中斷的執行留下的"
+            "（用 sqlite3 打開，observations 是 0 筆或沒有這張表），刪掉後重跑即可；"
+            "若裡面有資料，不要刪，照 docs/RUNBOOK_HOOK.md §3b 處理") from None
+
+
 def archive_old(db_path: str = "prices.db", now: datetime | None = None,
                 margin_days: int = MARGIN_DAYS,
-                roll_bytes: int = ROLL_BYTES) -> dict:
+                roll_bytes: int = ROLL_BYTES,
+                vacuum_waste_ratio: float = VACUUM_WASTE_RATIO) -> dict:
     """把 depart_date 早於（now − margin_days）的觀測從 db_path 搬到封存檔。
 
-    整個搬移在單一交易內完成（SQLite 對 ATTACH 的多個檔案做原子提交），提交
-    前比對搬移前後的全歷史指紋，任何一項不同就 rollback 並拋錯——所以結果
-    只有「搬好」或「完全沒動」兩種。
+    整個搬移（含新封存檔的建表與欄位同步）在單一交易內完成，SQLite 對 ATTACH
+    的多個檔案做原子提交；提交前比對搬移前後的全歷史指紋，任何一項不同就
+    rollback 並拋錯——所以結果只有「搬好」或「完全沒動」兩種。
 
     冪等：沒有符合條件的列時什麼都不寫，回 moved=0。
 
-    第一次封存（manifest 原本是空的）結束後 VACUUM 一次，把主檔縮小；之後
-    不再 VACUUM——刪掉的頁會被新觀測重複使用，檔案停在穩定大小，也避免
-    每次整檔重寫讓 git 差異變大。
+    VACUUM：第一次封存（manifest 原本是空的）一律做；之後只在現行檔比壓實後
+    大超過 vacuum_waste_ratio 時做（見 VACUUM_WASTE_RATIO）。
     """
+    if not os.path.isfile(db_path):       # sqlite3.connect 會默默建出空檔
+        raise FileNotFoundError(f"找不到資料庫 {db_path}")
     now = now or datetime.now(timezone.utc)   # 可注入，供測試固定時鐘
     cutoff = (now.date() - timedelta(days=margin_days)).isoformat()
     base = archive_dir(db_path)
@@ -222,10 +292,10 @@ def archive_old(db_path: str = "prices.db", now: datetime | None = None,
         conn.executescript(MANIFEST_DDL)
         entries = _manifest(conn)
         aliases = _attach_entries(conn, base, entries)       # 順便核對既有封存檔
-        n = conn.execute("SELECT COUNT(*) FROM main.observations WHERE depart_date < ?",
-                         (cutoff,)).fetchone()[0]
-        summary = {"cutoff": cutoff, "moved": n, "file": None, "vacuumed": False}
-        if n == 0:
+        summary = {"cutoff": cutoff, "moved": 0, "file": None,
+                   "vacuumed": False, "compact_bytes": None}
+        if not conn.execute("SELECT 1 FROM main.observations WHERE depart_date < ? LIMIT 1",
+                            (cutoff,)).fetchone():
             return _finish(summary, conn, db_path, base)
 
         last = base / entries[-1][0] if entries else None
@@ -234,34 +304,26 @@ def archive_old(db_path: str = "prices.db", now: datetime | None = None,
             check_aliases = aliases
         else:
             target_name = _next_file_name(entries)
-            target_path = base / target_name
-            if target_path.exists():
-                raise ArchiveIntegrityError(
-                    f"封存檔 {target_path} 已存在但不在 manifest 裡；請人工確認來源再處理")
-            base.mkdir(parents=True, exist_ok=True)
+            _claim_new_file(base / target_name)
+            created = base / target_name
             target_alias = f"arc{len(entries)}"
-            conn.execute(f"ATTACH DATABASE ? AS {target_alias}", (str(target_path),))
-            created = target_path
-            _create_archive_table(conn, target_alias)
+            conn.execute(f"ATTACH DATABASE ? AS {target_alias}", (str(created),))
             check_aliases = aliases + [target_alias]
-        summary["file"] = target_name
 
-        cols = _columns(conn, "main")
-        have = set(_columns(conn, target_alias))
-        for c in cols:                     # main 後來 migration 新增的欄位補進封存檔
-            if c not in have:
-                ctype = {r[1]: r[2] for r in conn.execute(
-                    "PRAGMA main.table_info(observations)")}[c]
-                conn.execute(f"ALTER TABLE {target_alias}.observations "
-                             f"ADD COLUMN {c} {ctype}")
-        col_list = ", ".join(cols)
-
-        before = _fingerprint(conn, check_aliases)
+        # ATTACH 只能在交易外；其餘全部（建表、補欄位、計數、指紋）都在交易內，
+        # 這樣 rollback 才真的「完全沒動」，也不會跟其他寫入者交錯。
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if created is not None:
+                _create_archive_table(conn, target_alias)
+            _sync_columns(conn, target_alias)
+            cols = ", ".join(_columns(conn, "main"))
+            n = conn.execute("SELECT COUNT(*) FROM main.observations WHERE depart_date < ?",
+                             (cutoff,)).fetchone()[0]
+            before = _fingerprint(conn, check_aliases)
             moved_in = conn.execute(
-                f"INSERT INTO {target_alias}.observations ({col_list}) "
-                f"SELECT {col_list} FROM main.observations WHERE depart_date < ?",
+                f"INSERT INTO {target_alias}.observations ({cols}) "
+                f"SELECT {cols} FROM main.observations WHERE depart_date < ?",
                 (cutoff,)).rowcount
             moved_out = conn.execute(
                 "DELETE FROM main.observations WHERE depart_date < ?",
@@ -285,15 +347,21 @@ def archive_old(db_path: str = "prices.db", now: datetime | None = None,
                 conn.execute("ROLLBACK")
             raise
         created = None                     # 已提交，新檔留著
+        summary.update({"moved": n, "file": target_name})
 
         if not entries:
+            vacuum = True
+        else:
+            summary["compact_bytes"] = _compact_bytes(conn)
+            vacuum = os.path.getsize(db_path) > summary["compact_bytes"] * (1 + vacuum_waste_ratio)
+        if vacuum:
             conn.execute("VACUUM main")
             summary["vacuumed"] = True
         return _finish(summary, conn, db_path, base)
     finally:
         conn.close()
         if created is not None and created.exists():
-            created.unlink()               # 失敗時不留下沒進 manifest 的空殼
+            created.unlink()               # 只刪自己獨佔建立、卻沒提交成功的新檔
 
 
 def _finish(summary: dict, conn: sqlite3.Connection, db_path: str, base: Path) -> dict:
@@ -315,9 +383,11 @@ def main(argv: list[str] | None = None) -> int:
     mib = lambda b: b / 1048576
     files = "、".join(f"{a['file']} {a['rows']} 筆 {mib(a['bytes']):.1f} MiB"
                      for a in s["archives"]) or "（無）"
+    compact = (f"（壓實後 {mib(s['compact_bytes']):.1f} MiB）"
+               if s["compact_bytes"] is not None else "")
     print(f"封存完成：出發日 < {s['cutoff']} 的 {s['moved']} 筆"
           + (f" → {s['file']}" if s["file"] else "（沒有需要搬的）")
-          + ("；已 VACUUM" if s["vacuumed"] else ""))
+          + ("；已 VACUUM" if s["vacuumed"] else "") + compact)
     print(f"現行檔 {s['live_rows']} 筆 {mib(s['live_bytes']):.1f} MiB；封存檔：{files}")
     return 0
 
