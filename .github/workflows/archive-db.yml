@@ -1,10 +1,10 @@
 name: Archive DB
 
 # 把出發日已過 30 天的觀測從 prices.db 搬到 archive/（見 src/farehunter/archive.py
-# 與 docs/adr/0002-prices-db-archive.md）。目的：讓 prices.db 維持在約 35–40 MiB，
+# 與 docs/adr/0002-prices-db-archive.md）。目的：讓 prices.db 維持在約 37–45 MiB，
 # 不會撞到 GitHub 的 100 MiB 單檔上限。
 #
-# 刻意獨立成一支、不放進 monitor：這支 job 失敗（交易 rollback、不 commit）時，
+# 刻意獨立成一支、不放進 monitor：這支 job 失敗時（不 commit），
 # 每小時抓價照跑——最壞情況只是檔案像以前一樣繼續長，離上限還有好幾個月。
 # 也因此 GitHub 排程漏跑幾天無所謂：每次執行都是冪等的，沒有可搬的列就什麼
 # 都不 commit。（另一回事：repo 裡的 archive/ 若與 manifest 對不上，所有讀者

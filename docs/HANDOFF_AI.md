@@ -2,7 +2,7 @@
 
 **讀者**：接手本專案的任何 AI 模型（Claude Opus/Sonnet、Codex、GPT 系列或其他），
 以及想了解 AI 協作規範的人類。本文件不綁定任何特定模型；「你」指接手的 AI。
-最後更新：2026-10-12。
+最後更新：2026-10-19。
 
 ---
 
@@ -108,9 +108,10 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 
 - 部署驗收＝**三方 SHA 一致**：main HEAD ＝ Deploy Pages run 的 `head_sha` ＝
   github-pages environment 最新 deployment 的 SHA。缺一不可。
-  唯一的合法落差：main HEAD 是 `chore: archive observations` 時。Deploy Pages
-  只跟在 Monitor／FSC／Verify 之後跑，封存也不改 `docs/`，所以不會為它部署；
-  以下一班 Monitor 觸發的 deploy 為準（通常一小時內），屆時三方會對上。
+  自動 commit 裡唯一的合法落差：main HEAD 是 `chore: archive observations` 時
+  （合併 PR 等人工 commit 同理）。Deploy Pages 只跟在 Monitor／FSC／Verify 之後
+  跑，封存也不改 `docs/`，所以不會為它部署；以下一班 Monitor 觸發的 deploy 為準
+  （通常一小時內），屆時三方會對上。
 - 手機版 UI 改動需使用者 iOS 實機最終確認。
 - token：fine-grained、只限本 repo、短效期、用完提醒使用者刪除。改一般檔案＝
   Contents RW；動 `.github/workflows/` 必須加 Workflows RW（缺了 push 會被拒）；
@@ -142,9 +143,9 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 
 - **prices.db 成長**：2026-10 已處理（ADR 0002）。出發日已過 30 天的觀測由
   `archive-db` 每日搬到 `archive/`，現行檔超過壓實大小 10% 才 VACUUM，預估
-  維持在約 35–40 MiB（隨每日觀測量變動）；全歷史查詢讀 `observations_all`。
+  在約 37–45 MiB 之間起伏（隨每日觀測量變動）；全歷史查詢讀 `observations_all`。
   封存讓 git 歷史長得比不封存更慢（ADR 0002「複查」）。剩下的長期課題：SQLite
-  一次最多掛 10 個封存檔，照每年 2.5–3.7 個新檔，約 2.5–3.5 年後到頂——封存檔
+  一次最多掛 10 個封存檔，照每年 3–4.5 個新檔，約 2–3 年後到頂——封存檔
   到第 8 個時開始提案。**不能單純 revert 這組改動**：封存跑過之後，讀者改回只讀
   prices.db 不會報錯，但「史上最低」會悄悄算錯。封存檔遺失或筆數不符時的還原
   步驟見 RUNBOOK §3b。

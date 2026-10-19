@@ -62,7 +62,7 @@ Actions → **Deploy Pages** → 點進紅色那筆 → 右上 **Re-run all jobs
 亂發「史上最低」通知。
 
 **怎麼認出來**：Monitor 紅燈，log 裡有 `ArchiveIntegrityError`，後面接
-「封存檔 … 不見了」或「封存檔 … 有 X 筆，manifest 記 Y 筆」。
+「封存檔 … 不見了」「封存檔 … 有 X 筆，manifest 記 Y 筆」或「封存檔 … 無法讀取」。
 
 **影響範圍**：Monitor、FSC、Verify 一開始讀資料庫就停，**還沒打任何付費 API**
 （不會白花額度），但這段期間沒有任何新價格進 repo、首頁時間戳不動。
@@ -73,7 +73,9 @@ Deploy Pages 照常跑，只是重發沒變的舊資料。**當天處理**。
 裡的檔案、手動改 `prices.db`、把程式改回「只讀 prices.db」（那樣不會報錯，
 但「史上最低」會悄悄算錯，見 ADR 0002「已知限制」）。
 
-**修法：把 `archive/` 還原成最後一次正常封存時的樣子**（需要能用 git 的電腦，約 5 分鐘）：
+**修法：把 `archive/` 還原成最後一次正常封存時的樣子**（約 5 分鐘）。需要：
+git 2.23 以上（`git --version`）、bash 或 zsh（Windows 用 Git Bash）、能推送到
+本 repo 的 GitHub 登入（**不是** cron-job.org 那顆只開 Actions 權限的 token）。
 
 ```bash
 git clone --filter=blob:none https://github.com/HookPKC/farehunter
@@ -86,6 +88,9 @@ git commit -m "fix: 還原封存檔（ArchiveIntegrityError）"
 git push            # 被拒的話先 git pull --rebase 再 push
 ```
 
+git 太舊、沒有 `git restore` 時，把那一行換成
+`git rm -r -q --ignore-unmatch archive/ && git checkout "$SHA" -- archive/`（效果相同，已實測）。
+
 然後照 §2 手動跑一次 **FareHunter Monitor**，變綠勾＝復原。若還是同一個錯，
 把 log 的錯誤訊息整段交給 AI 處理（ADR 0002「維運」段落有完整說明）。
 
@@ -97,7 +102,7 @@ git push            # 被拒的話先 git pull --rebase 再 push
   通常是有人在自己電腦上跑封存跑到一半中斷留下的；**不要自己刪**，交給 AI
   確認裡面是否為空再處理（錯誤訊息裡有判斷方式）。
 - 錯誤是 `too many attached databases` → 封存檔已經滿 10 個（ADR 0002 預估
-  約 2.5–3.5 年後）。抓價不受影響，但 `prices.db` 會重新開始變大；找 AI 依
+  約 2–3 年後）。抓價不受影響，但 `prices.db` 會重新開始變大；找 AI 依
   ADR 0002「已知限制」提案。
 - 紅在「Commit」且 log 有 `NON-FAST-FORWARD` → 封存期間有人（或合併 PR）
   另外推了 commit。沒有任何資料被改，隔天會自動重做。
@@ -190,8 +195,8 @@ token 存自己 Google 帳號的 Script Properties，用 UrlFetchApp 發同一�
 
 - 每週開一次首頁：沒提示條＝健康，關掉即可
 - （每月一次，可選）Actions → **Archive DB** 最近一次 run →「Archive old
-  observations」步驟的最後兩行：現行檔應在 35–40 MiB 左右（每兩三週 VACUUM
-  一次時會掉回 35 上下）。超過 45 MiB，或封存檔編號到 `observations-008.db`，
+  observations」步驟的最後兩行：現行檔平常在約 37–45 MiB 之間起伏（大約每
+  2–3 週 VACUUM 一次，會掉回 37–40 上下）。超過 48 MiB，或封存檔編號到 `observations-008.db`，
   就找 AI 看（原因見 ADR 0002「已知限制」）
 - 收到 healthchecks 或 cron-job.org email → 照第 0 節三步走
 - 三步走了還是不行 → `docs/PLAYBOOK.md` 案例 1-6 有完整排查法
