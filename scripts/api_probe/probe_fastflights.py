@@ -30,13 +30,15 @@ TIMEOUT_S = 45
 SLEEP_S = 1.0
 CURRENCY = "TWD"
 STAY_DAYS = 5
-# (route, depart offset in days, max_stops: 0 = nonstop, None = any). One Google request each.
+# 第二輪：直接用 SerpAPI 最近實測過的同一組行程比價（prices.db 的 google 觀測），
+# 第一輪挑的日期剛好沒有直飛（KHH-NGO 台灣虎航是週一班，11-29 是週日）。
+# (route, depart, return, max_stops, SerpAPI 參考價)
 CASES = [
-    ("KHH-NGO", 35, 0),
-    ("KHH-NGO", 75, 0),
-    ("KHH-CTS", 45, 0),
-    ("TPE-NRT", 35, 0),
-    ("KHH-NGO", 35, None),  # control for the nonstop filter: does max_stops=0 really filter?
+    ("KHH-NGO", "2026-12-07", "2026-12-12", 0, "serpapi 10-23: 14891 IT"),
+    ("KHH-CTS", "2026-11-13", "2026-11-18", 0, "serpapi 10-20: 11097 SL"),
+    ("TPE-NRT", "2026-11-30", "2026-12-08", 0, "serpapi 10-24: 10088 TR"),
+    ("KHH-NGO", "2027-01-08", "2027-01-13", 0, "round-1 TypeError repro"),
+    ("KHH-NGO", "2027-01-04", "2027-01-09", 0, "Monday in Jan"),
 ]
 
 
@@ -88,8 +90,13 @@ def _parse(html):
     if node is None:
         raise LookupError("no <script class='ds:1'> in page (layout change or bot page)")
     js = node.text()
-    stock = parse_js(js)
-    top, top_err = [], None
+    try:
+        stock = parse_js(js)
+    except Exception as e:  # 3.1.0 parse_js 在 payload[3] 為 None 時會 TypeError
+        stock, top_err = [], f"stock:{type(e).__name__}"
+    else:
+        top_err = None
+    top = []
     try:
         payload = json.loads(js.split("data:", 1)[1].rsplit(",", 1)[0])
         if payload[2] and payload[2][0]:
@@ -97,7 +104,7 @@ def _parse(html):
             alt[3] = payload[2]
             top = parse_js("data:" + json.dumps(alt) + ", x")
     except Exception as e:
-        top_err = type(e).__name__
+        top_err = (top_err + "," if top_err else "") + f"top:{type(e).__name__}"
     return stock, top, top_err
 
 
@@ -115,14 +122,13 @@ def _summary(items, code_by_name):
             "carriers": ",".join(carriers[:8]) or None}, stops
 
 
-def _run_case(fetcher, today, route, offset, max_stops):
+def _run_case(fetcher, today, route, dep, ret, max_stops, ref):
     from fast_flights import FlightQuery, FlightsNotFound, Passengers, create_query, fetch_flights_html
 
     origin, dest = route.split("-")
-    dep = today + dt.timedelta(days=offset)
-    ret = dep + dt.timedelta(days=STAY_DAYS)
+    dep, ret = dt.date.fromisoformat(dep), dt.date.fromisoformat(ret)
     stops_label = "nonstop" if max_stops == 0 else "any-stops"
-    case = f"{route} RT {dep.isoformat()}+{STAY_DAYS}d {stops_label} curr={CURRENCY} direct"
+    case = f"{route} RT {dep.isoformat()}/{ret.isoformat()} {stops_label} [{ref}]"
     calls = 0
     try:
         q = create_query(
@@ -139,9 +145,11 @@ def _run_case(fetcher, today, route, offset, max_stops):
         meta = getattr(stock, "metadata", None) or getattr(top, "metadata", None)
         code_by_name = {a.name: a.code for a in meta.airlines} if meta else {}
         fields, stops = _summary(list(stock) + list(top), code_by_name)
-        note = (f"HTTP 200; stock get_flights()={len(stock)} (payload[3] only), payload[2] top bucket="
-                f"{top_err or len(top)}; max stops seen={stops}; price is a bare int, currency from "
-                f"curr param; no low/typical/high in 3.x")
+        cheapest = sorted((f.price, ",".join(f.airlines or [])) for f in list(stock) + list(top)
+                          if isinstance(f.price, (int, float)) and f.price > 0)[:3]
+        note = (f"HTTP 200; stock={len(stock)} top={len(top)}"
+                + (f" ({top_err})" if top_err else "")
+                + f"; max stops={stops}; cheapest3={cheapest}")
         return _row(case, route, ok=True, calls=calls, currency=CURRENCY, note=note, **fields)
     except FlightsNotFound as e:
         return _row(case, route, calls=calls, note=f"FlightsNotFound (Google errorHasStatus): {e}")
@@ -157,10 +165,10 @@ def probe(env, today):
     rows = []
     try:
         fetcher = _make_fetcher()
-        for i, (route, offset, max_stops) in enumerate(CASES):
+        for i, (route, dep, ret, max_stops, ref) in enumerate(CASES):
             if i:
                 time.sleep(SLEEP_S)
-            rows.append(_run_case(fetcher, today, route, offset, max_stops))
+            rows.append(_run_case(fetcher, today, route, dep, ret, max_stops, ref))
     except Exception as e:
         rows.append(_row("setup", "-", note=f"{type(e).__name__}: {e}"))
     return rows
