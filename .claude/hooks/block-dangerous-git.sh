@@ -1,8 +1,8 @@
 #!/bin/bash
 # PreToolUse hook：在 Claude 執行 Bash 指令前攔截會造成不可逆損失的 git 操作。
 #
-# 這個專案要保護的具體東西是 prices.db——15MB 的二進位檔、被 git 追蹤、裝著
-# 10 萬筆以上的價格觀測，而 .github/workflows/monitor.yml 每小時會 push 一次新
+# 這個專案要保護的具體東西是 prices.db 與 archive/*.db——數十 MB 的二進位檔、
+# 被 git 追蹤、裝著數十萬筆價格觀測，而 .github/workflows/monitor.yml 每小時會 push 一次新
 # 資料上 main。因此本機的 main 幾乎永遠落後遠端。二進位檔無法像文字檔那樣合併，
 # 一次強制推送就會讓那幾小時的觀測永久消失（workflow 裡那段
 # "NON-FAST-FORWARD: refusing to merge binary prices.db" 就是在防同一件事）。

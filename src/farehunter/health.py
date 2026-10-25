@@ -1,6 +1,6 @@
 """Route health:把「某條航線已經悄悄停止產出觀測」升級成人看得到的訊號。
 
-零 API：只讀既有 observations。時間基準一律由呼叫端注入——不使用 SQLite 的
+零 API：只讀既有觀測（observations_all，含 archive/ 的封存）。時間基準一律由呼叫端注入——不使用 SQLite 的
 date('now') / datetime('now')，沿用 967029c 建立的注入時鐘慣例，讓測試不必
 綁真實日期。
 
@@ -15,8 +15,9 @@ commit 可獨立 revert，不留 schema 殘跡。
 
 刻意不改 exit code：monitor.yml 的 commit 步驟預設 `if: success()`，讓 Run
 monitor 這步變紅會連帶擋掉 prices.db 的 commit，把「一條航線沒資料」升級成
-「全部航線都不寫入」。可見性因此改走 docs/data.json 的 health 區塊——五個
-writer 都 `git add docs/data.json`，所以每輪 commit 的 diff 都會顯示狀態變化。
+「全部航線都不寫入」。可見性因此改走 docs/data.json 的 health 區塊——三個寫入
+workflow（monitor／FSC／Verify）都 `git add docs/data.json`，所以每輪 commit 的
+diff 都會顯示狀態變化。
 """
 from __future__ import annotations
 
