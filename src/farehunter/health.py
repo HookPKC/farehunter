@@ -17,7 +17,8 @@ commit 可獨立 revert，不留 schema 殘跡。
 monitor 這步變紅會連帶擋掉 prices.db 的 commit，把「一條航線沒資料」升級成
 「全部航線都不寫入」。可見性因此改走 docs/data.json 的 health 區塊——三個寫入
 workflow（monitor／FSC／Verify）都 `git add docs/data.json`，所以每輪 commit 的
-diff 都會顯示狀態變化。
+diff 都會顯示狀態變化。（唯一例外：整輪一次搜尋都沒成功時 run.py 會 exit 1，
+見 runner.all_searches_failed——那時本來就沒有資料可擋。）
 """
 from __future__ import annotations
 

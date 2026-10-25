@@ -139,6 +139,11 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
   **判讀方式**：比對「最後一次成功 deploy 的 head_sha」與 main HEAD，一致就
   沒事（§5 的三方 SHA 規則；main HEAD 剛好是封存 commit 時見 §5 的例外）。不要為此改 permissions 或 action 版本。
 - 「All jobs were cancelled」email：先套 §4 判讀表，多數可忽略。
+- monitor 綠色但 log 有 `Search failed … API error 0: ReadTimeout`（或
+  `ConnectionError`）＝單一月份連線逾時，設計行為：2026-10-18 一次逾時讓整輪中止、
+  那一小時全丟之後，改成照月份跳過；同一輪累計 3 次就熔斷、不再呼叫 API
+  （`runner.MAX_TRANSPORT_ERRORS`）。只有「整輪一次都沒成功」才會 exit 1 變紅
+  （`runner.all_searches_failed`），token 過期也走這條。
 - **KHH→NGO 長期 stale/dead ≠ 斷線**。Travelpayouts 只回 Aviasales 使用者近 7 天
   實際搜尋過的票價，這條線約 1–3 週才被搜一次：2026-07～09 共 6 段資料，每段
   都是一筆台灣虎航直飛票價、剛好存活 7 天後消失（最後一段 09-14～09-21），
