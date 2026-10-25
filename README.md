@@ -82,7 +82,7 @@ cp .env.example .env    # 填入金鑰後 export，或直接設定環境變數
 python run.py                        # 用 config.yaml 與 prices.db
 python run.py myconfig.yaml my.db    # 指定檔案
 
-python -m pytest tests/ -v           # 跑測試（15 個，不需網路與金鑰）
+python -m pytest tests/ -v           # 跑測試（不需網路與金鑰）
 ```
 
 ## 免費雲端部署（GitHub Actions）

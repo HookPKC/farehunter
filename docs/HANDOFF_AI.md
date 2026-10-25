@@ -2,7 +2,7 @@
 
 **讀者**：接手本專案的任何 AI 模型（Claude Opus/Sonnet、Codex、GPT 系列或其他），
 以及想了解 AI 協作規範的人類。本文件不綁定任何特定模型；「你」指接手的 AI。
-最後更新：2026-10-19。
+最後更新：2026-10-25。
 
 ---
 
@@ -26,8 +26,9 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 
 > 曾有第三層「Google 日曆實價」（SearchApi gcal-sweep／longrange-sweep）。
 > SearchApi 的額度是**一次性試用 100 次**（實測跨月不重置），2026-08 用盡且
-> 不續費，該層與其 `long_range` 表（1,277 筆、零讀者）已於同月移除。歷史
-> `provider='searchapi'` 觀測仍留在 DB，標籤對應表因此保留。
+> 不續費，該層的程式已於同月移除；`long_range` 表本身（1,277 筆、零讀者）仍留在
+> prices.db 當死資料，要刪需另案經使用者同意。歷史 `provider='searchapi'` 觀測
+> 仍留在 DB，標籤對應表因此保留。
 
 **付費 API 額度（2026-08 起可觀測，不要再憑印象推論）**：
 `docs/quota.json` 由 fsc-snapshot 每日寫入並 commit，內容是 SerpAPI 真實
@@ -97,7 +98,7 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 
 | 樣態 | 特徵 | 案例 | 處置 |
 |---|---|---|---|
-| **guard 跳過** | 該班 run 綠色成功，log 有「跳過本輪」；稍早（<55 分）有 fsc/verify 等來源剛 commit | 7/8：fsc 漂移至 12:05 跑完並 export，12:17 monitor 見資料齡 12 分 → 正常跳過 | 不處理。資料其實剛被刷新 |
+| **guard 跳過** | 該班 run 綠色成功，「Run monitor」log 有「跳過本輪」，Export／Commit 步驟被略過；55 分鐘內**另一班 monitor** 已經抓過價（guard 只看 monitor 寫的 aviasales 觀測，FSC／Verify 的 commit 不會觸發跳過）。常見情形：晚到的 GitHub `:07` 排程與 `:17` 外部觸發落在同一小時 | 10/18 10:54：GitHub 排程那班晚到，距 10:17 那班抓價不到 55 分 → 正常跳過。若晚到的那班反而先抓了價（git log 上前一小時多一筆不在 :17／:18 的 commit），下一個 :17 就會跳過、看起來缺一筆 | 不處理。資料其實剛被抓過 |
 | **排隊補跑** | 兩個 workflow 同時到場，晚到的 queued 後照跑，commit 時間略延後 | 7/9 16:17：verify 與 monitor 同場，兩者都成功（16:17 與 16:18 各一筆 commit） | 不處理。concurrency 正常運作 |
 | **平台單次取消** | run 顯示 cancelled，但當下群組內無人佔用、也非手動取消 | 7/9 06:17：monitor cancelled，當日 fsc/verify 均在 16:1x 才跑（無撞車）→ GitHub 平台偶發 | 單次＋下一班正常＝忽略 |
 

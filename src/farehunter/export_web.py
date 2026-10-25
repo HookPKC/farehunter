@@ -173,7 +173,7 @@ def _health_route_list(config_path: str, observed: list[tuple[str, str]]
                        ) -> list[tuple[str, str]]:
     """健康檢查的航線清單:以 config.yaml 為真相,讀不到才退回已觀測航線。
 
-    fail-open:export 是五個 writer 共用的最後一步,不能因為讀不到 config
+    fail-open:export 是三個寫入 workflow（monitor／FSC／Verify）共用的最後一步,不能因為讀不到 config
     就整個掛掉。退回已觀測航線時健康報告仍然有效,只是抓不到「config 有列
     但從未成功抓過」的航線。
     """
@@ -325,7 +325,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
     ).fetchone()["c"]
     total_obs = conn.execute("SELECT COUNT(*) c FROM observations_all").fetchone()["c"]
 
-    # 航線健康。放進 data.json 而非另開檔案:五個 writer 都只 git add
+    # 航線健康。放進 data.json 而非另開檔案:三個寫入 workflow（monitor／FSC／Verify）都只 git add
     # prices.db + docs/data.json（+ 各自的 report），新檔案不會被 commit,
     # 而本輪不授權改 workflow。附帶好處是每輪 commit 的 diff 都會顯示
     # 狀態變化,git log 本身就成為斷線時間軸。

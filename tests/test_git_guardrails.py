@@ -1,6 +1,6 @@
 """`.claude/hooks/block-dangerous-git.sh` 的行為測試。
 
-為什麼這個 hook 值得放進 CI：它保護的是 prices.db——15MB 二進位檔、被 git
+為什麼這個 hook 值得放進 CI：它保護的是 prices.db 與 archive/*.db——數十 MB 的二進位檔、被 git
 追蹤、monitor.yml 每小時 push 一次新觀測上 main，所以本機 main 幾乎永遠落後
 遠端。二進位檔無法合併，一次強制推送就會讓那幾小時的觀測永久消失。
 
