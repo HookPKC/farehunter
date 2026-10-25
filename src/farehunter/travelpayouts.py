@@ -28,6 +28,10 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
 AVIASALES_WEB = "https://www.aviasales.com"
 
+#: TravelpayoutsError.status_code 的特殊值：沒有拿到可用的 HTTP 回應
+#: （逾時、斷線、200 但本體不是 JSON）。runner 據此熔斷，見 MAX_TRANSPORT_ERRORS。
+TRANSPORT_ERROR = 0
+
 
 class TravelpayoutsError(RuntimeError):
     def __init__(self, status_code: int, body: str):
@@ -68,10 +72,18 @@ class TravelpayoutsClient:
                    "Accept-Encoding": "gzip, deflate"}
 
         for attempt in range(1, max_retries + 1):
-            resp = self.session.get(BASE_URL, params=params, headers=headers,
-                                    timeout=60)
+            # 連線層例外必須轉成 TravelpayoutsError：runner 只接這個、照月份跳過。
+            # 2026-10-18 一次 ReadTimeout 原樣拋出，整輪 run() 中止，那一小時
+            # 所有航線的觀測連同 commit、心跳全部丟失。不重試——只少一個月份，
+            # 下一小時就補回來。
+            try:
+                resp = self.session.get(BASE_URL, params=params,
+                                        headers=headers, timeout=60)
+                payload = resp.json() if resp.status_code == 200 else None
+            except requests.RequestException as exc:
+                raise TravelpayoutsError(
+                    TRANSPORT_ERROR, f"{type(exc).__name__}: {exc}") from exc
             if resp.status_code == 200:
-                payload = resp.json()
                 if not payload.get("success", False):
                     raise TravelpayoutsError(200, str(payload.get("error")))
                 return payload

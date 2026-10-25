@@ -4,7 +4,7 @@ import logging
 import sys
 sys.path.insert(0, "src")
 
-from farehunter.runner import run
+from farehunter.runner import run, all_searches_failed
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
@@ -23,3 +23,9 @@ if __name__ == "__main__":
     if _h:
         print(f"航線健康: {_h['counts']}"
               + (f"  異常: {', '.join(_h['degraded'])}" if _h["degraded"] else ""))
+    # 一次都沒拿到 API 回應（token 過期、Travelpayouts 全面故障）→ 讓這步變紅：
+    # 後面的 export／commit／心跳都不跑，healthchecks 會通知。理由見
+    # runner.all_searches_failed。
+    if all_searches_failed(summary):
+        print(f"✖ 本輪 {summary['searched']} 次搜尋全部失敗，以 exit 1 結束")
+        sys.exit(1)

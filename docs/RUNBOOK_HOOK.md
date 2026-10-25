@@ -41,7 +41,7 @@
 Pages 偶爾一次性抽風（歷史上發生過，artifact 都建好了最後一步掛掉）。
 Actions → **Deploy Pages** → 點進紅色那筆 → 右上 **Re-run all jobs**。重跑幾乎必過。
 
-若紅的是 **FareHunter Monitor** 本身：點進 log 看第一個紅色步驟——若是「Run monitor」且訊息提到 401/token，多半是 Travelpayouts token 過期，到 repo Settings → Secrets 更新 `TRAVELPAYOUTS_TOKEN`。若訊息是 `ArchiveIntegrityError`，照下面 §3b。
+若紅的是 **FareHunter Monitor** 本身：點進 log 看第一個紅色步驟——若是「Run monitor」且最後一行是「✖ 本輪 N 次搜尋全部失敗」，往上看 `Search failed` 那幾行：提到 401/token，多半是 Travelpayouts token 過期，到 repo Settings → Secrets 更新 `TRAVELPAYOUTS_TOKEN`；提到 `API error 0: ReadTimeout`／`ConnectionError`，是 Travelpayouts 那端故障，不用處理，恢復後下一班自動補上（只有零星幾個月份逾時時 run 仍是綠的，不會紅）。若訊息是 `ArchiveIntegrityError`，照下面 §3b。
 
 若紅的是 **FSC Snapshot**（或其 log 出現 401 / quota / Invalid API key）：到 SerpAPI dashboard 確認本月額度與 key 狀態（每日最多 6 次、月理論最多約 186 次，方案額度 250，見 dashboard），必要時產生新 key → repo Settings → Secrets 更新 `SERPAPI_KEY` → 舊 key 到 SerpAPI 端撤銷。key 一律不要貼進對話、文件或截圖。
 
@@ -180,7 +180,8 @@ token 存自己 Google 帳號的 Script Properties，用 UrlFetchApp 發同一�
 2. 真的舊了 → Actions 看 FareHunter Monitor 最近的 run：**零 run**＝觸發層問題
    （查 cron-job.org 儀表板該 job 的執行歷史與 token 是否過期）；**有 run 但紅**＝
    執行層問題（點進去看第一個紅色步驟；「Run monitor」紅且 log 提 401/token
-   ＝ Travelpayouts token 過期，去 Secrets 更新 `TRAVELPAYOUTS_TOKEN`；log 是
+   ＝ Travelpayouts token 過期，去 Secrets 更新 `TRAVELPAYOUTS_TOKEN`；提
+   `ReadTimeout`／`ConnectionError` ＝ Travelpayouts 端故障，等它恢復；log 是
    `ArchiveIntegrityError` ＝照 §3b）；
    **run 綠但首頁沒變**＝ deploy 問題（照 §3 Re-run）。
 3. 照 §0 三步手動補一次資料，恢復後再回頭追原因。

@@ -11,7 +11,8 @@ from pathlib import Path
 
 import yaml
 
-from .travelpayouts import TravelpayoutsClient, parse_offers, TravelpayoutsError
+from .travelpayouts import (TravelpayoutsClient, parse_offers, TravelpayoutsError,
+                            TRANSPORT_ERROR)
 from .storage import Store
 from .analyzer import evaluate
 from .notify import notify, channels_configured
@@ -135,6 +136,26 @@ def upcoming_months(n: int, today: date | None = None) -> list[str]:
     return out
 
 
+# 連線層錯誤熔斷：同一輪累計這麼多次就不再呼叫 Travelpayouts，剩下的月份
+# 直接計入 errors。每次逾時要等 60 秒，「掛著不回應」型故障下 80 次搜尋
+# 會拖 80 分鐘——超過 monitor.yml 的 timeout-minutes: 30 照樣被砍，還一路
+# 佔住 farehunter concurrency 群組，擋到 FSC / Verify 與下一小時。
+# 刻意算累計而非連續：時好時壞的逾時一樣會累積到 job 上限。
+# HTTP 錯誤（4xx/5xx）是秒回，不計入。
+MAX_TRANSPORT_ERRORS = 3
+
+
+def all_searches_failed(summary: dict) -> bool:
+    """本輪有該搜的月份、卻沒有任何一次搜尋成功 → run.py 以 exit 1 結束。
+
+    health.py「刻意不改 exit code」是怕擋到好資料的 commit；一次都沒成功時
+    沒有資料可 commit，變紅反而讓心跳停、healthchecks 通知 Hook，也不會跑
+    export 用「現在」重寫 generated_at。guard 跳過（searched=0）與薄航線
+    回空（empty，不算 errors）都不算。
+    """
+    return summary["searched"] > 0 and summary["errors"] == summary["searched"]
+
+
 def run(config_path: str = "config.yaml", db_path: str = "prices.db",
         now: datetime | None = None) -> dict:
     skip, age = guard_decision(db_path)
@@ -165,6 +186,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
     # 濾掉，測試轉紅——而 monitor.yml 先跑 pytest 才抓價，抓價停了 9 小時。
     # 半套的注入比完全不注入更危險：它讓人以為時鐘已經被控制住了。
     today_iso = now.date().isoformat()
+    transport_errors = 0          # 見 MAX_TRANSPORT_ERRORS
 
     try:
         for route in cfg["routes"]:
@@ -182,6 +204,9 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
 
             for month in months:
                 summary["searched"] += 1
+                if transport_errors >= MAX_TRANSPORT_ERRORS:
+                    summary["errors"] += 1
+                    continue
                 try:
                     payload = client.search_month(
                         origin, dest, month,
@@ -193,6 +218,12 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 except TravelpayoutsError as exc:
                     log.error("Search failed %s→%s %s: %s", origin, dest, month, exc)
                     summary["errors"] += 1
+                    if exc.status_code == TRANSPORT_ERROR:
+                        transport_errors += 1
+                        if transport_errors == MAX_TRANSPORT_ERRORS:
+                            log.error("連線層錯誤累計 %d 次，本輪停止呼叫 "
+                                      "Travelpayouts，剩下的月份計入 errors",
+                                      transport_errors)
                     continue
 
                 offers = parse_offers(payload, origin, dest,
