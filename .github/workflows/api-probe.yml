@@ -1,0 +1,39 @@
+name: API Probe (temporary)
+
+# 臨時的免費機票 API 實測（scripts/api_probe/）。只讀：不碰 prices.db、不 commit、
+# 不進 farehunter concurrency 群組，所以不會跟抓價流程排隊。
+# 只在這個工作分支上、改到探測檔案時觸發；實測完整組檔案會從分支刪除，不進 main。
+
+on:
+  push:
+    branches: [claude/funny-thompson-pu3xyg]
+    paths:
+      - ".github/workflows/api-probe.yml"
+      - "scripts/api_probe/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests
+      - name: Probe free flight APIs
+        env:
+          TRAVELPAYOUTS_TOKEN: ${{ secrets.TRAVELPAYOUTS_TOKEN }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          IGNAV_API_KEY: ${{ secrets.IGNAV_API_KEY }}
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+        run: python scripts/api_probe/api_probe.py
