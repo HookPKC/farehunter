@@ -139,6 +139,15 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
   **判讀方式**：比對「最後一次成功 deploy 的 head_sha」與 main HEAD，一致就
   沒事（§5 的三方 SHA 規則；main HEAD 剛好是封存 commit 時見 §5 的例外）。不要為此改 permissions 或 action 版本。
 - 「All jobs were cancelled」email：先套 §4 判讀表，多數可忽略。
+- **KHH→NGO 長期 stale/dead ≠ 斷線**。Travelpayouts 只回 Aviasales 使用者近 7 天
+  實際搜尋過的票價，這條線約 1–3 週才被搜一次：2026-07～09 共 6 段資料，每段
+  都是一筆台灣虎航直飛票價、剛好存活 7 天後消失（最後一段 09-14～09-21），
+  中間是空窗；07-29～08-12 那次促成 health.py 的空窗也是同一原因。其餘時間
+  靠 Google 每 4–5 天抽查，所以健康狀態在 stale/dead 間跳。這條線仍值得留著：
+  09 月前的 4 段快取票價每段都觸發門檻警報，且與 Google 價格吻合。KHH-CTS
+  （每小時約 1–2 個出發日）是同類薄航線。改 `market` 參數可能多抓到別站的
+  搜尋，但效果未知、且不同市場混入同一航線的歷史會動到警報基準——2026-10
+  評估後暫不做，除非使用者重新立案。
 
 ## 7. 已知長期課題（P2，非急務）
 
