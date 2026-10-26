@@ -1,0 +1,114 @@
+name: fli Observe
+
+# fli（Google Flights 內部 API）觀察期，見 docs/adr/0003-fli-google-calendar.md。
+# 只寫 data/fli/*.jsonl.gz：不碰 prices.db、不跑 export、不觸發 Deploy Pages——
+# 現有的抓價、警報、看板完全不受影響。這支壞了或被 Google 擋，只是少了觀察資料。
+#
+# 跟在 FSC Snapshot／Verify Airlines 之後跑：影子比價要對照的正是它們剛寫進
+# prices.db 的 SerpAPI／Scrape.do 實價，間隔越短，兩邊價格越可比。
+#
+# 停用：Actions → fli Observe → ⋯ → Disable workflow（RUNBOOK §3c）。
+
+on:
+  workflow_run:
+    workflows: ["FSC Snapshot", "Verify Airlines"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 要 commit 進 main，所以跟其他寫入者排同一個隊，避免互相推送衝突。
+concurrency:
+  group: farehunter
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Sync to latest main
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --prune --depth=1 origin \
+            +refs/heads/main:refs/remotes/origin/main
+          git checkout -B main refs/remotes/origin/main
+          git reset --hard refs/remotes/origin/main
+          test -z "$(git status --porcelain)" || {
+            echo "Working tree is not clean before observing"
+            git status --short
+            exit 1
+          }
+          echo "Synced main: $(git rev-parse HEAD)"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-fli.txt
+      - name: Run tests
+        run: pip install pytest && python -m pytest tests/ -q
+      - name: Observe fli calendar + shadow comparison
+        id: fli
+        # 全滅（exit 1）也要先把這輪的錯誤紀錄 commit 進去——觀察期報告就是靠這些
+        # 紀錄數「被擋了幾次」——所以這步不直接讓 job 失敗，最後一步再補紅燈。
+        continue-on-error: true
+        run: PYTHONPATH=src python -m farehunter.fli_calendar run config.yaml prices.db data/fli
+      - name: Observation report (last 14 days)
+        if: always()
+        run: |
+          PYTHONPATH=src python -m farehunter.fli_calendar report data/fli 14 | tee report.json
+          { echo '## fli 觀察期報告（近 14 天）'; echo '```json'; cat report.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          rm -f report.json
+      - name: Commit
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "farehunter-bot"
+          git config user.email "bot@users.noreply.github.com"
+          set -euo pipefail
+          BASE_SHA="$(git rev-parse refs/remotes/origin/main)"
+          # 這支只會新增 data/fli 下的檔案；刻意不 add 別的路徑
+          if [ -d data/fli ]; then
+            git add data/fli
+          fi
+          if git diff --cached --quiet; then
+            echo "No data changes to commit"
+            exit 0
+          fi
+          git commit -m "chore: fli observe $(date -u +'%Y-%m-%dT%H:%MZ')"
+          LOCAL_SHA="$(git rev-parse HEAD)"
+          if git push origin HEAD:main; then
+            echo "Push succeeded: ${LOCAL_SHA}"
+          else
+            echo "Initial push did not return success; checking remote state"
+            git fetch --no-tags --prune --depth=1 origin \
+              +refs/heads/main:refs/remotes/origin/main
+            REMOTE_SHA="$(git rev-parse refs/remotes/origin/main)"
+            if [ "${REMOTE_SHA}" = "${LOCAL_SHA}" ]; then
+              echo "Push already reached remote; treating run as successful"
+            elif [ "${REMOTE_SHA}" = "${BASE_SHA}" ]; then
+              echo "Remote did not advance; retrying the same push once after backoff"
+              sleep 5
+              git push origin HEAD:main
+            else
+              echo "NON-FAST-FORWARD: refusing to rebase over another writer"
+              echo "workflow=${GITHUB_WORKFLOW}"
+              echo "run_id=${GITHUB_RUN_ID}"
+              echo "base=${BASE_SHA}"
+              echo "local=${LOCAL_SHA}"
+              echo "remote=${REMOTE_SHA}"
+              exit 1
+            fi
+          fi
+      - name: Fail if the observation run failed
+        if: steps.fli.outcome == 'failure'
+        run: |
+          echo "fli 本輪沒有任何一段日曆有價、也沒有任何比價得到回答（Google 封鎖或 fli 失效？）。"
+          echo "現有監控不受影響；處理方式見 RUNBOOK §3c。"
+          exit 1

@@ -21,6 +21,8 @@ config.yaml ──> runner ──> Aviasales Data API ──> parse ──> SQLi
 - `src/farehunter/analyzer.py` — 低價判斷規則
 - `src/farehunter/notify.py`  — Telegram Bot API / LINE Messaging API push
 - `src/farehunter/runner.py`  — 主流程與日期取樣
+- `src/farehunter/fli_calendar.py` — **觀察中**的免費 Google 日曆實價（fli），只寫
+  `data/fli/`、不進 `prices.db`、不參與任何判斷（見 `docs/adr/0003-fli-google-calendar.md`）
 
 ## 低價判斷規則（任一觸發即通知）
 
@@ -132,7 +134,8 @@ python -m pytest tests/ -v           # 跑測試（不需網路與金鑰）
 
 - **快取資料，非即時報價**：價格來自 Aviasales 使用者近期搜尋，熱門航線（TPE 出發）
   更新頻繁，冷門航線（KHH 出發）可能稀疏或缺資料——首跑後看 log 的
-  `No cached fares` 訊息即可判斷，必要時可在 config 加 `market` 參數調整資料來源市場
+  `No cached fares` 訊息即可判斷。加 `market` 參數**沒有幫助**（2026-10 實測 12 個
+  市場結果完全相同）；冷門線改由 fli 觀察期評估（ADR 0003）
 - **看到的低價可能已失效**：快取價有時效，警報附訂票連結，下訂前務必核對
 - **Google Flights 深連結僅帶「航線＋去回日期」**：連結使用 `q=` 自然語言查詢，
   可用但脆弱；旅客數/艙等依 Google 預設（1 成人、經濟艙），無法保證落到同一筆票或同一價格。

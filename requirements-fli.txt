@@ -1,0 +1,9 @@
+# 只給 .github/workflows/fli-observe.yml 用（見 docs/adr/0003-fli-google-calendar.md）。
+# 刻意不放進 requirements.txt：主流程（monitor／FSC／Verify）不需要這些套件，也不該
+# 因為它們升版或安裝失敗而停擺。fli_calendar 用到 fli 的私有模組（_wire、Client 內部），
+# 版本一律釘死；升版前要重跑 ADR 0003 的實測。
+flights==0.9.0
+curl_cffi==0.16.3
+pydantic==2.13.5
+tenacity==9.2.1
+babel==2.18.0
