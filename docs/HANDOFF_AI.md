@@ -2,7 +2,7 @@
 
 **讀者**：接手本專案的任何 AI 模型（Claude Opus/Sonnet、Codex、GPT 系列或其他），
 以及想了解 AI 協作規範的人類。本文件不綁定任何特定模型；「你」指接手的 AI。
-最後更新：2026-10-25。
+最後更新：2026-10-26。
 
 ---
 
@@ -23,6 +23,9 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 - 快取估價：Travelpayouts/Aviasales，monitor **每小時**（頁面標「≈」「約」）
 - Google 實價：SerpAPI fsc-snapshot **每日** 06:10 UTC（「傳統航空最低」等精確價）
 - 航空公司官網實價：Scrape.do verify-airlines **每日**（驗證看板候選）
+- **觀察中（不參與任何判斷）**：fli Google 日曆 `fli-observe`，跟在 fsc／verify 之後
+  每天約 2 次，只寫 `data/fli/*.jsonl.gz`、**不進 prices.db**（理由與第二階段標準見
+  ADR 0003）。看板、警報、健康檢查都不讀它。
 
 > 曾有第三層「Google 日曆實價」（SearchApi gcal-sweep／longrange-sweep）。
 > SearchApi 的額度是**一次性試用 100 次**（實測跨月不重置），2026-08 用盡且
@@ -47,7 +50,7 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 4. 維運者端：monitor 尾端 optional 心跳（repo secret `HC_PING_URL`，未設即休眠）
    ＋ cron-job.org 失敗 email
 
-**concurrency**：monitor/fsc/verify/archive-db 共用 `farehunter` 群組
+**concurrency**：monitor/fsc/verify/archive-db/fli-observe 共用 `farehunter` 群組
 （`cancel-in-progress: false`＝排隊不互砍）；deploy-pages 獨立 `pages` 群組。
 
 ## 2. 絕對禁區（違反任一項＝事故）
@@ -102,16 +105,17 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 | **排隊補跑** | 兩個 workflow 同時到場，晚到的 queued 後照跑，commit 時間略延後 | 7/9 16:17：verify 與 monitor 同場，兩者都成功（16:17 與 16:18 各一筆 commit） | 不處理。concurrency 正常運作 |
 | **平台單次取消** | run 顯示 cancelled，但當下群組內無人佔用、也非手動取消 | 7/9 06:17：monitor cancelled，當日 fsc/verify 均在 16:1x 才跑（無撞車）→ GitHub 平台偶發 | 單次＋下一班正常＝忽略 |
 
-**升級門檻**：連續 **≥2 小時**沒有新 commit、且首頁時間戳不動，才視為異常，
+**升級門檻**：連續 **≥2 小時**沒有新的 `chore: price observations` commit（其他寫入者
+的 commit 不算）、且首頁時間戳不動，才視為異常，
 照 `RUNBOOK_HOOK.md` §0 三步處理。
 
 ## 5. 部署驗收與 token 規則
 
 - 部署驗收＝**三方 SHA 一致**：main HEAD ＝ Deploy Pages run 的 `head_sha` ＝
   github-pages environment 最新 deployment 的 SHA。缺一不可。
-  自動 commit 裡唯一的合法落差：main HEAD 是 `chore: archive observations` 時
-  （合併 PR 等人工 commit 同理）。Deploy Pages 只跟在 Monitor／FSC／Verify 之後
-  跑，封存也不改 `docs/`，所以不會為它部署；以下一班 Monitor 觸發的 deploy 為準
+  自動 commit 裡唯一的合法落差：main HEAD 是 `chore: archive observations` 或
+  `chore: fli observe` 時（合併 PR 等人工 commit 同理）。Deploy Pages 只跟在 Monitor／FSC／Verify 之後
+  跑，封存與 fli 觀察都不改 `docs/`，所以不會為它們部署；以下一班 Monitor 觸發的 deploy 為準
   （通常一小時內），屆時三方會對上。
 - 手機版 UI 改動需使用者 iOS 實機最終確認。
 - token：fine-grained、只限本 repo、短效期、用完提醒使用者刪除。改一般檔案＝
@@ -150,11 +154,20 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
   中間是空窗；07-29～08-12 那次促成 health.py 的空窗也是同一原因。其餘時間
   靠 Google 每 4–5 天抽查，所以健康狀態在 stale/dead 間跳。這條線仍值得留著：
   09 月前的 4 段快取票價每段都觸發門檻警報，且與 Google 價格吻合。KHH-CTS
-  （每小時約 1–2 個出發日）是同類薄航線。改 `market` 參數可能多抓到別站的
-  搜尋，但效果未知、且不同市場混入同一航線的歷史會動到警報基準——2026-10
-  評估後暫不做，除非使用者重新立案。
+  （每小時約 1–2 個出發日）是同類薄航線。**不要再試 `market` 參數**：2026-10-25
+  實測 12 個市場結果完全相同、11 個端點對 KHH-NGO 全空（ADR 0003）。冷門線的解法
+  改走 fli 觀察期（同一份 ADR）。
+- **fli Observe 紅燈 ≠ 監控故障**。它只寫 `data/fli/`，抓價、警報、看板都不讀；紅燈
+  代表這輪 fli 拿不到資料、被封鎖或讀不到 prices.db，處理見 RUNBOOK §3c。
+  `data/fli/` 的 `chore: fli observe` commit 每天約 2 筆，屬正常。打 Google 的 observe
+  job **刻意不進** `farehunter` 群組（只有 20 秒的 commit job 進），所以不會拖到 monitor；
+  別把 observe 也加進群組（理由見 ADR 0003「決定」）。
 
 ## 7. 已知長期課題（P2，非急務）
+
+- **fli 觀察期**（ADR 0003）：2026-10-26 開始，預計 2026-11-09 跑
+  `python -m farehunter.fli_calendar report data/fli 14`，四項標準都 PASS 才提第二階段
+  （讓 fli 價格參與警報、逐步取代 SerpAPI）。觀察期間不要讓任何既有讀者讀 `data/fli/`。
 
 - **prices.db 成長**：2026-10 已處理（ADR 0002）。出發日已過 30 天的觀測由
   `archive-db` 每日搬到 `archive/`，現行檔超過壓實大小 10% 才 VACUUM，預估

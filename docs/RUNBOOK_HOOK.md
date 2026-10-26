@@ -109,6 +109,32 @@ git 太舊、沒有 `git restore` 時，把那一行換成
   另外推了 commit。沒有任何資料被改，隔天會自動重做。
 - 紅在「Run tests」→ 跟 Monitor 的測試是同一套，Monitor 也會紅，照 §0 處理。
 
+## 3c. fli Observe 紅燈時（觀察期，2026-10-26 起）
+
+**先記住：這支壞了不影響任何東西。** 抓價、LINE 警報、首頁看板都不讀它的資料
+（`data/fli/`），所以不用急。它是在試一個免費的 Google 實價來源（ADR 0003）。
+
+紅的是 **observe** 這個 job 的最後一步（「Fail if the observation run failed」）時：
+點進「Observe fli calendar + shadow comparison」，看**最後一行**那串 JSON 摘要：
+- `"blocked"` 大於 0，或 `"stopped"` 開頭是 `blocked` → Google 擋了 GitHub 的 IP。
+  偶發一次觀察就好；連續兩天都這樣，到 Actions → fli Observe → 右上 ⋯ →
+  **Disable workflow** 停用，再找 AI。
+- `"errors"` 幾乎都是 `google_error` 或 `fli`、而且 `"calendar_ok": 0` → Google 或 fli
+  改版了。同樣先停用、再找 AI。
+- `"problems"` 有 `shadow_targets` → 讀不到 prices.db；通常跟 Monitor 那邊的問題是同
+  一件事，先照 §0 看 Monitor。
+- 沒有摘要、log 停在半途 → 程式出錯或逾時；把 log 交給 AI。
+
+其他紅法：
+- 紅在「Install dependencies」→ fli 的套件裝不起來（例如被下架）。Monitor 不受影響，
+  先停用、再找 AI。
+- 紅在「Run tests」→ 跟 Monitor 同一套測試，Monitor 也會紅，照 §0 處理。
+- **commit** 這個 job 紅在「Commit」且 log 有 `NON-FAST-FORWARD` → 跟別的寫入者撞到，
+  **這一輪的紀錄就不要了**（下一輪照常），不用處理。
+
+**看觀察結果**：Actions → fli Observe → 點最新一筆 → 頁面最下方「fli 觀察期報告」。
+`criteria` 三項都是 PASS，就可以請 AI 提第二階段。
+
 ## 4. 設定卡：cron-job.org 外部排程（讓更新不再依賴 GitHub 排程器）
 
 > ✅ **狀態：已於 2026-07-07 完成上線**（每小時 `:17`，時區 Asia/Taipei，

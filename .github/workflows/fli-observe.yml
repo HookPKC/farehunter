@@ -1,0 +1,176 @@
+name: fli Observe
+
+# fli（Google Flights 內部 API）觀察期，見 docs/adr/0003-fli-google-calendar.md。
+# 只寫 data/fli/*.jsonl.gz：不碰 prices.db、不跑 export、不觸發 Deploy Pages——
+# 現有的抓價、警報、看板都不讀它。這支壞了或被 Google 擋，只是少了觀察資料。
+#
+# 跟在 FSC Snapshot／Verify Airlines 之後跑：影子比價要對照的正是它們剛寫進
+# prices.db 的 SerpAPI／Scrape.do 實價，間隔越短，兩邊價格越可比。
+#
+# 拆成兩個 job：
+# - observe：打 Google 約 5–6 分鐘（最多 10 分鐘，程式內的時限）。**不進** farehunter
+#   排隊群組——進了就會整段佔住鎖，讓剛好撞上的 :17 monitor 延後；延後超過 5 分鐘，
+#   下一班就會被 55 分鐘 guard 誤判成「剛抓過」而跳過一小時。權限唯讀、不保存 git
+#   憑證：這裡會裝一串第三方套件，不該讓它們碰到可寫 repo 的 token。
+# - commit：只在 main 上、只做「寫檔 + commit + push」，才進 farehunter 群組（約 20 秒）。
+#   observe 全滅時照樣 commit 這輪的錯誤紀錄（報告靠它數被擋幾次），再由 observe 變紅。
+#
+# 停用：Actions → fli Observe → ⋯ → Disable workflow（RUNBOOK §3c）。
+
+on:
+  workflow_run:
+    workflows: ["FSC Snapshot", "Verify Airlines"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: fli-observe-${{ github.ref }}
+      cancel-in-progress: false
+    outputs:
+      name: ${{ steps.out.outputs.name }}
+      data: ${{ steps.out.outputs.data }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-fli.txt
+      - name: Run tests
+        run: pip install pytest && python -m pytest tests/ -q
+      - name: Observe fli calendar + shadow comparison
+        id: fli
+        # 全滅（exit 1）也要讓後面的步驟把這輪紀錄交給 commit job，所以這步不直接
+        # 讓 job 失敗，最後一步再補紅燈。程式內有 10 分鐘時限，這裡的 15 分鐘是保險。
+        continue-on-error: true
+        timeout-minutes: 15
+        run: PYTHONPATH=src python -m farehunter.fli_calendar run config.yaml prices.db data/fli
+      - name: Hand the new record file to the commit job
+        id: out
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 這輪新寫的檔案（checkout 裡原有的檔案不算）；正常只有一個，約 15–20 KB
+          mapfile -t NEW < <(git ls-files --others --exclude-standard data/fli)
+          if [ "${#NEW[@]}" -eq 0 ]; then
+            echo "No record file was written"
+            exit 0
+          fi
+          test "${#NEW[@]}" -eq 1 || { echo "Expected one new file, got: ${NEW[*]}"; exit 1; }
+          echo "name=$(basename "${NEW[0]}")" >> "$GITHUB_OUTPUT"
+          echo "data=$(base64 -w0 "${NEW[0]}")" >> "$GITHUB_OUTPUT"
+      - name: Observation report (last 14 days)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          PYTHONPATH=src python -m farehunter.fli_calendar report data/fli 14 | tee report.json
+          { echo '## fli 觀察期報告（近 14 天，含本輪）'; echo '```json'; cat report.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail if the observation run failed
+        if: steps.fli.outcome != 'success'
+        run: |
+          echo "fli 本輪異常：全部沒拿到價、出現封鎖頁、prices.db 讀不到，或程式出錯／逾時。"
+          echo "細節看「Observe fli calendar + shadow comparison」最後一行摘要的 errors／stopped／problems。"
+          echo "現有監控不受影響；處理方式見 RUNBOOK §3c。"
+          exit 1
+
+  commit:
+    needs: observe
+    # observe 紅了也要跑（紀錄照樣進 repo）；被取消或沒有檔案就不跑
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.observe.outputs.name != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    # 只有這個 job 進共用群組，跟其他寫入者排隊、不互相推送衝突
+    concurrency:
+      group: farehunter
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Sync to latest main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --prune --depth=1 origin \
+            +refs/heads/main:refs/remotes/origin/main
+          git checkout -B main refs/remotes/origin/main
+          git reset --hard refs/remotes/origin/main
+          test -z "$(git status --porcelain)" || {
+            echo "Working tree is not clean before committing"
+            git status --short
+            exit 1
+          }
+          LOCAL_SHA="$(git rev-parse HEAD)"
+          REMOTE_SHA="$(git rev-parse refs/remotes/origin/main)"
+          echo "Synced main: ${LOCAL_SHA}"
+          test "${LOCAL_SHA}" = "${REMOTE_SHA}" || {
+            echo "HEAD is not equal to origin/main before committing"
+            exit 1
+          }
+      - name: Write the record file
+        env:
+          NAME: ${{ needs.observe.outputs.name }}
+          DATA: ${{ needs.observe.outputs.data }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${NAME}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{4}Z(-[0-9]+)?\.jsonl\.gz$ ]] || {
+            echo "Unexpected file name: ${NAME}"; exit 1; }
+          mkdir -p data/fli
+          test ! -e "data/fli/${NAME}" || { echo "data/fli/${NAME} already exists"; exit 1; }
+          printf '%s' "${DATA}" | base64 -d > "data/fli/${NAME}"
+          gzip -t "data/fli/${NAME}"
+      - name: Commit
+        run: |
+          git config user.name "farehunter-bot"
+          git config user.email "bot@users.noreply.github.com"
+          set -euo pipefail
+          BASE_SHA="$(git rev-parse refs/remotes/origin/main)"
+          # 這支只會新增 data/fli 下的檔案；刻意不 add 別的路徑
+          git add data/fli
+          if git diff --cached --quiet; then
+            echo "No data changes to commit"
+            exit 0
+          fi
+          git commit -m "chore: fli observe $(date -u +'%Y-%m-%dT%H:%MZ')"
+          LOCAL_SHA="$(git rev-parse HEAD)"
+          if git push origin HEAD:main; then
+            echo "Push succeeded: ${LOCAL_SHA}"
+          else
+            echo "Initial push did not return success; checking remote state"
+            git fetch --no-tags --prune --depth=1 origin \
+              +refs/heads/main:refs/remotes/origin/main
+            REMOTE_SHA="$(git rev-parse refs/remotes/origin/main)"
+            if [ "${REMOTE_SHA}" = "${LOCAL_SHA}" ]; then
+              echo "Push already reached remote; treating run as successful"
+            elif [ "${REMOTE_SHA}" = "${BASE_SHA}" ]; then
+              echo "Remote did not advance; retrying the same push once after backoff"
+              sleep 5
+              git push origin HEAD:main
+            else
+              echo "NON-FAST-FORWARD: refusing to rebase over another writer"
+              echo "workflow=${GITHUB_WORKFLOW}"
+              echo "run_id=${GITHUB_RUN_ID}"
+              echo "base=${BASE_SHA}"
+              echo "local=${LOCAL_SHA}"
+              echo "remote=${REMOTE_SHA}"
+              exit 1
+            fi
+          fi

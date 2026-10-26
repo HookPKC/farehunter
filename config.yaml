@@ -7,7 +7,7 @@ defaults:
   drop_pct: 25              # 低於中位數 25% 觸發
   min_history: 30           # 累積 30 筆觀察後才啟用統計規則
   pause_seconds: 0.6
-  # market: tw              # 資料來源市場；先不設，首跑後視資料量再調整
+  # market: 不要設——2026-10 實測 12 個市場結果完全相同、對冷門線沒有幫助（ADR 0003）
 
 routes:
   - origin: TPE
