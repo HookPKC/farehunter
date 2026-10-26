@@ -29,9 +29,9 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 
 > 曾有第三層「Google 日曆實價」（SearchApi gcal-sweep／longrange-sweep）。
 > SearchApi 的額度是**一次性試用 100 次**（實測跨月不重置），2026-08 用盡且
-> 不續費，該層的程式已於同月移除；`long_range` 表本身（1,277 筆、零讀者）仍留在
-> prices.db 當死資料，要刪需另案經使用者同意。歷史 `provider='searchapi'` 觀測
-> 仍留在 DB，標籤對應表因此保留。
+> 不續費，該層的程式已於同月移除；留下的 `long_range` 表（1,277 筆、零讀者）經使用者
+> 同意，2026-10-26 起由 `Store.__init__` 刪除（舊資料在 git 歷史的 prices.db 裡）。
+> 歷史 `provider='searchapi'` 觀測仍留在 DB，標籤對應表因此保留。
 
 **付費 API 額度（2026-08 起可觀測，不要再憑印象推論）**：
 `docs/quota.json` 由 fsc-snapshot 每日寫入並 commit，內容是 SerpAPI 真實
@@ -171,8 +171,11 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 ## 7. 已知長期課題（P2，非急務）
 
 - **fli 觀察期**（ADR 0003）：2026-10-26 開始，預計 2026-11-09 跑
-  `python -m farehunter.fli_calendar report data/fli 14`，四項標準都 PASS 才提第二階段
-  （讓 fli 價格參與警報、逐步取代 SerpAPI）。觀察期間不要讓任何既有讀者讀 `data/fli/`。
+  `python -m farehunter.fli_calendar report data/fli 15`（涵蓋 10-26 第一輪），四項標準都
+  PASS 才提第二階段（讓 fli 價格參與警報、逐步取代 SerpAPI）。日曆標準的計分規則
+  2026-10-26 修正過：出過錯的時段照算，只有每次都明確回空的才當成沒有班表（ADR 0003）；
+  看 `calendar_by_route` 找拖累的航線。本 session 排了 2026-11-10 08:30（台灣）提醒跑報告。
+  觀察期間不要讓任何既有讀者讀 `data/fli/`。
 
 - **prices.db 成長**：2026-10 已處理（ADR 0002）。出發日已過 30 天的觀測由
   `archive-db` 每日搬到 `archive/`，現行檔超過壓實大小 10% 才 VACUUM，預估

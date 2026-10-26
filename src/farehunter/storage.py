@@ -88,6 +88,11 @@ class Store:
         ):
             if col not in acols:
                 self.conn.execute(ddl)
+        # migration: long_range 是已移除的 SearchApi 長程日曆層留下的表——2026-07-18
+        # 一分鐘內寫進 1,277 筆後就沒有任何讀者（HANDOFF §1）。使用者 2026-10-26 同意
+        # 刪除；資料仍在 git 歷史的 prices.db 裡（checkout 2026-10-26 以前的版本）。
+        # 寫明 main.：此時封存檔還沒 attach，但不靠呼叫順序保證只刪主檔的表。
+        self.conn.execute("DROP TABLE IF EXISTS main.long_range")
         self.conn.commit()
         # 一開檔就核對封存檔（ADR 0002）。所有 writer（monitor／FSC／Verify／
         # cheap_day_notify）都在打任何付費 API 之前建 Store，封存檔不完整時在
