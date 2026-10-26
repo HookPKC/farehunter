@@ -422,6 +422,12 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
         "calendar_first_try_ok": sum(r["status"] == "ok" and r["attempts"] == 1 for r in calendar),
         "calendar_priced_days": sum(len(r["days"]) for r in calendar),
         "shadow_targets": len(shadow), "shadow_answered": sh_ok,
+        # 逐筆列在摘要裡：workflow log 直接看得到每組比價，不必下載 .gz
+        "shadow": [f"{r['route']} {r['depart']}/{r['return']} {r['status']}"
+                   + (f" {r['diff_pct']:+.1f}% (fli {r['fli_price']:.0f} vs "
+                      f"{r['ref_provider']} {r['ref_price']:.0f}, lag {r['lag_hours']}h)"
+                      if r["status"] == "ok" else "")
+                   for r in shadow],
         "all_failed": backend.requests > 0 and cal_ok == 0 and sh_ok == 0,
     }
     path = write_records(out, now, calendar + shadow + [summary])

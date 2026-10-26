@@ -224,6 +224,8 @@ def test_run_writes_gz_jsonl_and_summary(tmp_path):
     assert kinds.count("calendar") == 2 * len(fc.windows(TODAY, 62))
     assert kinds.count("shadow") == 1 and kinds[-1] == "summary"
     assert summary["all_failed"] is False and summary["calendar_ok"] == kinds.count("calendar")
+    assert summary["shadow"] == [
+        "KHH-NGO 2026-12-07/2026-12-12 ok +0.0% (fli 14891 vs serpapi 14891, lag 2.0h)"]
     assert summary["started_at"] == NOW.isoformat(timespec="seconds")
     assert summary["finished_at"] >= summary["started_at"]
 
