@@ -148,6 +148,11 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
   那一小時全丟之後，改成照月份跳過；同一輪累計 3 次就熔斷、不再呼叫 API
   （`runner.MAX_TRANSPORT_ERRORS`）。只有「整輪一次都沒成功」才會 exit 1 變紅
   （`runner.all_searches_failed`），token 過期也走這條。
+- 綠色 run 的 log 有 `LINE send failed (ReadTimeout)`／`Telegram send failed
+  (ConnectionError)` 接著「通知發送失敗，保留至下一輪重試」（Verify Airlines 則是
+  「推播失敗」）＝推播管道一時連不上，設計行為：那則通知沒記成已送出，下一輪會再送。
+  2026-10-26 以前這種例外會直接讓整輪掛掉、Export／Commit 都不跑（`notify.py`）。
+  只有整天都送不出去才需要查 token 或管道設定。
 - **KHH→NGO 長期 stale/dead ≠ 斷線**。Travelpayouts 只回 Aviasales 使用者近 7 天
   實際搜尋過的票價，這條線約 1–3 週才被搜一次：2026-07～09 共 6 段資料，每段
   都是一筆台灣虎航直飛票價、剛好存活 7 天後消失（最後一段 09-14～09-21），

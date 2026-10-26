@@ -318,7 +318,7 @@ def test_dry_run_sends_nothing(tmp_path, monkeypatch):
 
 
 def test_main_never_fails_the_workflow(tmp_path):
-    """推播跑在抓價與 commit 之後；為了通知失敗讓整輪變紅會遮掉真正的資料問題。"""
+    """推播排在 Verify Airlines 的 Commit 之前；它紅了，整輪驗證結果就不會 commit。"""
     assert C.main([str(tmp_path / "p.db"), str(tmp_path / "nope.json")]) == 0
 
 
