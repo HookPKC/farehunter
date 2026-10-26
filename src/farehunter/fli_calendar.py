@@ -620,10 +620,21 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
                     and r["lag_hours"] <= SHADOW_MAX_LAG_H:
                 cal_vs_ref.append(round((price - r["ref_price"]) / r["ref_price"] * 100, 2))
 
-    # 某 (航線, 時段序號) 整段期間從沒拿到價 → 視為沒有班表，不算失敗；
-    # 其他輪拿到過、這輪卻空或錯 → 才算漏報。
-    ever_ok = {(r["route"], r.get("idx")) for r in cal if r["status"] == "ok"}
-    scored = [r for r in cal if (r["route"], r.get("idx")) in ever_ok]
+    # 某 (航線, 時段序號) 整段期間每一次都是 Google 明確回「沒有航班」（empty）→
+    # 視為沒有班表，不計。只要有一次是錯誤（google_error、逾時、被 Breaker 跳過），
+    # 那一組就照算：錯誤不是「沒有班表」的證據。原本的規則是「從沒拿到價就不計」，
+    # 2026-10-26 main 第一輪 KHH-NGO 5 段全是 google_error，整組被剔除，報告寫
+    # error_rate 0、PASS——一條航線整整兩週都失敗也照樣 PASS。
+    statuses: dict[tuple, set] = {}
+    for r in cal:
+        statuses.setdefault((r["route"], r.get("idx")), set()).add(r["status"])
+    no_schedule = {k for k, st in statuses.items() if st == {"empty"}}
+    scored = [r for r in cal if (r["route"], r.get("idx")) not in no_schedule]
+    by_route: dict[str, list[int]] = {}
+    for r in scored:
+        tally = by_route.setdefault(r["route"], [0, 0])
+        tally[0] += r["status"] == "ok"
+        tally[1] += 1
     fresh = [r for r in sh if r["status"] == "ok" and r["lag_hours"] is not None
              and r["lag_hours"] <= SHADOW_MAX_LAG_H]
     tol = SHADOW_TOLERANCE * 100
@@ -633,8 +644,9 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
         "red_runs": sum(failed(r) for r in runs if "problems" in r),
         "requests": sum(r.get("requests", 0) for r in runs),
         "calendar_windows": len(cal), "calendar_scored": len(scored),
-        "calendar_never_priced": sorted({f"{r['route']}#{r.get('idx')}" for r in cal} - {
-            f"{k[0]}#{k[1]}" for k in ever_ok}),
+        "calendar_no_schedule": sorted(f"{k[0]}#{k[1]}" for k in no_schedule),
+        # 一條航線整段失敗時，總比例可能還過得了門檻；逐航線列出才看得到
+        "calendar_by_route": {k: f"{ok}/{n}" for k, (ok, n) in sorted(by_route.items())},
         "calendar_ok_rate": _rate(sum(r["status"] == "ok" for r in scored), len(scored)),
         "calendar_first_try_rate": _rate(
             sum(r["status"] == "ok" and r["attempts"] == 1 for r in scored), len(scored)),

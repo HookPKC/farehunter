@@ -506,7 +506,7 @@ def _sum(**kw):
     return s
 
 
-def test_report_scores_only_windows_that_ever_had_prices(tmp_path):
+def test_report_skips_only_windows_google_always_said_have_no_flights(tmp_path):
     out = tmp_path / "fli"
     _write(out, "2026-10-25T0341Z", [
         _cal("KHH-NGO", 0, "ok"), _cal("KHH-NGO", 1, "empty"),      # #1 從沒價 → 沒班表
@@ -517,8 +517,9 @@ def test_report_scores_only_windows_that_ever_had_prices(tmp_path):
         _cal("TPE-NRT", 0, "ok"), _sh(-3.0), _sum(requests=8)])
     res = fc.report(str(out), days=14, now=NOW)
     assert res["runs"] == 2 and res["requests"] == 18 and res["red_runs"] == 0
-    assert res["calendar_never_priced"] == ["KHH-NGO#1"]
+    assert res["calendar_no_schedule"] == ["KHH-NGO#1"]
     assert res["calendar_scored"] == 4
+    assert res["calendar_by_route"] == {"KHH-NGO": "1/2", "TPE-NRT": "2/2"}
     assert res["calendar_ok_rate"] == 0.75                    # 3/4
     assert res["calendar_first_try_rate"] == 0.5              # 2/4（一筆重試才成功）
     assert res["calendar_error_rate"] == 0.25
@@ -527,6 +528,40 @@ def test_report_scores_only_windows_that_ever_had_prices(tmp_path):
     assert res["criteria"]["calendar_ok_rate>=95%"] == "FAIL"
     assert res["criteria"]["no_blocking"] == "PASS"
     assert res["error_kinds"] == {"google_error": 1}
+
+
+def test_report_counts_windows_that_only_ever_failed(tmp_path):
+    """2026-10-26 main 第一輪：KHH-NGO 5 段都是 google_error、從沒拿到價。
+
+    舊規則把「從沒拿到價」一律當成沒有班表剔除，報告寫 error_rate 0、PASS。
+    錯誤不是沒有班表的證據——只有 Google 每次都明確回空才剔除。
+    """
+    out = tmp_path / "fli"
+    _write(out, "2026-10-26T0226Z", [
+        *[_cal("TPE-NRT", i, "ok") for i in range(5)],
+        *[_cal("KHH-NGO", i, "error", attempts=2,
+               errors=["google_error: x", "google_error: x"]) for i in range(5)],
+        _cal("KHH-OKA", 4, "error", attempts=2,
+             errors=["transport: Timeout", "google_error: x"]),
+        _cal("KHH-CTS", 4, "empty"),                              # 真的沒班表
+        _sum()])
+    res = fc.report(str(out), days=14, now=NOW)
+    assert res["calendar_no_schedule"] == ["KHH-CTS#4"]
+    assert res["calendar_scored"] == 11
+    assert res["calendar_ok_rate"] == pytest.approx(5 / 11, abs=1e-4)
+    assert res["calendar_error_rate"] == pytest.approx(6 / 11, abs=1e-4)
+    assert res["calendar_by_route"] == {"KHH-NGO": "0/5", "KHH-OKA": "0/1", "TPE-NRT": "5/5"}
+    assert res["criteria"]["calendar_ok_rate>=95%"] == "FAIL"
+
+
+def test_report_counts_a_window_that_was_empty_once_and_failed_once(tmp_path):
+    """同一段一輪回空、一輪出錯：不能確定沒有班表，照算。"""
+    out = tmp_path / "fli"
+    _write(out, "2026-10-25T0341Z", [_cal("KHH-NGO", 3, "empty"), _sum()])
+    _write(out, "2026-10-26T0341Z", [_cal("KHH-NGO", 3, "error"), _sum()])
+    res = fc.report(str(out), days=14, now=NOW)
+    assert res["calendar_no_schedule"] == []
+    assert res["calendar_scored"] == 2 and res["calendar_ok_rate"] == 0.0
 
 
 def test_report_lag_boundary_is_inclusive(tmp_path):
