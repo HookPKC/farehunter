@@ -105,7 +105,8 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 | **排隊補跑** | 兩個 workflow 同時到場，晚到的 queued 後照跑，commit 時間略延後 | 7/9 16:17：verify 與 monitor 同場，兩者都成功（16:17 與 16:18 各一筆 commit） | 不處理。concurrency 正常運作 |
 | **平台單次取消** | run 顯示 cancelled，但當下群組內無人佔用、也非手動取消 | 7/9 06:17：monitor cancelled，當日 fsc/verify 均在 16:1x 才跑（無撞車）→ GitHub 平台偶發 | 單次＋下一班正常＝忽略 |
 
-**升級門檻**：連續 **≥2 小時**沒有新 commit、且首頁時間戳不動，才視為異常，
+**升級門檻**：連續 **≥2 小時**沒有新的 `chore: price observations` commit（其他寫入者
+的 commit 不算）、且首頁時間戳不動，才視為異常，
 照 `RUNBOOK_HOOK.md` §0 三步處理。
 
 ## 5. 部署驗收與 token 規則
@@ -157,13 +158,15 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
   實測 12 個市場結果完全相同、11 個端點對 KHH-NGO 全空（ADR 0003）。冷門線的解法
   改走 fli 觀察期（同一份 ADR）。
 - **fli Observe 紅燈 ≠ 監控故障**。它只寫 `data/fli/`，抓價、警報、看板都不讀；紅燈
-  代表這輪 fli 完全拿不到資料（Google 封鎖或 fli 失效），處理見 RUNBOOK §3c。
-  `data/fli/` 的 `chore: fli observe` commit 每天約 2 筆，屬正常。
+  代表這輪 fli 拿不到資料、被封鎖或讀不到 prices.db，處理見 RUNBOOK §3c。
+  `data/fli/` 的 `chore: fli observe` commit 每天約 2 筆，屬正常。打 Google 的 observe
+  job **刻意不進** `farehunter` 群組（只有 20 秒的 commit job 進），所以不會拖到 monitor；
+  別把 observe 也加進群組（理由見 ADR 0003「決定」）。
 
 ## 7. 已知長期課題（P2，非急務）
 
 - **fli 觀察期**（ADR 0003）：2026-10-26 開始，預計 2026-11-09 跑
-  `python -m farehunter.fli_calendar report data/fli 14`，三項標準都 PASS 才提第二階段
+  `python -m farehunter.fli_calendar report data/fli 14`，四項標準都 PASS 才提第二階段
   （讓 fli 價格參與警報、逐步取代 SerpAPI）。觀察期間不要讓任何既有讀者讀 `data/fli/`。
 
 - **prices.db 成長**：2026-10 已處理（ADR 0002）。出發日已過 30 天的觀測由

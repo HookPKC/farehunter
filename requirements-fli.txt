@@ -1,9 +1,39 @@
 # 只給 .github/workflows/fli-observe.yml 用（見 docs/adr/0003-fli-google-calendar.md）。
 # 刻意不放進 requirements.txt：主流程（monitor／FSC／Verify）不需要這些套件，也不該
-# 因為它們升版或安裝失敗而停擺。fli_calendar 用到 fli 的私有模組（_wire、Client 內部），
-# 版本一律釘死；升版前要重跑 ADR 0003 的實測。
-flights==0.9.0
-curl_cffi==0.16.3
-pydantic==2.13.5
-tenacity==9.2.1
+# 因為它們升版或安裝失敗而停擺。
+#
+# 整棵依賴樹全部釘死（2026-10-26 在 Python 3.12 乾淨環境 `pip install -r requirements.txt
+# -r requirements-fli.txt` 後 `pip freeze`，`pip check` 無衝突）：fli_calendar 用到 fli 的
+# 私有模組（_wire、_decoders、Client 內部），任何一個升版都可能悄悄改變行為。升版前要重跑
+# ADR 0003 的實測與 tests/test_fli_calendar.py（裝了 fli 才會跑 FliBackend 那幾個）。
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
 babel==2.18.0
+certifi==2026.10.23
+cffi==2.1.1
+charset-normalizer==3.5.2
+curl_cffi==0.16.3
+flights==0.9.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.20
+markdown-it-py==4.2.0
+mdurl==0.1.2
+plotext==6.1.0
+pycparser==3.12
+pydantic==2.13.5
+pydantic_core==2.46.5
+Pygments==2.21.0
+python-dotenv==1.2.4
+PyYAML==6.0.3
+ratelimit==2.2.1
+requests==2.34.2
+rich==15.0.0
+shellingham==1.5.4
+tenacity==9.2.1
+typer==0.27.3
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==2.8.0
