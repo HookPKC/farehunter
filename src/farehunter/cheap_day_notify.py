@@ -256,8 +256,10 @@ def main(argv=None) -> int:
             dry_run=dry)
     print(f"便宜日推播: 看板 {s['board']} 筆, 合格 {s['candidates']}, "
           f"抑制 {s['suppressed']}, 送出 {s['sent']}, 失敗 {s['failed']}")
-    # 推播失敗不讓 workflow 紅燈：這一步跑在抓價與 commit 之後，
-    # 為了通知失敗而讓整輪變紅會遮掉真正的資料問題。失敗看 log。
+    # 推播失敗不讓 workflow 紅燈：Verify Airlines 裡這一步排在 Commit 之前
+    # （去重紀錄要跟著這輪一起 commit），這一步紅了 Commit 就不跑，整輪驗證結果
+    # 跟著丟掉。連線逾時／斷線在 notify.send_* 裡已經變成「送失敗」，不會冒到
+    # 這裡。失敗看 log。
     return 0
 
 
