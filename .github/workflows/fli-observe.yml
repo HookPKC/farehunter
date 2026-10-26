@@ -22,9 +22,6 @@ on:
     workflows: ["FSC Snapshot", "Verify Airlines"]
     types: [completed]
   workflow_dispatch:
-  push:   # TEMPORARY：分支實測用，合併前移除（分支上 commit job 不會跑）
-    branches: [claude/funny-thompson-pu3xyg]
-    paths: [".github/workflows/fli-observe.yml", "src/farehunter/fli_calendar.py"]
 
 permissions:
   contents: read
