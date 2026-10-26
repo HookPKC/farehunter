@@ -123,17 +123,33 @@ def format_alert(offer: Offer, verdict: Verdict, state=None) -> str:
     )
 
 
+def _log_transport_error(channel: str, exc: Exception, token: str) -> None:
+    """逾時／斷線只記 log、當成「沒送出」，不往外丟。
+
+    呼叫端（runner、cheap_day_notify）本來就把 False 當成「保留到下一輪重試」；
+    讓例外冒出去的話，monitor 會在迴圈中途死掉、Export／Commit 都不跑，Verify
+    Airlines 的推播步驟也排在 Commit 之前——一次推播逾時就丟掉整輪資料。
+    例外訊息會帶完整 URL，Telegram 的 token 就在路徑裡，先遮掉再記。
+    """
+    msg = str(exc).replace(token, "***")[:300]
+    log.error("%s send failed (%s): %s", channel, type(exc).__name__, msg)
+
+
 def send_telegram(text: str, session: requests.Session | None = None) -> bool:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         return False
     s = session or requests
-    resp = s.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text},
-        timeout=30,
-    )
+    try:
+        resp = s.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        _log_transport_error("Telegram", exc, token)
+        return False
     if resp.status_code != 200:
         log.error("Telegram send failed %s: %s", resp.status_code, resp.text[:300])
         return False
@@ -146,12 +162,16 @@ def send_line(text: str, session: requests.Session | None = None) -> bool:
     if not token or not user_id:
         return False
     s = session or requests
-    resp = s.post(
-        "https://api.line.me/v2/bot/message/push",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"to": user_id, "messages": [{"type": "text", "text": text[:5000]}]},
-        timeout=30,
-    )
+    try:
+        resp = s.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"to": user_id, "messages": [{"type": "text", "text": text[:5000]}]},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        _log_transport_error("LINE", exc, token)
+        return False
     if resp.status_code != 200:
         log.error("LINE send failed %s: %s", resp.status_code, resp.text[:300])
         return False
