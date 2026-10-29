@@ -17,6 +17,11 @@ from .normalize import CACHE_SOURCES
 
 log = logging.getLogger(__name__)
 
+#: （連線, 讀取）秒數。原本 30 秒一個數字，requests 會連線、讀取各等 30 秒：管道掛掉時
+#: 每則通知最多卡約 1 分鐘，一輪有好幾則警報就拖住整輪。兩邊正常都在 1–2 秒內回應；
+#: 送不出去的會留到下一輪重試（見 _log_transport_error），不必在這裡久等。
+SEND_TIMEOUT = (5, 20)
+
 
 WEEKDAYS = "一二三四五六日"
 
@@ -145,7 +150,7 @@ def send_telegram(text: str, session: requests.Session | None = None) -> bool:
         resp = s.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat_id, "text": text},
-            timeout=30,
+            timeout=SEND_TIMEOUT,
         )
     except requests.RequestException as exc:
         _log_transport_error("Telegram", exc, token)
@@ -167,7 +172,7 @@ def send_line(text: str, session: requests.Session | None = None) -> bool:
             "https://api.line.me/v2/bot/message/push",
             headers={"Authorization": f"Bearer {token}"},
             json={"to": user_id, "messages": [{"type": "text", "text": text[:5000]}]},
-            timeout=30,
+            timeout=SEND_TIMEOUT,
         )
     except requests.RequestException as exc:
         _log_transport_error("LINE", exc, token)
