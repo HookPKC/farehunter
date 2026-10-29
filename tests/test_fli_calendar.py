@@ -494,10 +494,10 @@ def _cal(route, idx, status, attempts=1, errors=None, days=None):
 
 
 def _sh(diff, lag=1.0, status="ok", route="KHH-NGO", dep="2026-12-07", ret="2026-12-12",
-        ref=14891.0, errors=()):
+        ref=14891.0, errors=(), ref_at=None, provider="serpapi"):
     return {"kind": "shadow", "status": status, "diff_pct": diff, "lag_hours": lag,
             "errors": list(errors), "route": route, "depart": dep, "return": ret,
-            "ref_price": ref}
+            "ref_price": ref, "ref_observed_at": ref_at, "ref_provider": provider}
 
 
 def _sum(**kw):
@@ -581,17 +581,51 @@ def test_report_counts_blocks_even_when_the_retry_succeeded(tmp_path):
 
 def test_report_compares_calendar_prices_with_reference(tmp_path):
     out = tmp_path / "fli"
+    ref_at = "2026-10-26T03:30:00+00:00"                        # 日曆那輪 03:41 開始
     _write(out, "2026-10-26T0341Z", [
         _cal("KHH-NGO", 0, "ok", days={"2026-12-07": 15000.0, "2026-12-08": 1.0}),
-        _sh(0.0, ref=14891.0),                                   # 住 5 晚 → 可比，+0.7%
-        _sh(0.0, dep="2026-12-08", ret="2026-12-15"),            # 住 7 晚 → 日曆不可比
-        _sh(0.0, dep="2026-12-09", ret="2026-12-14"),            # 日曆那天沒價 → 不可比
-        _sh(0.0, lag=9.0),                                       # 太舊 → 不評
+        _sh(0.0, ref=14891.0, ref_at=ref_at),                    # 住 5 晚 → 可比，+0.7%
+        _sh(0.0, dep="2026-12-08", ret="2026-12-15", ref_at=ref_at),  # 住 7 晚 → 不可比
+        _sh(0.0, dep="2026-12-09", ret="2026-12-14", ref_at=ref_at),  # 日曆那天沒價
+        _sh(0.0, ref_at="2026-10-25T18:00:00+00:00"),            # 參考價比日曆早 9.7h → 不評
+        _sh(0.0),                                                # 沒有參考時刻 → 不評
         _sum()])
     res = fc.report(str(out), now=NOW)
     assert res["calendar_vs_ref_pairs"] == 1
     assert res["calendar_vs_ref_within_rate"] == 1.0
     assert res["criteria"]["calendar_vs_ref_within_2%>=90%"] == "PASS"
+
+
+def test_report_pairs_the_calendar_from_another_run(tmp_path):
+    """2026-10-26：12:26 那輪掃了日曆；12:49 那輪（FSC 剛跑完）30 分鐘內不重掃，
+    只做影子比價。原本只配同一輪的日曆，那輪的參考價全部沒得比。"""
+    out = tmp_path / "fli"
+    now = datetime(2026, 10, 26, 14, 0, tzinfo=timezone.utc)
+    _write(out, "2026-10-26T0600Z", [                                   # 6.8h 前：太遠
+        _cal("TPE-NRT", 0, "ok", days={"2026-12-17": 1.0}), _sum()])
+    _write(out, "2026-10-26T0900Z", [                                   # 3.8h 前：可用但較遠
+        _cal("TPE-NRT", 0, "ok", days={"2026-12-17": 9999.0}), _sum()])
+    _write(out, "2026-10-26T1226Z", [
+        _cal("TPE-NRT", 0, "ok", days={"2026-12-17": 8499.0}), _sum()])
+    _write(out, "2026-10-26T1249Z", [
+        _sh(0.0, route="TPE-NRT", dep="2026-12-17", ret="2026-12-22", ref=8499.0,
+            ref_at="2026-10-26T12:48:00+00:00"),
+        _sum(calendar_skipped="last run 23 min ago")])
+    res = fc.report(str(out), days=1, now=now)
+    assert res["calendar_vs_ref_pairs"] == 1
+    assert res["calendar_vs_ref_within_rate"] == 1.0                   # 用的是 12:26 那輪
+    assert res["calendar_vs_ref_by_provider"] == {"serpapi": "1/1"}
+
+
+def test_report_splits_shadow_accuracy_by_reference_source(tmp_path):
+    """10-28／29：fli 與 SerpAPI 一致，只有 Scrape.do 低約 7%——分開列才看得出來。"""
+    out = tmp_path / "fli"
+    _write(out, "2026-10-26T0341Z", [
+        _sh(0.0), _sh(0.0), _sh(6.95, provider="scrapedo"), _sh(0.0, provider="scrapedo"),
+        _sum()])
+    res = fc.report(str(out), now=NOW)
+    assert res["shadow_within_by_provider"] == {"scrapedo": "1/2", "serpapi": "2/2"}
+    assert res["shadow_within_rate"] == 0.75
 
 
 def test_report_survives_a_corrupt_file(tmp_path):
@@ -777,8 +811,19 @@ def test_backend_cheapest_none_and_error(backend_with):
     b = backend_with([_Resp(_wrb([[None, None, None, None, "sess"], None, None, None]))])
     assert b.cheapest("KHH", "NGO", _days(43), _days(48)) is None
     b = backend_with([_Resp(GOOGLE_ERR)])
-    with pytest.raises(FliError, match="^google_error"):
+    with pytest.raises(FliError, match="^google_error") as info:
         b.cheapest("KHH", "NGO", _days(43), _days(48))
+    # 短回應整段記下（2026-10-26～29 即時查詢大多這樣失敗，只有長度查不出原因）
+    assert 'body=)]}\' [["wrb.fr", null, null, null, null, [13]], ["di", 50]]' in str(info.value)
+
+
+def test_backend_diag_keeps_only_short_bodies(backend_with):
+    b = backend_with([])
+    b.client.last = {"status": 200, "path": "/x/GetShoppingResults", "bytes": 300}
+    b.client.last_text = "e" * 300
+    assert b.client.diag().endswith("body=" + "e" * 300)
+    b.client.last, b.client.last_text = dict(b.client.last, bytes=301), "e" * 301
+    assert "body=" not in b.client.diag()             # 正常大小的回應不塞進錯誤訊息
 
 
 def test_backend_currency_check(backend_with):

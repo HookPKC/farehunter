@@ -134,7 +134,9 @@ git 太舊、沒有 `git restore` 時，把那一行換成
 
 **看觀察結果**：Actions → fli Observe → 點最新一筆 → 頁面最下方「fli 觀察期報告」。
 `criteria` 四項都是 PASS，就可以請 AI 提第二階段。日曆那項 FAIL 時看
-`calendar_by_route`（每條航線「有價段數／計分段數」），就知道是哪條航線拖累。
+`calendar_by_route`（每條航線「有價段數／計分段數」），就知道是哪條航線拖累；比價那項
+FAIL 時看 `shadow_within_by_provider`／`calendar_vs_ref_by_provider`，分得出是 fli 不準
+還是某個參考來源（SerpAPI／Scrape.do）本身有落差。
 
 ## 4. 設定卡：cron-job.org 外部排程（讓更新不再依賴 GitHub 排程器）
 

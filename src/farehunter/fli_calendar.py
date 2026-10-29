@@ -63,6 +63,8 @@ MIN_SWEEP_GAP_MIN = 30        # FSC 與 Verify 接連跑完時，第二輪只做
 # ADR 0003 第二階段判斷標準（report 子命令據此給 PASS/FAIL/NO DATA）
 CRITERION_CAL_OK = 0.95       # 日曆時段重試後有價的比例（從沒拿到過價的時段視為沒班表、不計）
 CRITERION_WITHIN = 0.90       # 與參考價 ±SHADOW_TOLERANCE 以內的比例（即時查詢、日曆各一項）
+#: 回應不超過這麼多字元就整段記進錯誤訊息（Google 內部錯誤約 95 字元；正常回應數十 KB）
+DIAG_BODY_MAX = 300
 SHADOW_TOLERANCE = 0.02
 SHADOW_MAX_LAG_H = 6.0        # 只用參考觀測後 6 小時內完成的比較評估準確度
 
@@ -304,7 +306,12 @@ def _make_client(budget: int):
         def diag(self) -> str:
             if not self.last:
                 return "no response"
-            return f"HTTP {self.last['status']} {self.last['bytes']}B {self.last['path'][-40:]}"
+            out = f"HTTP {self.last['status']} {self.last['bytes']}B {self.last['path'][-40:]}"
+            # Google 內部錯誤的回應很短（約 95 bytes），整段留下才分得出是哪一種錯誤。
+            # 2026-10-26～29 即時查詢 58 次裡 54 次這樣失敗，當時只記了長度，查不出原因。
+            if self.last["bytes"] <= DIAG_BODY_MAX:
+                out += " body=" + " ".join(self.last_text.split())
+            return out
 
     return _Client()
 
@@ -457,6 +464,14 @@ def _stamp_time(name: str) -> datetime | None:
         return None
 
 
+def _parse_ts(value) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
 def read_records(path: Path) -> list[dict]:
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         return [json.loads(line) for line in fh if line.strip()]
@@ -598,6 +613,7 @@ def failed(summary: dict) -> bool:
 def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = None) -> dict:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cal, sh, runs, cal_vs_ref, unreadable = [], [], [], [], 0
+    cal_runs: list[tuple[datetime, dict]] = []   # (這輪開始時刻, {航線: {出發日: 價}})
     for path in _files(Path(out_dir), now - timedelta(days=days)):
         recs = _safe_records(path)
         if recs is None:
@@ -608,17 +624,30 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
         cal += file_cal
         sh += file_sh
         runs += [r for r in recs if r.get("kind") == "summary"]
-        # 第二階段要用的是日曆價：同一輪的日曆若有同航線、同出發日、住 STAY_DAYS 晚的價，
-        # 拿來跟參考價比（不多花任何請求）
         days_by_route: dict[str, dict] = {}
         for r in file_cal:
             days_by_route.setdefault(r["route"], {}).update(r.get("days") or {})
-        for r in file_sh:
-            stay = (date.fromisoformat(r["return"]) - date.fromisoformat(r["depart"])).days
-            price = days_by_route.get(r["route"], {}).get(r["depart"])
-            if stay == STAY_DAYS and price and r["lag_hours"] is not None \
-                    and r["lag_hours"] <= SHADOW_MAX_LAG_H:
-                cal_vs_ref.append(round((price - r["ref_price"]) / r["ref_price"] * 100, 2))
+        run_at = _stamp_time(path.name)
+        if days_by_route and run_at is not None:
+            cal_runs.append((run_at, days_by_route))
+
+    # 第二階段要用的是日曆價：同航線、同出發日、住 STAY_DAYS 晚的日曆價拿來跟參考價比
+    # （不多花任何請求）。日曆取參考觀測前後 SHADOW_MAX_LAG_H 小時內、時間最接近的
+    # 那一輪，不限同一輪：FSC 與 Verify 30 分鐘內先後跑完時，第二輪 fli 不重掃日曆，
+    # 原本那輪的比價就沒有日曆價可對（2026-10-26 12:49 那輪 5 組全部落空）。
+    for r in sh:
+        stay = (date.fromisoformat(r["return"]) - date.fromisoformat(r["depart"])).days
+        ref_at = _parse_ts(r.get("ref_observed_at"))
+        if stay != STAY_DAYS or ref_at is None:
+            continue
+        near = [(abs((run_at - ref_at).total_seconds()) / 3600, price)
+                for run_at, by_route in cal_runs
+                if (price := by_route.get(r["route"], {}).get(r["depart"]))]
+        near = [x for x in near if x[0] <= SHADOW_MAX_LAG_H]
+        if near:
+            price = min(near)[1]
+            cal_vs_ref.append({"ref_provider": r.get("ref_provider"),
+                               "diff_pct": round((price - r["ref_price"]) / r["ref_price"] * 100, 2)})
 
     # 某 (航線, 時段序號) 整段期間每一次都是 Google 明確回「沒有航班」（empty）→
     # 視為沒有班表，不計。只要有一次是錯誤（google_error、逾時、被 Breaker 跳過），
@@ -654,11 +683,16 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
         "shadow_pairs": len(sh), "shadow_ok": sum(r["status"] == "ok" for r in sh),
         "shadow_fresh": len(fresh),
         "shadow_within_rate": _rate(sum(abs(r["diff_pct"]) <= tol for r in fresh), len(fresh)),
+        # 參考價有 SerpAPI 與 Scrape.do 兩個來源；分開列，才分得出是 fli 不準還是某個
+        # 參考來源本身跟 Google 不一致（2026-10-28／29 KHH-NRT 兩組，fli 與 SerpAPI 都是
+        # 12,858，只有 Scrape.do 低約 7%）
+        "shadow_within_by_provider": _within_by(fresh, "ref_provider", tol),
         "shadow_median_abs_diff_pct": (round(statistics.median(abs(r["diff_pct"]) for r in fresh), 2)
                                        if fresh else None),
         "calendar_vs_ref_pairs": len(cal_vs_ref),
-        "calendar_vs_ref_within_rate": _rate(sum(abs(d) <= tol for d in cal_vs_ref),
+        "calendar_vs_ref_within_rate": _rate(sum(abs(d["diff_pct"]) <= tol for d in cal_vs_ref),
                                              len(cal_vs_ref)),
+        "calendar_vs_ref_by_provider": _within_by(cal_vs_ref, "ref_provider", tol),
         "blocked": sum(e.startswith("blocked") for e in errors),
         "error_kinds": _kinds(errors),
     }
@@ -670,6 +704,16 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
         "no_blocking": ("NO DATA" if not runs else "PASS" if res["blocked"] == 0 else "FAIL"),
     }
     return res
+
+
+def _within_by(recs: list[dict], field: str, tol: float) -> dict[str, str]:
+    """依 field 分組，列出「價差在 ±tol% 內的組數／總組數」。"""
+    groups: dict[str, list[int]] = {}
+    for r in recs:
+        tally = groups.setdefault(r.get(field) or "?", [0, 0])
+        tally[0] += abs(r["diff_pct"]) <= tol
+        tally[1] += 1
+    return {k: f"{ok}/{n}" for k, (ok, n) in sorted(groups.items())}
 
 
 def _rate(n: int, d: int):
