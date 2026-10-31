@@ -60,6 +60,19 @@ CREATE TABLE IF NOT EXISTS api_usage (
     ok       INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (provider, day)
 );
+
+-- 巡檢最近查過哪些行程（Bright Data 巡檢用，ADR 0004）。查到頁面卻沒有可寫入的直飛價
+-- （那天沒有直飛、航空公司對不上）時 observations 裡不會留下任何東西，沒有這張表的話
+-- 下一輪又會查同一趟、每小時白花一次額度。每輪巡檢前刪掉超過 24 小時的，所以只有幾百筆。
+CREATE TABLE IF NOT EXISTS api_checks (
+    provider    TEXT NOT NULL,
+    origin      TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    depart_date TEXT NOT NULL,
+    return_date TEXT NOT NULL,
+    checked_at  TEXT NOT NULL,
+    PRIMARY KEY (provider, origin, destination, depart_date, return_date)
+);
 """ + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
 
 
@@ -345,6 +358,29 @@ class Store:
                WHERE origin=? AND destination=? AND depart_date=? AND return_date=?
                  AND source='google' AND observed_at >= ? LIMIT 1""",
             (origin, destination, depart_date, return_date, since)).fetchone() is not None
+
+    def record_api_check(self, provider: str, origin: str, destination: str,
+                         depart_date: str, return_date: str, checked_at: str) -> None:
+        self.conn.execute(
+            """INSERT INTO api_checks VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(provider, origin, destination, depart_date, return_date)
+               DO UPDATE SET checked_at = excluded.checked_at""",
+            (provider, origin, destination, depart_date, return_date, checked_at))
+        self.conn.commit()
+
+    def api_checked_since(self, provider: str, origin: str, destination: str,
+                          depart_date: str, return_date: str, since: str) -> bool:
+        return self.conn.execute(
+            """SELECT 1 FROM api_checks
+               WHERE provider=? AND origin=? AND destination=? AND depart_date=?
+                 AND return_date=? AND checked_at >= ?""",
+            (provider, origin, destination, depart_date, return_date, since)
+        ).fetchone() is not None
+
+    def prune_api_checks(self, provider: str, before: str) -> None:
+        self.conn.execute("DELETE FROM api_checks WHERE provider=? AND checked_at < ?",
+                          (provider, before))
+        self.conn.commit()
 
     def record_cheap_day_notice(self, origin: str, destination: str,
                                 depart_date: str, price: float,

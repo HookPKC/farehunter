@@ -259,6 +259,69 @@ def test_sweep_checks_fixed_dates_on_routes_without_cache_data(tmp_path):
     assert dep >= _day(14)
 
 
+def test_fixed_dates_cover_every_weekday():
+    """KHH-NGO 只有週一、週三有直飛：清單若全落在同一個星期幾，碰上沒航班的那天就全部白查
+    （2026-10-31 實跑：全是週二，3 次 0 筆）。"""
+    for days in range(7):
+        trips = bd.anchor_trips(NOW + timedelta(days=days))
+        weekdays = {datetime.fromisoformat(dep).weekday() for dep, _ in trips}
+        assert weekdays == set(range(7))
+        assert min(dep for dep, _ in trips) >= (NOW.date() + timedelta(days=days + 14)).isoformat()
+
+
+def test_a_trip_without_direct_flights_is_not_rechecked_for_a_day(tmp_path):
+    """拿到頁面但沒有直飛價時 observations 不會留下東西；沒有記「查過」的話每小時都會重查。"""
+    st = _store(tmp_path)
+    asked = []
+
+    def connecting_only(o, d, dep, ret):
+        asked.append(dep)
+        return _page(_label("15,000", "Jetstar", nonstop=False))
+
+    cands = [_offer("TPE", "NRT", _day(30), 7000), _offer("TPE", "NRT", _day(31), 7100)]
+    v = bd.Verifier(st, NOW, allowance=1, fetcher=connecting_only)
+    v.sweep(cands, [("TPE", "NRT")])
+    assert v.stats["no_direct"] == 1 and v.stats["ok"] == 1 and _google_rows(st) == []
+    bd.Verifier(st, NOW + timedelta(hours=1), allowance=1,
+                fetcher=connecting_only).sweep(cands, [("TPE", "NRT")])
+    assert asked == [_day(30), _day(31)]                # 一小時後換下一趟，不重查
+    bd.Verifier(st, NOW + timedelta(hours=26), allowance=1,
+                fetcher=connecting_only).sweep(cands, [("TPE", "NRT")])
+    assert asked == [_day(30), _day(31), _day(30)]      # 超過 24 小時才再查
+    # 超過 24 小時的紀錄（31 天後那趟，25 小時前查的）會被清掉，表不會一直長
+    assert [r[0] for r in st.conn.execute("SELECT depart_date FROM api_checks")] == [_day(30)]
+
+
+def test_a_failed_request_is_retried_next_run(tmp_path):
+    """傳輸錯誤沒拿到頁面：不算查過，下一輪照查。"""
+    st = _store(tmp_path)
+    asked = []
+
+    def flaky(o, d, dep, ret):
+        asked.append(dep)
+        if len(asked) == 1:
+            raise bd.BrightDataError("transport: ReadTimeout")
+        return _page(_label("7,000", "Jetstar"))
+
+    cands = [_offer("TPE", "NRT", _day(30), 7000), _offer("TPE", "NRT", _day(31), 7100)]
+    for h in (0, 1):
+        bd.Verifier(st, NOW + timedelta(hours=h), allowance=1,
+                    fetcher=flaky).sweep(cands, [("TPE", "NRT")])
+    assert asked == [_day(30), _day(30)]
+
+
+def test_every_route_gets_its_turn_when_the_allowance_is_small(tmp_path):
+    """11 月每輪約 7 次、航線 8 條：每輪都從第一條開始輪的話，最後一條（KHH-NGO）整個月
+    都輪不到。起點每小時換一條。"""
+    st = _store(tmp_path)
+    routes = [("TPE", "NRT"), ("TPE", "KIX"), ("KHH", "NGO")]
+    asked = []
+    for h in range(3):
+        bd.Verifier(st, NOW + timedelta(hours=h), allowance=1,
+                    fetcher=lambda o, d, dep, ret: asked.append((o, d)) or "").sweep([], routes)
+    assert sorted(asked) == sorted(routes)
+
+
 def test_sweep_stops_at_the_deadline(tmp_path):
     st = _store(tmp_path)
     t = [0.0]

@@ -44,6 +44,7 @@ PER_RUN_MAX = 15             # 單輪上限：每次 2–15 秒，15 次最多�
 SWEEP_DEADLINE_S = 300       # 巡檢在單輪內最多花這麼久，到了就停
 RECHECK_HOURS = 24           # 同一行程 24 小時內已有 Google 實價就不再查
 STAY_NIGHTS = 5              # 快取沒資料的航線，巡檢固定查 5 晚來回
+ANCHOR_STEP_DAYS = 8         # 固定日期的間隔；不是 7 的倍數，同一張清單裡星期幾各不相同
 MIN_LEAD_DAYS = 2            # 太近的出發日不查（快取價多半已失效，也難以成行）
 
 #: Google Flights 英文介面顯示的航空公司名稱 → IATA 代碼。只收我們航線上會出現的；
@@ -203,8 +204,9 @@ class Verifier:
         self.left = run_allowance(used, now) if allowance is None else allowance
         self.fetch = fetcher or fetch
         self.clock = clock
+        # no_direct：頁面正常但沒有可寫入的直飛價（那天沒直飛、或航空公司名稱對不上）
         self.stats = {"allowance": self.left, "requests": 0, "ok": 0, "recorded": 0,
-                      "alerts_checked": 0, "swept": 0, "errors": 0}
+                      "no_direct": 0, "alerts_checked": 0, "swept": 0, "errors": 0}
 
     def check(self, origin: str, dest: str, depart: str, ret: str,
               want_carriers: str | None = None) -> Offer | None:
@@ -218,7 +220,11 @@ class Verifier:
         self.stats["requests"] += 1
         ok = False
         try:
-            itineraries = parse(self.fetch(origin, dest, depart, ret))
+            page = self.fetch(origin, dest, depart, ret)
+            # 拿到頁面就記「查過」：就算沒有可寫入的直飛價，24 小時內巡檢也不再查這趟
+            self.store.record_api_check(PROVIDER, origin, dest, depart, ret,
+                                        self.now.isoformat(timespec="seconds"))
+            itineraries = parse(page)
             if not itineraries:
                 # 頁面拿到了卻一筆都解析不到：多半是 Google 改版，要看得見
                 raise BrightDataError("page fetched but no itineraries parsed")
@@ -227,6 +233,7 @@ class Verifier:
             for o in offers:
                 self.store.record(o)
             self.stats["recorded"] += len(offers)
+            self.stats["no_direct"] += not offers
             return matched
         except BrightDataError as exc:
             self.stats["errors"] += 1
@@ -237,14 +244,17 @@ class Verifier:
             self.store.record_api_usage(PROVIDER, self.now.date().isoformat(), ok=ok)
 
     def sweep(self, candidates: list[Offer], routes: list[tuple[str, str]]) -> None:
-        """把剩下的額度花在「各航線最便宜、24 小時內沒有 Google 實價」的行程上。
+        """把剩下的額度花在「各航線最便宜、24 小時內沒查過」的行程上。
 
-        航線輪流取（每條先拿最便宜的），所以額度少時也是每條線都顧到；快取完全沒有
-        資料的航線（KHH-NGO 這類）改查固定日期，讓它也有 Google 實價。
+        「查過」＝任何供應商寫過 Google 實價，或 Bright Data 拿過這趟的頁面（沒有直飛價時
+        不會留下觀測，見 api_checks）。航線輪流取（每條先拿最便宜的），起點每小時換一條：
+        額度比航線數少時（11 月每輪約 7 次、8 條線），排在後面的航線才不會整個月輪不到。
+        快取完全沒有資料的航線（KHH-NGO 這類）改查固定日期，讓它也有 Google 實價。
         """
         if self.left <= 0:
             return
         since = (self.now - timedelta(hours=RECHECK_HOURS)).isoformat(timespec="seconds")
+        self.store.prune_api_checks(PROVIDER, since)
         earliest = (self.now.date() + timedelta(days=MIN_LEAD_DAYS)).isoformat()
         queues: dict[tuple[str, str], list[tuple[str, str, str | None]]] = {r: [] for r in routes}
         seen = set()
@@ -258,12 +268,22 @@ class Verifier:
         for route, q in queues.items():
             if not q:
                 q.extend((d, r, None) for d, r in anchor_trips(self.now))
+        order = list(queues)
+        if order:
+            k = int(self.now.timestamp() // 3600) % len(order)
+            order = order[k:] + order[:k]
+
+        def fresh(o, d, dep, ret):
+            return (self.store.has_google_since(o, d, dep, ret, since)
+                    or self.store.api_checked_since(PROVIDER, o, d, dep, ret, since))
+
         deadline = self.clock() + SWEEP_DEADLINE_S
         while self.left > 0 and self.clock() < deadline and any(queues.values()):
-            for (o, d), q in queues.items():
+            for o, d in order:
+                q = queues[(o, d)]
                 while q:
                     dep, ret, carriers = q.pop(0)
-                    if not self.store.has_google_since(o, d, dep, ret, since):
+                    if not fresh(o, d, dep, ret):
                         break
                 else:
                     continue
@@ -274,13 +294,16 @@ class Verifier:
 
 
 def anchor_trips(now: datetime, count: int = 8) -> list[tuple[str, str]]:
-    """快取沒資料的航線要查哪些日子：未來 2–4 個月內每週一個出發日，住 STAY_NIGHTS 晚。
+    """快取沒資料的航線要查哪些日子：2 週後起每 ANCHOR_STEP_DAYS 天一個出發日（最遠約
+    11 週），住 STAY_NIGHTS 晚。
 
-    起點隨日期輪替（一週七天），幾天下來各個星期幾都會被查到。
+    冷門線不是天天飛（KHH-NGO 只有週一、週三有直飛），間隔若是 7 天，整張清單會落在
+    同一個星期幾，碰上沒航班的那天就全部白查（2026-10-31 實跑：全是週二，3 次 0 筆）。
+    起點也隨日期輪替，每天查到的日子不同。
     """
     start = now.date() + timedelta(days=14 + now.timetuple().tm_yday % 7)
     out = []
     for k in range(count):
-        dep = start + timedelta(days=7 * k)
+        dep = start + timedelta(days=ANCHOR_STEP_DAYS * k)
         out.append((dep.isoformat(), (dep + timedelta(days=STAY_NIGHTS)).isoformat()))
     return out

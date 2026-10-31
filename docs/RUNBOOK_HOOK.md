@@ -144,8 +144,9 @@ FAIL 時看 `shadow_within_by_provider`／`calendar_vs_ref_by_provider`，分得
 實價；查不到時警報照常發（標「未驗證」），看板照常更新。
 
 - **看用量**：monitor 的 log 裡有一行「Bright Data 本輪：{…}」，`requests` 是這輪送出幾次、
-  `errors` 是失敗幾次、`recorded` 是寫進幾筆 Google 實價。每月 5,000 次免費、1 日重置，
-  程式會自動配速用到約 4,750 次；用完就停，不會扣款。
+  `errors` 是失敗幾次、`recorded` 是寫進幾筆 Google 實價、`no_direct` 是頁面正常但那趟沒有
+  可寫入的直飛價。每月 5,000 次免費、1 日重置，程式會自動配速用到約 4,750 次；用完就停，
+  不會扣款。
 - **`errors` 連好幾輪都等於 `requests`**：多半是 Google 改版、解析不到，或金鑰失效。
   抓價不受影響，有空再找 AI 看。
 - **想停用**：到 GitHub repo → Settings → Secrets and variables → Actions，刪掉

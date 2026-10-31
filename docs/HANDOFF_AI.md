@@ -25,7 +25,8 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 - 航空公司官網實價：Scrape.do verify-airlines **每日**（驗證看板候選）
 - Google 實價（量最大）：Bright Data，monitor **每小時**順手查（ADR 0004）——警報發出前先驗證
   同一行程，剩下的額度巡檢各航線最便宜的行程；每月 5,000 次免費、配速用到 95%，帳本在
-  prices.db 的 `api_usage`。沒有 `BRIGHTDATA_API_KEY` 時完全不碰。
+  prices.db 的 `api_usage`（巡檢 24 小時內查過哪些行程記在 `api_checks`）。沒有
+  `BRIGHTDATA_API_KEY` 時完全不碰。
 - **觀察中（不參與任何判斷）**：fli Google 日曆 `fli-observe`，跟在 fsc／verify 之後
   每天約 2 次，只寫 `data/fli/*.jsonl.gz`、**不進 prices.db**（理由與第二階段標準見
   ADR 0003）。看板、警報、健康檢查都不讀它。
