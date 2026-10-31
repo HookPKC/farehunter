@@ -295,7 +295,15 @@ def test_shadow_targets_open_a_read_only_connection(tmp_path, monkeypatch):
 
 # ---- 影子比價的執行 ---------------------------------------------------------------
 
-def test_run_shadow_retries_then_records_diff():
+def test_run_shadow_does_not_retry_in_the_same_run_by_default():
+    """main 10-26～30：同一輪的重試 0/21 救回，只是多打兩次。"""
+    backend = FakeBackend(cheapest_plan=[FliError("google_error: x"), (15040.0, "IT")])
+    rec = fc.run_shadow(backend, [_target()], NOW, sleep=NO_SLEEP)[0]
+    assert rec["status"] == "error" and rec["attempts"] == 1 and backend.requests == 1
+
+
+def test_run_shadow_retries_then_records_diff(monkeypatch):
+    monkeypatch.setattr(fc, "SHADOW_RETRIES", 1)       # 重試的路徑仍在，只是預設不用
     sleeps = []
     backend = FakeBackend(cheapest_plan=[FliError("google_error: x"), (15040.0, "IT")])
     rec = fc.run_shadow(backend, [_target()], NOW, sleep=sleeps.append)[0]
@@ -391,6 +399,34 @@ def test_load_seen_only_looks_back_dedupe_days(tmp_path):
     fc.write_records(out, old, [{"kind": "shadow", "key": "old"}])
     fc.write_records(out, NOW - timedelta(days=1), [{"kind": "shadow", "key": "new"}])
     assert fc.load_seen(out, NOW) == {"new"}
+
+
+def test_failed_comparisons_are_retried_next_run(tmp_path):
+    """出錯的不算比過；拿到價或 Google 明確說沒有航班的才算。"""
+    out = tmp_path / "fli"
+    fc.write_records(out, NOW - timedelta(hours=1), [
+        {"kind": "shadow", "key": "ok", "status": "ok"},
+        {"kind": "shadow", "key": "none", "status": "none"},
+        {"kind": "shadow", "key": "err", "status": "error"}])
+    assert fc.load_seen(out, NOW) == {"ok", "none"}
+
+
+def test_run_retries_a_failed_comparison_in_the_next_run(tmp_path):
+    """10-28／29／30：早上那輪即時查詢失敗，一小時後換台主機的下一輪都成功。"""
+    cfg = _config(tmp_path, months=1)
+    db = _db(tmp_path, [{"o": "KHH", "d": "NGO", "dep": "2026-12-07", "at": _at(2)}])
+    out = str(tmp_path / "fli")
+    first = fc.run(cfg, db, out, now=NOW, sleep=NO_SLEEP,
+                   backend=FakeBackend(cheapest_plan=[FliError("google_error: x")]))
+    assert first["shadow_targets"] == 1 and first["shadow_ok"] == 0
+    second = fc.run(cfg, db, out, now=NOW + timedelta(hours=1), sleep=NO_SLEEP,
+                    backend=FakeBackend())
+    assert second["shadow_targets"] == 1 and second["shadow_ok"] == 1
+    third = fc.run(cfg, db, out, now=NOW + timedelta(hours=2), sleep=NO_SLEEP,
+                   backend=FakeBackend())
+    assert third["shadow_targets"] == 0                     # 比到了就不再比
+    # 同一個參考觀測出現在兩輪，日曆價對參考價只算一次
+    assert fc.report(out, now=NOW + timedelta(hours=2))["calendar_vs_ref_pairs"] == 1
 
 
 def test_run_all_empty_counts_as_failed(tmp_path):

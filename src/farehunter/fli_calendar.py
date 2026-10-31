@@ -50,7 +50,11 @@ MAX_AHEAD_DAYS = 300          # fli 文件：最遠 305 天
 SPACING_S = 3.0               # 任兩次 Google 請求的最小間隔
 TIMEOUT_S = 20                # 實測日曆回應 2–8 秒；掛著不回應的故障不要每次都等 45 秒
 CAL_RETRIES = 1               # 日曆時段回空／出錯時再打幾次
-SHADOW_RETRIES = 2            # 影子比價出錯時再打幾次（實測 Google 內部錯誤約 4 成）
+#: 影子比價出錯時在同一輪再打幾次。原本 2：分支實測時重試大多救得回，但 main 上
+#: 10-26～30 第一次就失敗的 21 組，12 秒後的兩次重試 0 組救回——同一台主機一失敗，
+#: 那幾分鐘內都會失敗；一小時後換一台主機的下一輪卻多半成功。所以改成同一輪不重試，
+#: 出錯的行程不記為「比過了」（load_seen），留給下一輪。
+SHADOW_RETRIES = 0
 RETRY_WAIT_S = 12.0
 SHADOW_LOOKBACK_HOURS = 24
 SHADOW_MAX = 15
@@ -492,10 +496,14 @@ def _safe_records(path: Path) -> list[dict] | None:
 
 
 def load_seen(out_dir: Path, now: datetime, days: int = DEDUPE_DAYS) -> set[str]:
+    """最近比過的參考觀測。出錯（status=error）的不算比過：下一輪再試一次。
+
+    不會無限重試：候選本身只取 SHADOW_LOOKBACK_HOURS 內的參考觀測，過了就不再出現。
+    """
     seen = set()
     for path in _files(out_dir, now - timedelta(days=days)):
         for rec in _safe_records(path) or []:
-            if rec.get("kind") == "shadow" and rec.get("key"):
+            if rec.get("kind") == "shadow" and rec.get("key") and rec.get("status") != "error":
                 seen.add(rec["key"])
     return seen
 
@@ -635,11 +643,14 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
     # （不多花任何請求）。日曆取參考觀測前後 SHADOW_MAX_LAG_H 小時內、時間最接近的
     # 那一輪，不限同一輪：FSC 與 Verify 30 分鐘內先後跑完時，第二輪 fli 不重掃日曆，
     # 原本那輪的比價就沒有日曆價可對（2026-10-26 12:49 那輪 5 組全部落空）。
+    # 同一個參考觀測可能出現在好幾輪（出錯的留給下一輪重試），日曆價只比一次
+    paired: set = set()
     for r in sh:
         stay = (date.fromisoformat(r["return"]) - date.fromisoformat(r["depart"])).days
         ref_at = _parse_ts(r.get("ref_observed_at"))
-        if stay != STAY_DAYS or ref_at is None:
+        if stay != STAY_DAYS or ref_at is None or r.get("key", id(r)) in paired:
             continue
+        paired.add(r.get("key", id(r)))
         near = [(abs((run_at - ref_at).total_seconds()) / 3600, price)
                 for run_at, by_route in cal_runs
                 if (price := by_route.get(r["route"], {}).get(r["depart"]))]
