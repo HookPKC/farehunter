@@ -138,6 +138,20 @@ git 太舊、沒有 `git restore` 時，把那一行換成
 FAIL 時看 `shadow_within_by_provider`／`calendar_vs_ref_by_provider`，分得出是 fli 不準
 還是某個參考來源（SerpAPI／Scrape.do）本身有落差。
 
+## 3d. Bright Data（Google 實價，2026-10-31 起）
+
+**先記住：Bright Data 壞了不影響抓價和警報。** 它只是在每小時那一輪多查一些 Google
+實價；查不到時警報照常發（標「未驗證」），看板照常更新。
+
+- **看用量**：monitor 的 log 裡有一行「Bright Data 本輪：{…}」，`requests` 是這輪送出幾次、
+  `errors` 是失敗幾次、`recorded` 是寫進幾筆 Google 實價。每月 5,000 次免費、1 日重置，
+  程式會自動配速用到約 4,750 次；用完就停，不會扣款。
+- **`errors` 連好幾輪都等於 `requests`**：多半是 Google 改版、解析不到，或金鑰失效。
+  抓價不受影響，有空再找 AI 看。
+- **想停用**：到 GitHub repo → Settings → Secrets and variables → Actions，刪掉
+  `BRIGHTDATA_API_KEY`。下一輪起就完全不碰 Bright Data。
+- **安全**：Bright Data 後台或 API 給的 zone 密碼、金鑰，都不要貼進對話、文件或 commit。
+
 ## 4. 設定卡：cron-job.org 外部排程（讓更新不再依賴 GitHub 排程器）
 
 > ✅ **狀態：已於 2026-07-07 完成上線**（每小時 `:17`，時區 Asia/Taipei，

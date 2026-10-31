@@ -140,8 +140,9 @@ def resolve_alert_price(candidate: PriceObservation,
                         policy: PricePolicy | None = None) -> PriceState:
     """回傳 Alert 的價格狀態。純函式：不查 DB、不呼叫任何 API。
 
-    authoritative: 呼叫端於同一輪取得的權威結果（目前 production 不呼叫額外
-        API，故常為 None；保留介面供未來使用）。
+    authoritative: 呼叫端於同一輪取得的權威結果。production 由 runner 在發警報前
+        向 Bright Data 查同一行程的 Google 實價（ADR 0004）；沒設金鑰、額度用完或
+        查不到同航空公司時為 None。
     reference:     同航程、observed_at 不晚於 candidate 的最新 Google 觀測，
         由呼叫端自 DB 取得。若其時間不早於 candidate，會被提升為 authoritative。
     """

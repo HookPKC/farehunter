@@ -49,6 +49,17 @@ CREATE TABLE IF NOT EXISTS cheap_day_notices (
     notified_at TEXT NOT NULL,
     PRIMARY KEY (origin, destination, depart_date)
 );
+
+-- 外部 API 的用量帳本（每日每來源）。Bright Data 每月 5,000 次免費、用完即停：配速要知道
+-- 本月已經用了多少（brightdata_flights.run_allowance）。寫在 prices.db 才會隨每輪 commit
+-- 留下時間序列。requests＝送出的次數（含失敗，保守估算），ok＝拿到可解析頁面的次數。
+CREATE TABLE IF NOT EXISTS api_usage (
+    provider TEXT NOT NULL,
+    day      TEXT NOT NULL,
+    requests INTEGER NOT NULL DEFAULT 0,
+    ok       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider, day)
+);
 """ + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
 
 
@@ -310,6 +321,30 @@ class Store:
                 abs(new_ref - prev_ref) >= prev_ref * (improvement_pct / 100.0):
             return False                      # 參考價相對「上一則」有意義變化 → 重新通知
         return True
+
+    def record_api_usage(self, provider: str, day: str, *, ok: bool) -> None:
+        self.conn.execute(
+            """INSERT INTO api_usage (provider, day, requests, ok) VALUES (?, ?, 1, ?)
+               ON CONFLICT(provider, day) DO UPDATE SET
+                 requests = requests + 1, ok = ok + excluded.ok""",
+            (provider, day, int(ok)))
+        self.conn.commit()
+
+    def api_usage_since(self, provider: str, first_day: str) -> int:
+        """first_day（含）之後送出的總次數。"""
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(requests), 0) FROM api_usage WHERE provider=? AND day>=?",
+            (provider, first_day)).fetchone()
+        return int(row[0])
+
+    def has_google_since(self, origin: str, destination: str, depart_date: str,
+                         return_date: str, since: str) -> bool:
+        """同一行程（航線＋去回日）在 since 之後有沒有 Google 實價（任何供應商）。"""
+        return self.conn.execute(
+            """SELECT 1 FROM observations
+               WHERE origin=? AND destination=? AND depart_date=? AND return_date=?
+                 AND source='google' AND observed_at >= ? LIMIT 1""",
+            (origin, destination, depart_date, return_date, since)).fetchone() is not None
 
     def record_cheap_day_notice(self, origin: str, destination: str,
                                 depart_date: str, price: float,

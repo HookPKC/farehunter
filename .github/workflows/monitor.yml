@@ -67,6 +67,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          # Bright Data（ADR 0004）：每月 5,000 次免費的 Google 實價。沒設就整段跳過；
+          # BRIGHTDATA_ZONE 沒設時用 mcp_unlocker
+          BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
+          BRIGHTDATA_ZONE: ${{ secrets.BRIGHTDATA_ZONE }}
           FAREHUNTER_FORCE: ${{ inputs.force && '1' || '' }}
         run: python run.py
 
