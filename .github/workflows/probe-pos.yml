@@ -1,0 +1,32 @@
+name: TEMP probe gl market
+
+# TEMP（合併前刪除）：比較 Google Flights 預設市場與 gl=TW 的價格。見 probe/pos_probe.py。
+
+on:
+  push:
+    branches: [claude/funny-thompson-pu3xyg]
+    paths: [".github/workflows/probe-pos.yml", "probe/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r requirements-fli.txt
+      - name: Probe default vs gl=TW
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+        run: |
+          set -o pipefail
+          PYTHONPATH=src python probe/pos_probe.py | tee probe.json
+          { echo '## gl probe'; echo '```json'; cat probe.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
