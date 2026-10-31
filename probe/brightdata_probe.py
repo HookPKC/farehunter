@@ -1,0 +1,107 @@
+"""TEMP（合併前刪除）：實測 Bright Data SERP API 抓 Google Flights，跟同一輪 fli 日曆比對。
+
+用 GitHub secret BRIGHTDATA_API_KEY／BRIGHTDATA_ZONE；沒設就只回報「缺 secret」。
+Bright Data 回的是整頁 HTML：從每個航班的 aria-label（hl=en）解析「round trip total」與是否直飛。
+任何印出的文字都先把金鑰遮掉。
+"""
+import json
+import os
+import re
+import time
+from datetime import date, timedelta
+from urllib.parse import quote
+
+import requests
+
+from farehunter.fli_calendar import FliBackend, FliError
+
+KEY = os.environ.get("BRIGHTDATA_API_KEY", "")
+ZONE = os.environ.get("BRIGHTDATA_ZONE", "")
+ROUTES = [("TPE", "NRT"), ("TPE", "KIX"), ("KHH", "NRT"), ("KHH", "KIX"),
+          ("KHH", "CTS"), ("KHH", "FUK"), ("KHH", "OKA"), ("KHH", "NGO")]
+STAY = 5
+START = date.today() + timedelta(days=30)
+out = {"secrets": {"api_key": bool(KEY), "zone": bool(ZONE)}, "trips": [], "brd_json": None}
+
+
+def redact(text):
+    return text.replace(KEY, "***") if KEY else text
+
+
+def gf_url(o, d, dep, ret, extra=""):
+    q = f"Flights to {d} from {o} on {dep} through {ret}"
+    return f"https://www.google.com/travel/flights?q={quote(q)}&curr=TWD&hl=en&gl=tw{extra}"
+
+
+def bright(url):
+    t0 = time.time()
+    r = requests.post("https://api.brightdata.com/request", timeout=90,
+                      headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
+                      json={"zone": ZONE, "url": url, "format": "raw"})
+    return r, round(time.time() - t0, 1)
+
+
+LABEL = re.compile(r'aria-label="From ([\d,]+) Taiwan dollars round trip total\.([^"]*)"')
+
+
+def parse(html):
+    rows = []
+    for price, rest in LABEL.findall(html):
+        nonstop = "Nonstop flight" in rest
+        m = re.search(r"flight with ([^.]+)\.", rest)
+        rows.append((int(price.replace(",", "")), nonstop, (m.group(1) if m else "")[:40]))
+    direct = [r for r in rows if r[1]]
+    return {"itineraries": len(rows), "nonstop": len(direct),
+            "min_nonstop": min(direct) if direct else None,
+            "min_any": min(rows) if rows else None}
+
+
+if not (KEY and ZONE):
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+    raise SystemExit(0)
+
+fli = FliBackend(currency="TWD", budget=20)
+for o, d in ROUTES:
+    trip = {"route": f"{o}-{d}"}
+    try:
+        cal = fli.calendar(o, d, START, START + timedelta(days=30), STAY)
+        dep = date.fromisoformat(min(cal, key=cal.get)) if cal else START
+        trip["fli_calendar"] = cal.get(dep.isoformat())
+    except FliError as exc:
+        dep, trip["fli_error"] = START, str(exc)[:150]
+    ret = dep + timedelta(days=STAY)
+    trip.update(depart=dep.isoformat(), ret=ret.isoformat())
+    try:
+        r, secs = bright(gf_url(o, d, dep.isoformat(), ret.isoformat()))
+        trip.update(http=r.status_code, seconds=secs, bytes=len(r.text))
+        if r.status_code == 200:
+            trip.update(parse(r.text))
+            mn = trip.get("min_nonstop")
+            if mn and trip.get("fli_calendar"):
+                trip["diff_pct_vs_fli"] = round((mn[0] - trip["fli_calendar"]) / trip["fli_calendar"] * 100, 2)
+        else:
+            trip["error"] = redact(r.text[:300])
+    except Exception as exc:  # noqa: BLE001
+        trip["error"] = redact(f"{type(exc).__name__}: {exc}"[:300])
+    out["trips"].append(trip)
+    time.sleep(1)
+
+# brd_json=1：會不會直接回整理好的 JSON
+t = out["trips"][0]
+try:
+    r, secs = bright(gf_url("TPE", "NRT", t["depart"], t["ret"], "&brd_json=1"))
+    body = r.text.lstrip()
+    info = {"http": r.status_code, "seconds": secs, "bytes": len(r.text), "looks_json": body[:1] in "{["}
+    if info["looks_json"]:
+        try:
+            j = json.loads(body)
+            info["top_keys"] = sorted(j.keys())[:25] if isinstance(j, dict) else f"list[{len(j)}]"
+            info["sample"] = redact(json.dumps(j, ensure_ascii=False)[:1500])
+        except ValueError as exc:
+            info["json_error"] = str(exc)[:100]
+    out["brd_json"] = info
+except Exception as exc:  # noqa: BLE001
+    out["brd_json"] = {"error": redact(f"{type(exc).__name__}: {exc}"[:300])}
+
+out["fli_requests"] = fli.requests
+print(json.dumps(out, ensure_ascii=False, indent=1))

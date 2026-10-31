@@ -1,0 +1,34 @@
+name: TEMP probe Bright Data
+
+# TEMP（合併前刪除）：實測 Bright Data SERP API 抓 Google Flights。見 probe/brightdata_probe.py。
+
+on:
+  push:
+    branches: [claude/funny-thompson-pu3xyg]
+    paths: [".github/workflows/probe-brightdata.yml", "probe/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r requirements-fli.txt
+      - name: Probe Bright Data
+        env:
+          BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
+          BRIGHTDATA_ZONE: ${{ secrets.BRIGHTDATA_ZONE }}
+        run: |
+          set -o pipefail
+          PYTHONPATH=src python probe/brightdata_probe.py | tee probe.json
+          { echo '## Bright Data probe'; echo '```json'; cat probe.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
