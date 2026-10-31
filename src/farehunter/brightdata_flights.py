@@ -30,6 +30,7 @@ from urllib.parse import quote
 import requests
 
 from .models import Offer
+from .price_state import carrier_signature
 
 log = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ def select(origin: str, dest: str, depart: str, ret: str, itineraries: list[Itin
     同航程比對要求航空公司相同（price_state.same_itinerary），只寫全場最低會讓
     其他航空公司的快取價永遠驗證不到。
     """
-    want = _sig(want_carriers)
+    want = carrier_signature(want_carriers)
 
     def offer(it: Itinerary) -> Offer:
         return Offer(origin=origin, destination=dest, depart_date=depart, return_date=ret,
@@ -158,19 +159,12 @@ def select(origin: str, dest: str, depart: str, ret: str, itineraries: list[Itin
     if not direct:
         return [], None
     chosen = [direct[0]]
-    match = next((it for it in direct if want and _sig(it.carriers) == want), None)
+    match = next((it for it in direct if want and carrier_signature(it.carriers) == want), None)
     if match is not None and match is not direct[0]:
         chosen.append(match)
     offers = [offer(it) for it in chosen]
-    matched = next((o for o in offers if want and _sig(o.carriers) == want), None)
+    matched = next((o for o in offers if want and carrier_signature(o.carriers) == want), None)
     return offers, matched
-
-
-def _sig(carriers: str | None) -> str | None:
-    if not carriers:
-        return None
-    parts = sorted(p.strip().upper() for p in carriers.split(",") if p.strip())
-    return ",".join(parts) or None
 
 
 def month_start(now: datetime) -> datetime:
@@ -239,9 +233,20 @@ class Verifier:
             self.stats["errors"] += 1
             log.warning("Bright Data %s→%s %s/%s: %s", origin, dest, depart, ret, exc)
             return None
+        except Exception:
+            # 預期外的錯（解析程式的 bug 之類）也只記下來：這一則警報照原狀態發
+            self.stats["errors"] += 1
+            log.exception("Bright Data %s→%s %s/%s 意外失敗", origin, dest, depart, ret)
+            return None
         finally:
             self.stats["ok"] += ok
             self.store.record_api_usage(PROVIDER, self.now.date().isoformat(), ok=ok)
+
+    def verify_alert(self, origin: str, dest: str, depart: str, ret: str,
+                     want_carriers: str | None) -> Offer | None:
+        """警報發出前的驗證（ADR 0004 的第一優先）；跟 check 相同，只是另外計數。"""
+        self.stats["alerts_checked"] += 1
+        return self.check(origin, dest, depart, ret, want_carriers)
 
     def sweep(self, candidates: list[Offer], routes: list[tuple[str, str]]) -> None:
         """把剩下的額度花在「各航線最便宜、24 小時內沒查過」的行程上。

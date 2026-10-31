@@ -352,11 +352,16 @@ class Store:
 
     def has_google_since(self, origin: str, destination: str, depart_date: str,
                          return_date: str, since: str) -> bool:
-        """同一行程（航線＋去回日）在 since 之後有沒有 Google 實價（任何供應商）。"""
+        """同一行程（航線＋去回日）在 since 之後有沒有 Google 實價（任何供應商）。
+
+        跟 serpapi_flights._is_cooled 一樣用 julianday 比較：observed_at 有新舊混合的
+        時間字串格式，直接比字串會在格式不同時比錯。
+        """
         return self.conn.execute(
             """SELECT 1 FROM observations
                WHERE origin=? AND destination=? AND depart_date=? AND return_date=?
-                 AND source='google' AND observed_at >= ? LIMIT 1""",
+                 AND source='google' AND julianday(observed_at) >= julianday(?)
+               LIMIT 1""",
             (origin, destination, depart_date, return_date, since)).fetchone() is not None
 
     def record_api_check(self, provider: str, origin: str, destination: str,
@@ -373,12 +378,13 @@ class Store:
         return self.conn.execute(
             """SELECT 1 FROM api_checks
                WHERE provider=? AND origin=? AND destination=? AND depart_date=?
-                 AND return_date=? AND checked_at >= ?""",
+                 AND return_date=? AND julianday(checked_at) >= julianday(?)""",
             (provider, origin, destination, depart_date, return_date, since)
         ).fetchone() is not None
 
     def prune_api_checks(self, provider: str, before: str) -> None:
-        self.conn.execute("DELETE FROM api_checks WHERE provider=? AND checked_at < ?",
+        self.conn.execute("DELETE FROM api_checks WHERE provider=? "
+                          "AND julianday(checked_at) < julianday(?)",
                           (provider, before))
         self.conn.commit()
 

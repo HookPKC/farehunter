@@ -195,6 +195,32 @@ def test_a_page_without_itineraries_counts_as_an_error(tmp_path):
     assert v.stats["errors"] == 1 and v.stats["ok"] == 0
 
 
+def test_an_unexpected_error_is_also_soft(tmp_path):
+    """解析程式的 bug 之類的意外，也只記錯誤、不往上丟（Bright Data 是加分項）。"""
+    st = _store(tmp_path)
+
+    def bug(*a):
+        raise ValueError("unexpected")
+
+    v = bd.Verifier(st, NOW, allowance=1, fetcher=bug)
+    assert v.check("TPE", "KIX", DEP, RET, "GK") is None
+    assert v.stats["errors"] == 1
+    assert st.api_usage_since("brightdata", "2026-11-01") == 1
+
+
+def test_freshness_survives_mixed_timestamp_formats(tmp_path):
+    """observed_at 有舊格式（空格分隔）；直接比字串會把同一天稍晚的觀測當成更早。"""
+    st = _store(tmp_path)
+    st.conn.execute(
+        "INSERT INTO observations (origin, destination, depart_date, return_date, price,"
+        " currency, carriers, stops, duration, observed_at, fare_class, source, provider)"
+        " VALUES ('TPE','NRT',?,?,8000,'TWD','GK',0,'',?,'any','google','serpapi')",
+        (DEP, RET, (NOW - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")))
+    st.conn.commit()
+    since = (NOW - timedelta(hours=2)).isoformat(timespec="seconds")
+    assert st.has_google_since("TPE", "NRT", DEP, RET, since)
+
+
 def test_allowance_comes_from_this_months_ledger(tmp_path):
     st = _store(tmp_path)
     st.conn.execute("INSERT INTO api_usage VALUES ('brightdata', '2026-10-31', 4000, 4000)")
@@ -409,6 +435,20 @@ def test_bright_data_failure_still_sends_the_alert(tmp_path, monkeypatch):
     summary, sent, alerts = _run(tmp_path, monkeypatch, down)
     assert alerts == [(7761.0, "unverified")] and len(sent) == 1
     assert summary["brightdata"]["errors"] >= 1
+
+
+def test_an_unexpected_error_in_the_sweep_does_not_stop_the_run(tmp_path, monkeypatch):
+    """巡檢出意外也要把整輪跑完（健康檢查、匯出照常）。"""
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+
+    def broken(self, *a):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(bd.Verifier, "sweep", broken)
+    summary, sent, alerts = _run(tmp_path, monkeypatch,
+                                 lambda *a: _page(_label("7,650", "Jetstar")))
+    assert alerts == [(7650.0, "verified")]        # 警報驗證在巡檢之前，照常
+    assert summary["health"] is not None and "brightdata" in summary
 
 
 def test_runner_sweeps_cheapest_trips_after_fetching(tmp_path, monkeypatch):

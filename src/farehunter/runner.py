@@ -33,12 +33,7 @@ def _resolve_state(store, offer, now, authoritative=None):
     observed_at 是寫入當下的真實時刻、晚於 now，reference 查不到它，所以直接傳進來
     （price_state 原本就預留了這個參數）。
     """
-    cand = price_state.PriceObservation(
-        origin=offer.origin, destination=offer.destination,
-        depart_date=offer.depart_date, return_date=offer.return_date,
-        price=offer.price, currency=offer.currency, carriers=offer.carriers,
-        stops=offer.stops, fare_class=offer.fare_class,
-        source=offer.source, observed_at=now)
+    cand = _as_observation(offer, now)
     row = store.latest_itinerary_google(
         origin=offer.origin, destination=offer.destination,
         depart_date=offer.depart_date, return_date=offer.return_date,
@@ -56,16 +51,17 @@ def _resolve_state(store, offer, now, authoritative=None):
             price=row["price"], currency=row["currency"], carriers=row["carriers"],
             stops=row["stops"], fare_class=row["fare_class"],
             source=row["source"], observed_at=ts)
-    auth = None
-    if authoritative is not None:
-        auth = price_state.PriceObservation(
-            origin=authoritative.origin, destination=authoritative.destination,
-            depart_date=authoritative.depart_date, return_date=authoritative.return_date,
-            price=authoritative.price, currency=authoritative.currency,
-            carriers=authoritative.carriers, stops=authoritative.stops,
-            fare_class=authoritative.fare_class, source=authoritative.source,
-            observed_at=now)
+    auth = None if authoritative is None else _as_observation(authoritative, now)
     return price_state.resolve_alert_price(cand, now, reference=ref, authoritative=auth)
+
+
+def _as_observation(offer, observed_at):
+    return price_state.PriceObservation(
+        origin=offer.origin, destination=offer.destination,
+        depart_date=offer.depart_date, return_date=offer.return_date,
+        price=offer.price, currency=offer.currency, carriers=offer.carriers,
+        stops=offer.stops, fare_class=offer.fare_class,
+        source=offer.source, observed_at=observed_at)
 
 
 def _already_alerted(store, offer, pstate, verdict, csig) -> bool:
@@ -297,9 +293,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     # 額度用完 → 照原本的狀態發，不會因此漏發。
                     if (verifier is not None and offer.return_date
                             and pstate.state != price_state.VERIFIED):
-                        verifier.stats["alerts_checked"] += 1
-                        auth = verifier.check(origin, dest, offer.depart_date,
-                                              offer.return_date, offer.carriers)
+                        auth = verifier.verify_alert(origin, dest, offer.depart_date,
+                                                     offer.return_date, offer.carriers)
                         if auth is not None:
                             pstate = _resolve_state(store, offer, now, authoritative=auth)
                             eval_offer = (replace(offer, price=pstate.selected_price)
@@ -341,8 +336,13 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
         if verifier is not None:
             # 抓完 Aviasales 後，剩下的 Bright Data 額度拿去查各航線最便宜、24 小時內還沒查過
             # 的行程（ADR 0004）。放在健康檢查之前，健康報告才看得到這輪補的資料。
-            verifier.sweep(sweep_candidates,
-                           [(r["origin"], r["destination"]) for r in cfg["routes"]])
+            try:
+                verifier.sweep(sweep_candidates,
+                               [(r["origin"], r["destination"]) for r in cfg["routes"]])
+            except Exception:
+                # 巡檢是加分項：任何意外都不能讓整輪中止、跳過後面的匯出（HANDOFF §6 的
+                # 10-18 事故就是一個沒接住的例外讓整輪停掉）
+                log.exception("Bright Data 巡檢意外失敗，本輪略過")
             summary["brightdata"] = verifier.stats
             log.info("Bright Data 本輪：%s", verifier.stats)
 
