@@ -35,8 +35,9 @@
 | 捷星官方 farecache（`digitalapi.jetstar.com/v1/farecache`，不需金鑰） | 2026-10-31 實測 GK 三條線都回應：TPE-KIX 中位 +0.6%（29 組 23 組 ±5%）、KHH-NRT −2.9%（20 組 19 組 ±5%）；回程以日幣計價（用 0.21 粗換）；TPE-NRT 去程只 6 天 | 只有 GK 一家，單程、日幣回程要換匯；需要 GK 官方價時再用 |
 | Skyscanner 月曆（`/g/monthviewservice`） | 2026-10-31 從 GitHub Actions 8 航線全部 403（PerimeterX captcha） | 不可用 |
 | 星宇月曆（`ecapi.starlux-airlines.com/.../calendars/monthly`） | 2026-10-31 照開源碼的請求格式打回 422（欄位驗證失敗），未再追 | 只有 JX 兩條線、全服務航空，價值低 |
+| **Bright Data Web Unlocker 抓 Google Flights**（`api.brightdata.com/request`，zone `mcp_unlocker`，要金鑰） | 2026-10-31 實測（run 41181583286）8 航線全部拿到頁面（每頁約 2.2 MB、2–12 秒），從 `aria-label="From N New Taiwan dollars round trip total…"` 解析：直飛最低價與同一輪 fli 日曆 **8/8 完全相同**，並帶航空公司名稱；`brd_json=1` 對 Flights 無效（回 46 bytes） | **可用**：每月 5,000 次免費、每月 1 日重置、用完即停不扣款（官方 brightdata-mcp README）。走 Bright Data 的代理網路，不受 GitHub IP 被限流影響。注意：建 zone 的 API 回應含 zone 密碼，絕不能印進 Actions 紀錄（2026-10-31 發生過一次，紀錄已刪、請使用者重設密碼） |
 
-實測 run：40184426976（第一輪）… 40188927629（OKA 繞法）；免金鑰來源第二輪 41166318124（2026-10-31）。
+實測 run：40184426976（第一輪）… 40188927629（OKA 繞法）；免金鑰來源第二輪 41166318124、Bright Data 41181583286（2026-10-31）。
 上線前在分支上用正式程式各跑一輪（不 commit）：run 40256800288、40259238639（拆 job 後）——
 56 個請求、約 5.5 分鐘，日曆 40/40 時段有價（35 個一次就成功、1,531 天）；影子比價 5 組
 拿到價，與 SerpAPI／Scrape.do 價差全部在 ±0.04% 以內。KHH-OKA 的即時查詢（2027-04-30）
