@@ -31,8 +31,12 @@
 | Amadeus Self-Service | `test.api.amadeus.com` DNS 已解析不到 | 2026-07-17 停止服務 |
 | Kiwi Tequila／Skyscanner／Duffel | API 在，但都要審核或公司帳號 | 拿不到 |
 | Apify／Ignav | 需要使用者註冊，未測 | 有 fli＋Kiwi 後不需要 |
+| Kiwi 網站 GraphQL 日曆（`api.skypicker.com/umbrella/v2/graphql`，PriceCalendar，不需金鑰） | 2026-10-31 實測 8 航線都有單程日曆（KHH-NGO 16 天）；去程＋回程（d+5）相加 vs fli 5 晚來回，中位數高 2.8–6.0%，±2% 內只有 1–11/31 | 備援／交叉比對候選：比 MCP 一次 15 筆廣，但系統性偏高、非官方網站 API |
+| 捷星官方 farecache（`digitalapi.jetstar.com/v1/farecache`，不需金鑰） | 2026-10-31 實測 GK 三條線都回應：TPE-KIX 中位 +0.6%（29 組 23 組 ±5%）、KHH-NRT −2.9%（20 組 19 組 ±5%）；回程以日幣計價（用 0.21 粗換）；TPE-NRT 去程只 6 天 | 只有 GK 一家，單程、日幣回程要換匯；需要 GK 官方價時再用 |
+| Skyscanner 月曆（`/g/monthviewservice`） | 2026-10-31 從 GitHub Actions 8 航線全部 403（PerimeterX captcha） | 不可用 |
+| 星宇月曆（`ecapi.starlux-airlines.com/.../calendars/monthly`） | 2026-10-31 照開源碼的請求格式打回 422（欄位驗證失敗），未再追 | 只有 JX 兩條線、全服務航空，價值低 |
 
-實測 run：40184426976（第一輪）… 40188927629（OKA 繞法）。
+實測 run：40184426976（第一輪）… 40188927629（OKA 繞法）；免金鑰來源第二輪 41166318124（2026-10-31）。
 上線前在分支上用正式程式各跑一輪（不 commit）：run 40256800288、40259238639（拆 job 後）——
 56 個請求、約 5.5 分鐘，日曆 40/40 時段有價（35 個一次就成功、1,531 天）；影子比價 5 組
 拿到價，與 SerpAPI／Scrape.do 價差全部在 ±0.04% 以內。KHH-OKA 的即時查詢（2027-04-30）
