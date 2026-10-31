@@ -116,9 +116,15 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
    僅窄螢幕生效，桌面(≥560px)維持單列原樣。 */
 @media (max-width:559px){
   .alert-row{flex-wrap:wrap;row-gap:2px}
-  .alert-row span:nth-child(3){white-space:nowrap}   /* 出發日不再內部斷行 */
+  .alert-row .dt{white-space:nowrap;flex-basis:100%}   /* 出發日與天數固定獨佔第二行，各列排法一致 */
   .alert-row .why{flex-basis:100%;white-space:normal;text-align:right;margin-left:0}
 }
+/* 超過 8 筆收進「再看 N 筆」：標題的筆數要跟清單內容一致 */
+.alert-more{border-top:1px solid var(--line1)}
+.alert-more summary{padding:var(--s3) var(--s4);color:var(--ink3);font-size:var(--fs-s);
+  cursor:pointer;list-style-position:inside}
+.alert-more summary:hover{color:var(--ink2);background:var(--bg2)}
+.alert-more .alert-row:first-of-type{border-top:1px solid var(--line1)}
 
 /* ============ Cheap days（哪天特別便宜）============
    沿用 .alerts 的容器語彙，只多一欄「落差」與一個 ★ 標記。刻意不做成卡片：
@@ -660,14 +666,31 @@ function render(data){
     ["24H 警報", data.totals.alerts_24h],
   ].map(([k,v])=>`<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 
-  $("alert-count").textContent = data.alerts.length ? `· ${data.alerts.length}` : "";
-  $("alerts").innerHTML = data.alerts.length
-    ? data.alerts.slice(0,8).map(a=>`<a class="alert-row"
-        href="#${a.origin}-${a.destination}">
+  // 最新警報。export 已濾掉已出發、同一行程只留最新；這裡再濾一次已出發的，
+  // 因為 data.json 可能隔了一天沒更新。價格照全站規則：只有 Google 實價（已驗證）寫精確數字，
+  // 快取估價一律「約」＋百位，跟 LINE 通知的「疑似低價・尚未經 Google 驗證」一致。
+  // sent_at 是 UTC，日期換成台灣時間（不然台灣早上 8 點前送出的會顯示成前一天）。
+  const todayTW = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Taipei"});
+  const alerts = (data.alerts||[]).filter(a => a.depart_date >= todayTW);
+  const ALERT_TAG = {verified:"已驗證", conflict:"價格有落差"};
+  const alertRow = a => {
+    const exact = a.price_status === "verified" || a.price_source === "google";
+    const sent = new Date(a.sent_at.replace(" ", "T") + "Z").toLocaleDateString("zh-TW",
+      {timeZone:"Asia/Taipei", month:"2-digit", day:"2-digit"});
+    const nights = a.return_date
+      ? Math.round((new Date(a.return_date) - new Date(a.depart_date)) / 864e5) : null;
+    return `<a class="alert-row" href="#${a.origin}-${a.destination}">
         <span class="rt">${a.origin}→${a.destination}</span>
-        <span class="pr">${fmt(a.price)}</span>
-        <span>${a.depart_date.slice(5).replace("-","/")} 出發</span>
-        <span class="why">${REASONS[a.reason]||a.reason} · ${a.sent_at.slice(5,10).replace("-","/")}</span></a>`).join("")
+        <span class="pr">${exact ? fmt(a.price) : `約 ${fmt(RND100(a.price))}`}</span>
+        <span class="dt">${a.depart_date.slice(5).replace("-","/")} 出發${nights ? ` · ${nights} 天來回` : ""}</span>
+        <span class="why">${REASONS[a.reason]||a.reason} · ${ALERT_TAG[a.price_status] || "快取估價"} · ${sent}</span></a>`;
+  };
+  $("alert-count").textContent = alerts.length ? `· ${alerts.length}` : "";
+  $("alerts").innerHTML = alerts.length
+    ? alerts.slice(0,8).map(alertRow).join("")
+      + (alerts.length > 8
+         ? `<details class="alert-more"><summary>再看 ${alerts.length - 8} 筆</summary>${
+             alerts.slice(8).map(alertRow).join("")}</details>` : "")
     : `<div class="empty"><b>目前沒有警報。</b><br>
        價格低於門檻或出現歷史新低時會列在這裡；統計規則約累積 30 筆觀察後自動啟用。</div>`;
 

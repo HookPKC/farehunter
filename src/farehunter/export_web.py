@@ -6,7 +6,7 @@ import logging
 import os
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -317,9 +317,20 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
             "history": history,
         })
 
+    # 看板的「最新警報」：
+    # - 已出發的不列（2026-10-31 還列著 10-29、10-30 出發的）——出發日是當地日期，用台灣日期比；
+    # - 同一行程（航線＋去回日）只留最新一筆（KHH→NRT 11/23 曾因價格再跌被列兩次）；
+    # - 帶回程日與價格狀態：前端才寫得出「幾天來回」，也才能照全站規則把快取估價寫成「約」。
+    today_tw = _now.astimezone(timezone(timedelta(hours=8))).date().isoformat()
     alerts = [dict(r) for r in conn.execute(
-        """SELECT origin, destination, depart_date, price, reason, sent_at
-           FROM alerts ORDER BY sent_at DESC LIMIT 20""")]
+        """SELECT origin, destination, depart_date, return_date, price, reason, sent_at,
+                  price_source, price_status
+           FROM (SELECT *, ROW_NUMBER() OVER (
+                          PARTITION BY origin, destination, depart_date,
+                                       COALESCE(return_date, '')
+                          ORDER BY sent_at DESC, rowid DESC) AS rk
+                 FROM alerts WHERE depart_date >= ?)
+           WHERE rk = 1 ORDER BY sent_at DESC LIMIT 20""", (today_tw,))]
     alerts_24h = conn.execute(
         "SELECT COUNT(*) c FROM alerts WHERE sent_at >= datetime('now','-24 hours')"
     ).fetchone()["c"]
