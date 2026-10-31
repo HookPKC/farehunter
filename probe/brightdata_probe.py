@@ -56,6 +56,32 @@ def parse(html):
             "min_any": min(rows) if rows else None}
 
 
+def find_zone():
+    """沒設 BRIGHTDATA_ZONE 時，用金鑰列出帳號的 zone，挑 SERP 類型的（zone 名稱不是機密）。"""
+    zones = []
+    for path in ("/zone/get_active_zones", "/zone/get_all_zones"):
+        try:
+            r = requests.get("https://api.brightdata.com" + path, timeout=30,
+                             headers={"Authorization": f"Bearer {KEY}"})
+            out.setdefault("zone_lookup", []).append({"path": path, "http": r.status_code,
+                                                      "body": redact(r.text[:600])})
+            if r.status_code == 200:
+                data = r.json()
+                zones = data if isinstance(data, list) else (data.get("zones") or [])
+                if zones:
+                    break
+        except Exception as exc:  # noqa: BLE001
+            out.setdefault("zone_lookup", []).append({"path": path, "error": redact(str(exc)[:200])})
+    names = [(z.get("name"), z.get("type")) for z in zones if isinstance(z, dict)]
+    out["zones"] = names
+    serp = [n for n, t in names if t and "serp" in str(t).lower()]
+    return serp[0] if serp else (next((n for n, _ in names if n and "serp" in n.lower()), "") or "serp_api1")
+
+
+if KEY and not ZONE:
+    ZONE = find_zone()
+    out["zone_used"] = ZONE
+
 if not (KEY and ZONE):
     print(json.dumps(out, ensure_ascii=False, indent=1))
     raise SystemExit(0)
