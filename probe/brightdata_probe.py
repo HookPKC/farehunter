@@ -41,6 +41,16 @@ def bright(url):
     return r, round(time.time() - t0, 1)
 
 
+DIAG_HEADERS = ("content-type", "content-length", "x-brd-err-code", "x-brd-error", "x-brd-err-msg",
+                "x-luminati-error", "x-luminati-error-code", "x-brd-status")
+
+
+def diag(r):
+    return {"http": r.status_code, "bytes": len(r.text),
+            "headers": {k: redact(v)[:200] for k, v in r.headers.items() if k.lower() in DIAG_HEADERS},
+            "head": redact(" ".join(r.text[:200].split()))}
+
+
 LABEL = re.compile(r'aria-label="From ([\d,]+) Taiwan dollars round trip total\.([^"]*)"')
 
 
@@ -63,8 +73,7 @@ def find_zone():
         try:
             r = requests.get("https://api.brightdata.com" + path, timeout=30,
                              headers={"Authorization": f"Bearer {KEY}"})
-            out.setdefault("zone_lookup", []).append({"path": path, "http": r.status_code,
-                                                      "body": redact(r.text[:600])})
+            out.setdefault("zone_lookup", []).append({"path": path, "http": r.status_code})
             if r.status_code == 200:
                 data = r.json()
                 zones = data if isinstance(data, list) else (data.get("zones") or [])
@@ -87,7 +96,8 @@ def find_zone():
                       headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
                       json={"zone": {"name": "mcp_unlocker", "type": "unblocker"},
                             "plan": {"type": "unblocker", "ub_premium": True}})
-    out["zone_created"] = {"name": "mcp_unlocker", "http": r.status_code, "body": redact(r.text[:300])}
+    # 回應裡有 zone 的連線密碼：只記狀態碼，內容一律不印（公開 repo 的 Actions 紀錄誰都看得到）
+    out["zone_created"] = {"name": "mcp_unlocker", "http": r.status_code}
     return "mcp_unlocker" if r.status_code in (200, 201) else ""
 
 
@@ -113,6 +123,10 @@ for o, d in ROUTES:
     try:
         r, secs = bright(gf_url(o, d, dep.isoformat(), ret.isoformat()))
         trip.update(http=r.status_code, seconds=secs, bytes=len(r.text))
+        if r.status_code == 200 and not r.text:
+            trip["diag"] = diag(r)
+            out["trips"].append(trip)
+            break
         if r.status_code == 200:
             trip.update(parse(r.text))
             mn = trip.get("min_nonstop")
@@ -124,6 +138,32 @@ for o, d in ROUTES:
         trip["error"] = redact(f"{type(exc).__name__}: {exc}"[:300])
     out["trips"].append(trip)
     time.sleep(1)
+
+# 第一條就空：先確認 zone 本身能不能用（一般 Google 搜尋），再試 Google Flights 的其他寫法
+if out["trips"] and "diag" in out["trips"][0]:
+    t = out["trips"][0]
+    tries = {
+        "google_search_brd_json": ("https://www.google.com/search?q=flights%20TPE%20to%20NRT&brd_json=1", None),
+        "flights_with_data_format": (gf_url("TPE", "NRT", t["depart"], t["ret"]), "markdown"),
+        "flights_async_render": (gf_url("TPE", "NRT", t["depart"], t["ret"]) + "&brd_render=1", None),
+    }
+    out["diagnostics"] = {}
+    for name, (url, data_format) in tries.items():
+        body = {"zone": ZONE, "url": url, "format": "raw"}
+        if data_format:
+            body["data_format"] = data_format
+        try:
+            r = requests.post("https://api.brightdata.com/request", timeout=120, json=body,
+                              headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
+            d = diag(r)
+            if name.startswith("flights") and r.text:
+                d.update(parse(r.text))
+                d["nt_mentions"] = len(re.findall(r"(?:NT\$|TWD)\s?[\d,]{4,}", r.text))
+            out["diagnostics"][name] = d
+        except Exception as exc:  # noqa: BLE001
+            out["diagnostics"][name] = {"error": redact(f"{type(exc).__name__}: {exc}"[:200])}
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+    raise SystemExit(0)
 
 # brd_json=1：會不會直接回整理好的 JSON
 t = out["trips"][0]
