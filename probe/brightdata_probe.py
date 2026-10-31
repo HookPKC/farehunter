@@ -51,7 +51,7 @@ def diag(r):
             "head": redact(" ".join(r.text[:200].split()))}
 
 
-LABEL = re.compile(r'aria-label="From ([\d,]+) Taiwan dollars round trip total\.([^"]*)"')
+LABEL = re.compile(r'aria-label="From ([\d,]+) (?:New )?Taiwan dollars? round trip total\.([^"]*)"')
 
 
 def parse(html):
@@ -129,6 +129,14 @@ for o, d in ROUTES:
             break
         if r.status_code == 200:
             trip.update(parse(r.text))
+            if not trip["itineraries"]:
+                # 解析不到：印出價格附近的文字（Google 公開頁面），修規則用，然後停下省額度
+                hits = [m.start() for m in re.finditer(r"Taiwan dollar|NT\$|TWD|round trip", r.text)][:6]
+                trip["snippets"] = [" ".join(r.text[max(0, i - 160): i + 160].split()) for i in hits]
+                trip["counts"] = {k: len(re.findall(k, r.text)) for k in
+                                  ("Taiwan dollar", "NT\\$", "TWD", "round trip", "aria-label", "Nonstop")}
+                out["trips"].append(trip)
+                break
             mn = trip.get("min_nonstop")
             if mn and trip.get("fli_calendar"):
                 trip["diff_pct_vs_fli"] = round((mn[0] - trip["fli_calendar"]) / trip["fli_calendar"] * 100, 2)
