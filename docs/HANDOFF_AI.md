@@ -2,7 +2,7 @@
 
 **讀者**：接手本專案的任何 AI 模型（Claude Opus/Sonnet、Codex、GPT 系列或其他），
 以及想了解 AI 協作規範的人類。本文件不綁定任何特定模型；「你」指接手的 AI。
-最後更新：2026-10-26。
+最後更新：2026-10-31。
 
 ---
 
@@ -29,9 +29,9 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 
 > 曾有第三層「Google 日曆實價」（SearchApi gcal-sweep／longrange-sweep）。
 > SearchApi 的額度是**一次性試用 100 次**（實測跨月不重置），2026-08 用盡且
-> 不續費，該層的程式已於同月移除；`long_range` 表本身（1,277 筆、零讀者）仍留在
-> prices.db 當死資料，要刪需另案經使用者同意。歷史 `provider='searchapi'` 觀測
-> 仍留在 DB，標籤對應表因此保留。
+> 不續費，該層的程式已於同月移除；留下的 `long_range` 表（1,277 筆、零讀者）經使用者
+> 同意，2026-10-26 起由 `Store.__init__` 刪除（舊資料在 git 歷史的 prices.db 裡）。
+> 歷史 `provider='searchapi'` 觀測仍留在 DB，標籤對應表因此保留。
 
 **付費 API 額度（2026-08 起可觀測，不要再憑印象推論）**：
 `docs/quota.json` 由 fsc-snapshot 每日寫入並 commit，內容是 SerpAPI 真實
@@ -128,7 +128,8 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
   低價提示（更新頻率見 §1），Google 點入後是**即時**搜尋結果，兩者必有時間差；
   票價本身也隨時波動。頁面已用「≈」「約」「近期觀測」「以 Google Flights 為準」
   誠實標示。使用者或親友再問，指向 `RUNBOOK_HOOK.md` 的白話說明即可。除非
-  使用者明確立案，否則不要為此改前端語意。
+  使用者明確立案，否則不要為此改前端語意。**也不是市場（`gl`）造成的**：2026-10-31
+  實測預設與 `gl=TW` 的價格完全相同（ADR 0003），不必替 SerpAPI／fli 加 `gl`。
 - 首頁黃/紅提示條是誠實訊號不是 bug；出現時沿源頭排查（PLAYBOOK 1-6），
   不要去改提示條本身。
 - 手動 Run 後 log 出現「跳過本輪」是 guard 設計行為。
@@ -171,8 +172,12 @@ monitor 每小時 `:17` 應產生一筆 `chore: price observations` commit。**�
 ## 7. 已知長期課題（P2，非急務）
 
 - **fli 觀察期**（ADR 0003）：2026-10-26 開始，預計 2026-11-09 跑
-  `python -m farehunter.fli_calendar report data/fli 14`，四項標準都 PASS 才提第二階段
-  （讓 fli 價格參與警報、逐步取代 SerpAPI）。觀察期間不要讓任何既有讀者讀 `data/fli/`。
+  `python -m farehunter.fli_calendar report data/fli 15`（涵蓋 10-26 第一輪），四項標準都
+  PASS 才提第二階段（讓 fli 價格參與警報、逐步取代 SerpAPI）。日曆標準的計分規則
+  2026-10-26 修正過：出過錯的時段照算，只有每次都明確回空的才當成沒有班表（ADR 0003）；
+  看 `calendar_by_route` 找拖累的航線。2026-10-31 已排一次性提醒（2026-11-10 08:30 台灣）
+  到時跑這份報告並整理結論；沒收到提醒就照上面的指令手動跑。
+  觀察期間不要讓任何既有讀者讀 `data/fli/`。
 
 - **prices.db 成長**：2026-10 已處理（ADR 0002）。出發日已過 30 天的觀測由
   `archive-db` 每日搬到 `archive/`，現行檔超過壓實大小 10% 才 VACUUM，預估

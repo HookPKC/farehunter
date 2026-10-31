@@ -9,6 +9,7 @@
    fli 的日期驗證用真實時鐘，所以這一層的日期一律由 date.today() 推算。
 """
 import gzip
+import itertools
 import json
 import sqlite3
 import subprocess
@@ -295,7 +296,15 @@ def test_shadow_targets_open_a_read_only_connection(tmp_path, monkeypatch):
 
 # ---- 影子比價的執行 ---------------------------------------------------------------
 
-def test_run_shadow_retries_then_records_diff():
+def test_run_shadow_does_not_retry_in_the_same_run_by_default():
+    """main 10-26～30：同一輪的重試 0/21 救回，只是多打兩次。"""
+    backend = FakeBackend(cheapest_plan=[FliError("google_error: x"), (15040.0, "IT")])
+    rec = fc.run_shadow(backend, [_target()], NOW, sleep=NO_SLEEP)[0]
+    assert rec["status"] == "error" and rec["attempts"] == 1 and backend.requests == 1
+
+
+def test_run_shadow_retries_then_records_diff(monkeypatch):
+    monkeypatch.setattr(fc, "SHADOW_RETRIES", 1)       # 重試的路徑仍在，只是預設不用
     sleeps = []
     backend = FakeBackend(cheapest_plan=[FliError("google_error: x"), (15040.0, "IT")])
     rec = fc.run_shadow(backend, [_target()], NOW, sleep=sleeps.append)[0]
@@ -391,6 +400,42 @@ def test_load_seen_only_looks_back_dedupe_days(tmp_path):
     fc.write_records(out, old, [{"kind": "shadow", "key": "old"}])
     fc.write_records(out, NOW - timedelta(days=1), [{"kind": "shadow", "key": "new"}])
     assert fc.load_seen(out, NOW) == {"new"}
+
+
+def test_failed_comparisons_are_retried_next_run(tmp_path):
+    """出錯、參考觀測還不到 6 小時的不算比過；拿到價或 Google 明確說沒有航班的才算。
+
+    超過 6 小時的就不再試：那時就算拿到價，報告也不拿它評準確度（main 資料重播：
+    舊寫法會多打 26 次，其中 11 次 lag 已在 22–24 小時）。
+    """
+    out = tmp_path / "fli"
+    fc.write_records(out, NOW - timedelta(hours=1), [
+        {"kind": "shadow", "key": "ok", "status": "ok", "ref_observed_at": _at(2)},
+        {"kind": "shadow", "key": "none", "status": "none", "ref_observed_at": _at(2)},
+        {"kind": "shadow", "key": "err", "status": "error", "ref_observed_at": _at(5.9)},
+        {"kind": "shadow", "key": "stale", "status": "error", "ref_observed_at": _at(6.1)},
+        {"kind": "shadow", "key": "garbled", "status": "error", "ref_observed_at": "x"}])
+    assert fc.load_seen(out, NOW) == {"ok", "none", "stale", "garbled"}
+
+
+def test_run_retries_a_failed_comparison_in_the_next_run(tmp_path):
+    """10-28／29／30：早上那輪即時查詢失敗，一小時後換台主機的下一輪都成功。"""
+    cfg = _config(tmp_path, months=1)
+    db = _db(tmp_path, [{"o": "KHH", "d": "NGO", "dep": "2026-12-07", "at": _at(2)}])
+    out = str(tmp_path / "fli")
+    first = fc.run(cfg, db, out, now=NOW, sleep=NO_SLEEP,
+                   backend=FakeBackend(cheapest_plan=[FliError("google_error: x")]))
+    assert first["shadow_targets"] == 1 and first["shadow_ok"] == 0
+    second = fc.run(cfg, db, out, now=NOW + timedelta(hours=1), sleep=NO_SLEEP,
+                    backend=FakeBackend())
+    assert second["shadow_targets"] == 1 and second["shadow_ok"] == 1
+    third = fc.run(cfg, db, out, now=NOW + timedelta(hours=2), sleep=NO_SLEEP,
+                   backend=FakeBackend())
+    assert third["shadow_targets"] == 0                     # 比到了就不再比
+    # 同一個參考觀測出現在兩輪：日曆價對參考價只算一次；比價數算行程，不算嘗試
+    res = fc.report(out, now=NOW + timedelta(hours=2))
+    assert res["calendar_vs_ref_pairs"] == 1
+    assert res["shadow_pairs"] == 1 and res["shadow_attempts"] == 2 and res["shadow_ok"] == 1
 
 
 def test_run_all_empty_counts_as_failed(tmp_path):
@@ -493,11 +538,16 @@ def _cal(route, idx, status, attempts=1, errors=None, days=None):
             "attempts": attempts, "days": days, "errors": errors}
 
 
+_SH_KEYS = itertools.count()
+
+
 def _sh(diff, lag=1.0, status="ok", route="KHH-NGO", dep="2026-12-07", ret="2026-12-12",
-        ref=14891.0, errors=()):
+        ref=14891.0, errors=(), ref_at=None, provider="serpapi", key=None):
+    """一筆影子比價紀錄。key 預設每筆不同（真實紀錄裡每個參考觀測一個 key）。"""
     return {"kind": "shadow", "status": status, "diff_pct": diff, "lag_hours": lag,
             "errors": list(errors), "route": route, "depart": dep, "return": ret,
-            "ref_price": ref}
+            "ref_price": ref, "ref_observed_at": ref_at, "ref_provider": provider,
+            "key": key or f"k{next(_SH_KEYS)}"}
 
 
 def _sum(**kw):
@@ -506,7 +556,7 @@ def _sum(**kw):
     return s
 
 
-def test_report_scores_only_windows_that_ever_had_prices(tmp_path):
+def test_report_skips_only_windows_google_always_said_have_no_flights(tmp_path):
     out = tmp_path / "fli"
     _write(out, "2026-10-25T0341Z", [
         _cal("KHH-NGO", 0, "ok"), _cal("KHH-NGO", 1, "empty"),      # #1 從沒價 → 沒班表
@@ -517,8 +567,9 @@ def test_report_scores_only_windows_that_ever_had_prices(tmp_path):
         _cal("TPE-NRT", 0, "ok"), _sh(-3.0), _sum(requests=8)])
     res = fc.report(str(out), days=14, now=NOW)
     assert res["runs"] == 2 and res["requests"] == 18 and res["red_runs"] == 0
-    assert res["calendar_never_priced"] == ["KHH-NGO#1"]
+    assert res["calendar_no_schedule"] == ["KHH-NGO#1"]
     assert res["calendar_scored"] == 4
+    assert res["calendar_by_route"] == {"KHH-NGO": "1/2", "TPE-NRT": "2/2"}
     assert res["calendar_ok_rate"] == 0.75                    # 3/4
     assert res["calendar_first_try_rate"] == 0.5              # 2/4（一筆重試才成功）
     assert res["calendar_error_rate"] == 0.25
@@ -527,6 +578,40 @@ def test_report_scores_only_windows_that_ever_had_prices(tmp_path):
     assert res["criteria"]["calendar_ok_rate>=95%"] == "FAIL"
     assert res["criteria"]["no_blocking"] == "PASS"
     assert res["error_kinds"] == {"google_error": 1}
+
+
+def test_report_counts_windows_that_only_ever_failed(tmp_path):
+    """2026-10-26 main 第一輪：KHH-NGO 5 段都是 google_error、從沒拿到價。
+
+    舊規則把「從沒拿到價」一律當成沒有班表剔除，報告寫 error_rate 0、PASS。
+    錯誤不是沒有班表的證據——只有 Google 每次都明確回空才剔除。
+    """
+    out = tmp_path / "fli"
+    _write(out, "2026-10-26T0226Z", [
+        *[_cal("TPE-NRT", i, "ok") for i in range(5)],
+        *[_cal("KHH-NGO", i, "error", attempts=2,
+               errors=["google_error: x", "google_error: x"]) for i in range(5)],
+        _cal("KHH-OKA", 4, "error", attempts=2,
+             errors=["transport: Timeout", "google_error: x"]),
+        _cal("KHH-CTS", 4, "empty"),                              # 真的沒班表
+        _sum()])
+    res = fc.report(str(out), days=14, now=NOW)
+    assert res["calendar_no_schedule"] == ["KHH-CTS#4"]
+    assert res["calendar_scored"] == 11
+    assert res["calendar_ok_rate"] == pytest.approx(5 / 11, abs=1e-4)
+    assert res["calendar_error_rate"] == pytest.approx(6 / 11, abs=1e-4)
+    assert res["calendar_by_route"] == {"KHH-NGO": "0/5", "KHH-OKA": "0/1", "TPE-NRT": "5/5"}
+    assert res["criteria"]["calendar_ok_rate>=95%"] == "FAIL"
+
+
+def test_report_counts_a_window_that_was_empty_once_and_failed_once(tmp_path):
+    """同一段一輪回空、一輪出錯：不能確定沒有班表，照算。"""
+    out = tmp_path / "fli"
+    _write(out, "2026-10-25T0341Z", [_cal("KHH-NGO", 3, "empty"), _sum()])
+    _write(out, "2026-10-26T0341Z", [_cal("KHH-NGO", 3, "error"), _sum()])
+    res = fc.report(str(out), days=14, now=NOW)
+    assert res["calendar_no_schedule"] == []
+    assert res["calendar_scored"] == 2 and res["calendar_ok_rate"] == 0.0
 
 
 def test_report_lag_boundary_is_inclusive(tmp_path):
@@ -546,17 +631,51 @@ def test_report_counts_blocks_even_when_the_retry_succeeded(tmp_path):
 
 def test_report_compares_calendar_prices_with_reference(tmp_path):
     out = tmp_path / "fli"
+    ref_at = "2026-10-26T03:30:00+00:00"                        # 日曆那輪 03:41 開始
     _write(out, "2026-10-26T0341Z", [
         _cal("KHH-NGO", 0, "ok", days={"2026-12-07": 15000.0, "2026-12-08": 1.0}),
-        _sh(0.0, ref=14891.0),                                   # 住 5 晚 → 可比，+0.7%
-        _sh(0.0, dep="2026-12-08", ret="2026-12-15"),            # 住 7 晚 → 日曆不可比
-        _sh(0.0, dep="2026-12-09", ret="2026-12-14"),            # 日曆那天沒價 → 不可比
-        _sh(0.0, lag=9.0),                                       # 太舊 → 不評
+        _sh(0.0, ref=14891.0, ref_at=ref_at),                    # 住 5 晚 → 可比，+0.7%
+        _sh(0.0, dep="2026-12-08", ret="2026-12-15", ref_at=ref_at),  # 住 7 晚 → 不可比
+        _sh(0.0, dep="2026-12-09", ret="2026-12-14", ref_at=ref_at),  # 日曆那天沒價
+        _sh(0.0, ref_at="2026-10-25T18:00:00+00:00"),            # 參考價比日曆早 9.7h → 不評
+        _sh(0.0),                                                # 沒有參考時刻 → 不評
         _sum()])
     res = fc.report(str(out), now=NOW)
     assert res["calendar_vs_ref_pairs"] == 1
     assert res["calendar_vs_ref_within_rate"] == 1.0
     assert res["criteria"]["calendar_vs_ref_within_2%>=90%"] == "PASS"
+
+
+def test_report_pairs_the_calendar_from_another_run(tmp_path):
+    """2026-10-26：12:26 那輪掃了日曆；12:49 那輪（FSC 剛跑完）30 分鐘內不重掃，
+    只做影子比價。原本只配同一輪的日曆，那輪的參考價全部沒得比。"""
+    out = tmp_path / "fli"
+    now = datetime(2026, 10, 26, 14, 0, tzinfo=timezone.utc)
+    _write(out, "2026-10-26T0600Z", [                                   # 6.8h 前：太遠
+        _cal("TPE-NRT", 0, "ok", days={"2026-12-17": 1.0}), _sum()])
+    _write(out, "2026-10-26T0900Z", [                                   # 3.8h 前：可用但較遠
+        _cal("TPE-NRT", 0, "ok", days={"2026-12-17": 9999.0}), _sum()])
+    _write(out, "2026-10-26T1226Z", [
+        _cal("TPE-NRT", 0, "ok", days={"2026-12-17": 8499.0}), _sum()])
+    _write(out, "2026-10-26T1249Z", [
+        _sh(0.0, route="TPE-NRT", dep="2026-12-17", ret="2026-12-22", ref=8499.0,
+            ref_at="2026-10-26T12:48:00+00:00"),
+        _sum(calendar_skipped="last run 23 min ago")])
+    res = fc.report(str(out), days=1, now=now)
+    assert res["calendar_vs_ref_pairs"] == 1
+    assert res["calendar_vs_ref_within_rate"] == 1.0                   # 用的是 12:26 那輪
+    assert res["calendar_vs_ref_by_provider"] == {"serpapi": "1/1"}
+
+
+def test_report_splits_shadow_accuracy_by_reference_source(tmp_path):
+    """10-28／29：fli 與 SerpAPI 一致，只有 Scrape.do 低約 7%——分開列才看得出來。"""
+    out = tmp_path / "fli"
+    _write(out, "2026-10-26T0341Z", [
+        _sh(0.0), _sh(0.0), _sh(6.95, provider="scrapedo"), _sh(0.0, provider="scrapedo"),
+        _sum()])
+    res = fc.report(str(out), now=NOW)
+    assert res["shadow_within_by_provider"] == {"scrapedo": "1/2", "serpapi": "2/2"}
+    assert res["shadow_within_rate"] == 0.75
 
 
 def test_report_survives_a_corrupt_file(tmp_path):
@@ -742,8 +861,19 @@ def test_backend_cheapest_none_and_error(backend_with):
     b = backend_with([_Resp(_wrb([[None, None, None, None, "sess"], None, None, None]))])
     assert b.cheapest("KHH", "NGO", _days(43), _days(48)) is None
     b = backend_with([_Resp(GOOGLE_ERR)])
-    with pytest.raises(FliError, match="^google_error"):
+    with pytest.raises(FliError, match="^google_error") as info:
         b.cheapest("KHH", "NGO", _days(43), _days(48))
+    # 短回應整段記下（2026-10-26～29 即時查詢大多這樣失敗，只有長度查不出原因）
+    assert 'body=)]}\' [["wrb.fr", null, null, null, null, [13]], ["di", 50]]' in str(info.value)
+
+
+def test_backend_diag_keeps_only_short_bodies(backend_with):
+    b = backend_with([])
+    b.client.last = {"status": 200, "path": "/x/GetShoppingResults", "bytes": 300}
+    b.client.last_text = "e" * 300
+    assert b.client.diag().endswith("body=" + "e" * 300)
+    b.client.last, b.client.last_text = dict(b.client.last, bytes=301), "e" * 301
+    assert "body=" not in b.client.diag()             # 正常大小的回應不塞進錯誤訊息
 
 
 def test_backend_currency_check(backend_with):

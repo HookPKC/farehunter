@@ -99,6 +99,20 @@ def test_success_still_returns_true(monkeypatch):
     assert N.send_line("hi", session=_Session(lambda url, **kw: _Resp())) is True
 
 
+def test_both_channels_use_the_short_timeout(monkeypatch):
+    """管道掛掉時不要每則卡約 1 分鐘：連線 5 秒、讀取 20 秒。"""
+    _env(monkeypatch)
+    seen = []
+
+    def post(url, **kw):
+        seen.append(kw["timeout"])
+        return _Resp()
+
+    N.send_telegram("hi", session=_Session(post))
+    N.send_line("hi", session=_Session(post))
+    assert seen == [(5, 20), (5, 20)]
+
+
 # ---- notify()：一個管道壞了不能拖累另一個 -----------------------------------
 
 DEP = (datetime.now(timezone.utc).date() + timedelta(days=40)).isoformat()

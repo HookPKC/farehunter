@@ -23,8 +23,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import calendar
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
@@ -45,18 +46,49 @@ HEADROOM_RUNWAY_DAYS = 30
 #: 次是唯一常態消耗來源；刻意不 import 以免形成循環依賴，改用測試釘住一致性。
 EXPECTED_DAILY = 6.0
 
+#: 已知的一次計費週期重置（偵測到的時刻）。從 docs/quota.json 的 git 歷史查到：
+#: 用量在 2026-09-03 與 2026-10-03 的快照倒退，免費層每月 3 日前後重置。
+#: 只在還沒親自偵測到重置時當起點（例如 quota-check 寫到暫存檔、沒有上一份）；
+#: 偵測到之後一律以 docs/quota.json 裡的 last_reset_at 為準。
+KNOWN_RESET_AT = "2026-10-03T11:33:23+00:00"
+
+
+def _parse_ts(value) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _add_months(d: date, months: int) -> date:
+    """d 往後推 months 個月的同一天；那個月沒有這一天（31 日、2 月）就取月底。
+
+    一律從原日期算，不從上一次的結果接著推：否則 01-31 → 02-28 → 03-28 會一路漂移。
+    """
+    y, m = divmod(d.month - 1 + months, 12)
+    y, m = d.year + y, m + 1
+    return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+
+def next_reset(last_reset_at: str | None, now: datetime) -> date | None:
+    """上次重置的日期往後逐月推，第一個晚於今天的就是下次重置的估計值。
+
+    上次重置不明、或比現在還晚（時鐘或資料有問題）就回 None——不猜。
+    """
+    last = _parse_ts(last_reset_at)
+    if last is None or last > now:
+        return None
+    months = 1
+    while _add_months(last.date(), months) <= now.date():
+        months += 1
+    return _add_months(last.date(), months)
+
 
 def _days_between(then: str | None, now: datetime) -> float | None:
     """兩個時間戳之間的天數。無法解析回 None（不猜）。"""
-    if not then:
-        return None
-    try:
-        ts = datetime.fromisoformat(str(then).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return (now - ts).total_seconds() / 86400.0
+    ts = _parse_ts(then) if then else None
+    return None if ts is None else (now - ts).total_seconds() / 86400.0
 
 
 @dataclass(frozen=True)
@@ -123,13 +155,14 @@ def assess(q: Quota, *, now: datetime | None = None,
 
     status:
       exhausted  剩餘為 0——已經在沉默失敗，或下一次查詢就會失敗
-      low        續航 < LOW_RUNWAY_DAYS 天，該處理了
+      low        續航 < LOW_RUNWAY_DAYS 天、而且撐不到下次重置，該處理了
       headroom   續航 > HEADROOM_RUNWAY_DAYS 天（機會提示，非警報）
       ok         夠用
       unknown    欄位不足以判斷（例如 SerpAPI 改了回應格式）
 
     prev: 上一份 quota.json 的內容。除了算燒用量，也用來偵測週期重置
-    （用量突然變小）——那是唯一能知道重置日的方法。
+    （用量突然變小）——那是唯一能知道重置日的方法。偵測到的時刻記在
+    last_reset_at 並一路往下傳，用來估下次重置（next_reset_estimate）。
     """
     now = now or datetime.now(timezone.utc)
     left = q.total_searches_left
@@ -143,6 +176,13 @@ def assess(q: Quota, *, now: datetime | None = None,
         "burn_source": None,
         "runway_days": None,
         "period_reset": False,
+        # 上次重置：本輪偵測到 → 上一份記錄的 → 已知的歷史重置（KNOWN_RESET_AT）。
+        # 一律往下傳：週期重置是這支程式唯一看得到的額度事件，丟了就要再等一個月。
+        "last_reset_at": next(
+            (t for t in ((prev or {}).get("last_reset_at"), KNOWN_RESET_AT)
+             if next_reset(t, now)), None),
+        "next_reset_estimate": None,
+        "days_to_reset": None,
         "status": "unknown",
         "note": "",
     }
@@ -161,6 +201,7 @@ def assess(q: Quota, *, now: datetime | None = None,
                 # 用量倒退 = 計費週期剛重置。這是唯一能觀測到重置日的方式，
                 # 記下來，並且不要拿倒退的差值去算燒用量。
                 out["period_reset"] = True
+                out["last_reset_at"] = now.isoformat(timespec="seconds")
                 # 用獨立變數收集，最後才併進 note。曾經直接寫 out["note"]，
                 # 結果被下面的狀態訊息整段蓋掉——而「重置日」是這支程式能
                 # 觀測到的最有價值的一件事，不能被順手覆寫。
@@ -186,7 +227,19 @@ def assess(q: Quota, *, now: datetime | None = None,
     tail = (f"剩餘 {left} 次、每日約 {burn:.1f} 次"
             f"（{'實測' if source == 'measured' else '預估'}）"
             f"→ 續航約 {runway:.0f} 天")
-    if runway < LOW_RUNWAY_DAYS:
+    # 續航要跟下次重置比才有意義：2026-10-25 剩 121 次、續航 15 天，看起來 11 月
+    # 上旬會用完，但 11/03 前後就重置了，根本不會發生。
+    reset = next_reset(out["last_reset_at"], now)
+    survives = False
+    if reset is not None:
+        days_to_reset = (reset - now.date()).days
+        out["next_reset_estimate"] = reset.isoformat()
+        out["days_to_reset"] = days_to_reset
+        survives = runway >= days_to_reset
+        tail += (f"；預計 {reset:%m/%d} 前後重置（還有 {days_to_reset} 天）→ "
+                 + ("撐得到" if survives
+                    else f"會早約 {days_to_reset - runway:.0f} 天用完"))
+    if runway < LOW_RUNWAY_DAYS and not survives:
         out["status"] = "low"
         out["note"] = _note(f"額度快見底：{tail}")
         return out
@@ -229,9 +282,11 @@ def snapshot(path: str = "docs/quota.json", *,
         result = assess(q, now=now, prev=prev)
     except Exception as exc:                     # noqa: BLE001 — 見 docstring
         log.warning("額度檢查失敗（不影響本輪抓價）: %s", exc)
+        # 上次重置日照樣往下傳：少了它，隔天就退回 KNOWN_RESET_AT，偵測到的重置日白費
         result = {"status": "error", "note": str(exc)[:300],
                   "plan_name": "", "searches_per_month": None,
-                  "total_searches_left": None, "this_month_usage": None}
+                  "total_searches_left": None, "this_month_usage": None,
+                  "last_reset_at": (prev or {}).get("last_reset_at")}
     result["checked_at"] = now.isoformat(timespec="seconds")
     _log_result(result)
     try:

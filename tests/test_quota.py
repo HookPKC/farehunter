@@ -141,9 +141,124 @@ def test_period_reset_is_detected_and_recorded():
               total_searches_left=244, this_month_usage=6)
     r = assess(q, now=datetime(2026, 9, 4, 11, 0, tzinfo=timezone.utc), prev=prev)
     assert r["period_reset"] is True
-    assert "重置" in r["note"]
+    assert "計費週期已重置" in r["note"]
     # 倒退的差值不得被當成燒用量（會算出負數或荒謬的續航）
     assert r["burn_source"] == "expected" and r["burn_per_day"] > 0
+
+
+# ---- 下次重置（2026-10-26 起）--------------------------------------------
+
+OCT25 = datetime(2026, 10, 25, 11, 14, 28, tzinfo=timezone.utc)
+
+
+def test_the_october_false_alarm_knows_the_reset_comes_first():
+    """2026-10-25 的真實數字：剩 121、實測每天 7.86 → 續航 15 天，看起來 11 月上旬
+    會用完。但 git 歷史顯示每月 3 日前後重置，11/03 只剩 9 天，根本撐得到。"""
+    prev = {"this_month_usage": 121, "checked_at": "2026-10-24T10:48:54+00:00"}
+    r = assess(Quota(plan_name="Free Plan", searches_per_month=250,
+                     total_searches_left=121, this_month_usage=129),
+               now=OCT25, prev=prev)
+    assert r["runway_days"] == 15.4
+    assert r["last_reset_at"] == Q.KNOWN_RESET_AT
+    assert r["next_reset_estimate"] == "2026-11-03" and r["days_to_reset"] == 9
+    assert r["status"] == "ok"
+    assert "11/03" in r["note"] and "撐得到" in r["note"]
+
+
+def test_short_runway_is_not_low_when_the_reset_comes_first():
+    """剩 20 次、每天 6 次 → 3.3 天；但 2 天後就重置，不該警報。"""
+    now = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
+    r = assess(Quota(total_searches_left=20, this_month_usage=230), now=now)
+    assert r["days_to_reset"] == 2 and r["runway_days"] == 3.3
+    assert r["status"] == "ok"
+    # 同樣的額度，重置還遠 → 照樣 low，並說出會早幾天用完
+    r = assess(Quota(total_searches_left=20, this_month_usage=230),
+               now=datetime(2026, 10, 20, 12, tzinfo=timezone.utc))
+    assert r["status"] == "low" and "會早約 11 天用完" in r["note"]
+
+
+def test_a_detected_reset_becomes_the_new_anchor():
+    prev = {"this_month_usage": 244, "checked_at": "2026-11-02T11:00:00+00:00",
+            "last_reset_at": "2026-10-03T11:33:23+00:00"}
+    now = datetime(2026, 11, 3, 11, 20, tzinfo=timezone.utc)
+    r = assess(Quota(total_searches_left=246, this_month_usage=4), now=now, prev=prev)
+    assert r["period_reset"] is True
+    assert r["last_reset_at"] == "2026-11-03T11:20:00+00:00"
+    assert r["next_reset_estimate"] == "2026-12-03"
+
+
+def test_the_last_reset_is_carried_forward_not_replaced_by_the_seed():
+    prev = {"this_month_usage": 50, "checked_at": "2026-11-20T11:00:00+00:00",
+            "last_reset_at": "2026-11-05T09:00:00+00:00"}
+    now = datetime(2026, 11, 21, 11, tzinfo=timezone.utc)
+    r = assess(Quota(total_searches_left=194, this_month_usage=56), now=now, prev=prev)
+    assert r["last_reset_at"] == "2026-11-05T09:00:00+00:00"
+    assert r["next_reset_estimate"] == "2026-12-05"
+
+
+def test_a_garbled_last_reset_falls_back_to_the_known_one():
+    prev = {"this_month_usage": 120, "checked_at": "2026-10-24T11:00:00+00:00",
+            "last_reset_at": "garbage"}
+    r = assess(Quota(total_searches_left=121, this_month_usage=129), now=OCT25, prev=prev)
+    assert r["last_reset_at"] == Q.KNOWN_RESET_AT
+    assert r["next_reset_estimate"] == "2026-11-03"
+
+
+def test_no_reset_estimate_before_the_seed_or_without_one(monkeypatch):
+    """已知重置比「現在」還晚（舊日期的測試、時鐘錯）→ 不估，行為跟以前一樣。"""
+    q = Quota(total_searches_left=74, this_month_usage=176)
+    early = assess(q, now=datetime(2026, 9, 1, 11, 33, tzinfo=timezone.utc))
+    assert early["last_reset_at"] is None and early["next_reset_estimate"] is None
+    assert "重置" not in early["note"]
+    monkeypatch.setattr(Q, "KNOWN_RESET_AT", None)
+    assert assess(q, now=OCT25)["next_reset_estimate"] is None
+
+
+def test_next_reset_handles_month_ends_and_december():
+    now = datetime(2027, 2, 10, tzinfo=timezone.utc)
+    assert Q.next_reset("2027-01-31T10:00:00+00:00", now).isoformat() == "2027-02-28"
+    # 過了短月不漂移：一律從原日期算，3 月回到 31 日（不是 02-28 接著推的 03-28）
+    assert Q.next_reset("2027-01-31T10:00:00+00:00",
+                        datetime(2027, 3, 10, tzinfo=timezone.utc)).isoformat() == "2027-03-31"
+    assert Q.next_reset("2026-12-15T10:00:00+00:00",
+                        datetime(2026, 12, 20, tzinfo=timezone.utc)).isoformat() == "2027-01-15"
+    # 好幾個月沒偵測到（例如 FSC 停擺）→ 一路推到今天之後
+    assert Q.next_reset("2026-10-03T11:00:00+00:00",
+                        datetime(2027, 1, 10, tzinfo=timezone.utc)).isoformat() == "2027-02-03"
+    # 重置當天 → 下一次是下個月
+    assert Q.next_reset("2026-10-03T11:00:00+00:00",
+                        datetime(2026, 11, 3, 23, tzinfo=timezone.utc)).isoformat() == "2026-12-03"
+    assert Q.next_reset(None, now) is None and Q.next_reset("garbage", now) is None
+
+
+def test_a_failed_check_keeps_the_reset_anchor(tmp_path):
+    """11-05 偵測到重置 → 11-06 查詢失敗 → 11-07 不能退回 10-03 的已知值。"""
+    out = tmp_path / "q.json"
+    out.write_text(json.dumps({"this_month_usage": 10, "checked_at": "2026-11-05T11:00:00+00:00",
+                               "last_reset_at": "2026-11-05T11:00:00+00:00"}), encoding="utf-8")
+    err = snapshot(str(out), api_key="k", session=_Session(exc=RuntimeError("boom")),
+                   now=datetime(2026, 11, 6, 11, tzinfo=timezone.utc))
+    assert err["status"] == "error" and err["last_reset_at"] == "2026-11-05T11:00:00+00:00"
+    acct = dict(ACCOUNT, total_searches_left=230, this_month_usage=20)
+    r = snapshot(str(out), api_key="k", session=_Session(_Resp(acct)),
+                 now=datetime(2026, 11, 7, 11, tzinfo=timezone.utc))
+    assert r["last_reset_at"] == "2026-11-05T11:00:00+00:00"
+    assert r["next_reset_estimate"] == "2026-12-05"
+
+
+def test_snapshot_passes_the_reset_anchor_to_the_next_day(tmp_path):
+    out = tmp_path / "q.json"
+    day1 = datetime(2026, 11, 3, 11, tzinfo=timezone.utc)
+    out.write_text(json.dumps({"this_month_usage": 244,
+                               "checked_at": "2026-11-02T11:00:00+00:00"}), encoding="utf-8")
+    acct = dict(ACCOUNT, total_searches_left=246, this_month_usage=4)
+    snapshot(str(out), api_key="k", session=_Session(_Resp(acct)), now=day1)
+    acct = dict(ACCOUNT, total_searches_left=240, this_month_usage=10)
+    r = snapshot(str(out), api_key="k", session=_Session(_Resp(acct)),
+                 now=datetime(2026, 11, 4, 11, tzinfo=timezone.utc))
+    assert r["period_reset"] is False
+    assert r["last_reset_at"] == "2026-11-03T11:00:00+00:00"
+    assert r["next_reset_estimate"] == "2026-12-03"
 
 
 def test_low_when_the_runway_is_short():

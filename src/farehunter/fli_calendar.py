@@ -50,7 +50,11 @@ MAX_AHEAD_DAYS = 300          # fli 文件：最遠 305 天
 SPACING_S = 3.0               # 任兩次 Google 請求的最小間隔
 TIMEOUT_S = 20                # 實測日曆回應 2–8 秒；掛著不回應的故障不要每次都等 45 秒
 CAL_RETRIES = 1               # 日曆時段回空／出錯時再打幾次
-SHADOW_RETRIES = 2            # 影子比價出錯時再打幾次（實測 Google 內部錯誤約 4 成）
+#: 影子比價出錯時在同一輪再打幾次。原本 2：分支實測時重試大多救得回，但 main 上
+#: 10-26～30 第一次就失敗的 21 組，12 秒後的兩次重試 0 組救回——同一台主機一失敗，
+#: 那幾分鐘內都會失敗；一小時後換一台主機的下一輪卻多半成功。所以改成同一輪不重試，
+#: 出錯的行程不記為「比過了」（load_seen），留給下一輪。
+SHADOW_RETRIES = 0
 RETRY_WAIT_S = 12.0
 SHADOW_LOOKBACK_HOURS = 24
 SHADOW_MAX = 15
@@ -61,8 +65,10 @@ MAX_TRANSPORT_ERRORS = 5      # 連續這麼多次連線錯誤就停（同 runne
 MIN_SWEEP_GAP_MIN = 30        # FSC 與 Verify 接連跑完時，第二輪只做影子比價
 
 # ADR 0003 第二階段判斷標準（report 子命令據此給 PASS/FAIL/NO DATA）
-CRITERION_CAL_OK = 0.95       # 日曆時段重試後有價的比例（從沒拿到過價的時段視為沒班表、不計）
+CRITERION_CAL_OK = 0.95       # 日曆時段重試後有價的比例（每次都明確回空的時段視為沒班表、不計；出過錯的照算）
 CRITERION_WITHIN = 0.90       # 與參考價 ±SHADOW_TOLERANCE 以內的比例（即時查詢、日曆各一項）
+#: 回應不超過這麼多字元就整段記進錯誤訊息（Google 內部錯誤約 95 字元；正常回應數十 KB）
+DIAG_BODY_MAX = 300
 SHADOW_TOLERANCE = 0.02
 SHADOW_MAX_LAG_H = 6.0        # 只用參考觀測後 6 小時內完成的比較評估準確度
 
@@ -304,7 +310,12 @@ def _make_client(budget: int):
         def diag(self) -> str:
             if not self.last:
                 return "no response"
-            return f"HTTP {self.last['status']} {self.last['bytes']}B {self.last['path'][-40:]}"
+            out = f"HTTP {self.last['status']} {self.last['bytes']}B {self.last['path'][-40:]}"
+            # Google 內部錯誤的回應很短（約 95 bytes），整段留下才分得出是哪一種錯誤。
+            # 2026-10-26～29 即時查詢 58 次裡 54 次這樣失敗，當時只記了長度，查不出原因。
+            if self.last["bytes"] <= DIAG_BODY_MAX:
+                out += " body=" + " ".join(self.last_text.split())
+            return out
 
     return _Client()
 
@@ -366,6 +377,11 @@ def sweep_calendar(backend, routes: list[tuple[str, str]], today: date, horizon:
 
 def _ref_key(r: dict) -> str:
     return f"{r['route']}|{r['depart']}|{r['return']}|{r['ref_provider']}|{r['ref_observed_at']}"
+
+
+def _shadow_key(r: dict) -> str:
+    """一筆影子比價對應的參考觀測。紀錄裡都有 key；沒有的（手寫的舊資料）就現算。"""
+    return r.get("key") or _ref_key(r)
 
 
 def shadow_targets(db_path: str, now: datetime, seen: set[str],
@@ -457,6 +473,14 @@ def _stamp_time(name: str) -> datetime | None:
         return None
 
 
+def _parse_ts(value) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
 def read_records(path: Path) -> list[dict]:
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         return [json.loads(line) for line in fh if line.strip()]
@@ -477,11 +501,21 @@ def _safe_records(path: Path) -> list[dict] | None:
 
 
 def load_seen(out_dir: Path, now: datetime, days: int = DEDUPE_DAYS) -> set[str]:
+    """最近比過的參考觀測。
+
+    出錯（status=error）、而且參考觀測還不到 SHADOW_MAX_LAG_H 小時的，不算比過：下一輪
+    再試一次。超過的就不再試——那時就算拿到價，報告也不拿它評準確度，打了是白打。
+    """
     seen = set()
     for path in _files(out_dir, now - timedelta(days=days)):
         for rec in _safe_records(path) or []:
-            if rec.get("kind") == "shadow" and rec.get("key"):
-                seen.add(rec["key"])
+            if rec.get("kind") != "shadow" or not rec.get("key"):
+                continue
+            ref_at = _parse_ts(rec.get("ref_observed_at"))
+            if (rec.get("status") == "error" and ref_at is not None
+                    and (now - ref_at).total_seconds() / 3600 <= SHADOW_MAX_LAG_H):
+                continue
+            seen.add(rec["key"])
     return seen
 
 
@@ -598,6 +632,7 @@ def failed(summary: dict) -> bool:
 def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = None) -> dict:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cal, sh, runs, cal_vs_ref, unreadable = [], [], [], [], 0
+    cal_runs: list[tuple[datetime, dict]] = []   # (這輪開始時刻, {航線: {出發日: 價}})
     for path in _files(Path(out_dir), now - timedelta(days=days)):
         recs = _safe_records(path)
         if recs is None:
@@ -608,22 +643,43 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
         cal += file_cal
         sh += file_sh
         runs += [r for r in recs if r.get("kind") == "summary"]
-        # 第二階段要用的是日曆價：同一輪的日曆若有同航線、同出發日、住 STAY_DAYS 晚的價，
-        # 拿來跟參考價比（不多花任何請求）
         days_by_route: dict[str, dict] = {}
         for r in file_cal:
             days_by_route.setdefault(r["route"], {}).update(r.get("days") or {})
-        for r in file_sh:
-            stay = (date.fromisoformat(r["return"]) - date.fromisoformat(r["depart"])).days
-            price = days_by_route.get(r["route"], {}).get(r["depart"])
-            if stay == STAY_DAYS and price and r["lag_hours"] is not None \
-                    and r["lag_hours"] <= SHADOW_MAX_LAG_H:
-                cal_vs_ref.append(round((price - r["ref_price"]) / r["ref_price"] * 100, 2))
+        run_at = _stamp_time(path.name)
+        if days_by_route and run_at is not None:
+            cal_runs.append((run_at, days_by_route))
 
-    # 某 (航線, 時段序號) 整段期間從沒拿到價 → 視為沒有班表，不算失敗；
-    # 其他輪拿到過、這輪卻空或錯 → 才算漏報。
-    ever_ok = {(r["route"], r.get("idx")) for r in cal if r["status"] == "ok"}
-    scored = [r for r in cal if (r["route"], r.get("idx")) in ever_ok]
+    # 第二階段要用的是日曆價：同航線、同出發日、住 STAY_DAYS 晚的日曆價拿來跟參考價比
+    # （不多花任何請求）。取參考觀測前後 SHADOW_MAX_LAG_H 小時內、那天有價、時間最接近
+    # 的一輪，不限同一輪：FSC 與 Verify 30 分鐘內先後跑完時，第二輪 fli 不重掃日曆，
+    # 原本那輪的比價就沒有日曆價可對（2026-10-26 12:49 那輪 5 組全部落空）。
+    # 同一個參考觀測可能出現在好幾輪（出錯的留給下一輪重試），日曆價只比一次
+    paired: set = set()
+    for r in sh:
+        stay = (date.fromisoformat(r["return"]) - date.fromisoformat(r["depart"])).days
+        ref_at = _parse_ts(r.get("ref_observed_at"))
+        if stay != STAY_DAYS or ref_at is None or _shadow_key(r) in paired:
+            continue
+        paired.add(_shadow_key(r))
+        in_window = [(lag, price) for run_at, by_route in cal_runs
+                     if (price := by_route.get(r["route"], {}).get(r["depart"]))
+                     and (lag := abs((run_at - ref_at).total_seconds()) / 3600) <= SHADOW_MAX_LAG_H]
+        if in_window:
+            price = min(in_window)[1]                       # lag 最小的那一輪
+            cal_vs_ref.append({"ref_provider": r.get("ref_provider"),
+                               "diff_pct": round((price - r["ref_price"]) / r["ref_price"] * 100, 2)})
+
+    # 某 (航線, 時段序號) 整段期間每一次都是 Google 明確回「沒有航班」（empty）→
+    # 視為沒有班表，不計。只要有一次是錯誤（google_error、逾時、被 Breaker 跳過），
+    # 那一組就照算：錯誤不是「沒有班表」的證據。原本的規則是「從沒拿到價就不計」，
+    # 2026-10-26 main 第一輪 KHH-NGO 5 段全是 google_error，整組被剔除，報告寫
+    # error_rate 0、PASS——一條航線整整兩週都失敗也照樣 PASS。
+    statuses: dict[tuple, set] = {}
+    for r in cal:
+        statuses.setdefault((r["route"], r.get("idx")), set()).add(r["status"])
+    no_schedule = {k for k, st in statuses.items() if st == {"empty"}}
+    scored = [r for r in cal if (r["route"], r.get("idx")) not in no_schedule]
     fresh = [r for r in sh if r["status"] == "ok" and r["lag_hours"] is not None
              and r["lag_hours"] <= SHADOW_MAX_LAG_H]
     tol = SHADOW_TOLERANCE * 100
@@ -633,20 +689,30 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
         "red_runs": sum(failed(r) for r in runs if "problems" in r),
         "requests": sum(r.get("requests", 0) for r in runs),
         "calendar_windows": len(cal), "calendar_scored": len(scored),
-        "calendar_never_priced": sorted({f"{r['route']}#{r.get('idx')}" for r in cal} - {
-            f"{k[0]}#{k[1]}" for k in ever_ok}),
+        "calendar_no_schedule": sorted(f"{k[0]}#{k[1]}" for k in no_schedule),
+        # 一條航線整段失敗時，總比例可能還過得了門檻；逐航線列出才看得到
+        "calendar_by_route": _tally(scored, "route", lambda r: r["status"] == "ok"),
         "calendar_ok_rate": _rate(sum(r["status"] == "ok" for r in scored), len(scored)),
         "calendar_first_try_rate": _rate(
             sum(r["status"] == "ok" and r["attempts"] == 1 for r in scored), len(scored)),
         "calendar_error_rate": _rate(sum(r["status"] == "error" for r in scored), len(scored)),
-        "shadow_pairs": len(sh), "shadow_ok": sum(r["status"] == "ok" for r in sh),
+        # 行程數，不是嘗試次數：出錯的行程下一輪會再試，同一組可能出現在好幾輪
+        "shadow_pairs": len({_shadow_key(r) for r in sh}), "shadow_attempts": len(sh),
+        "shadow_ok": sum(r["status"] == "ok" for r in sh),
         "shadow_fresh": len(fresh),
         "shadow_within_rate": _rate(sum(abs(r["diff_pct"]) <= tol for r in fresh), len(fresh)),
+        # 參考價有 SerpAPI 與 Scrape.do 兩個來源；分開列，才分得出是 fli 不準還是某個
+        # 參考來源本身跟 Google 不一致（2026-10-28／29 KHH-NRT 兩組，fli 與 SerpAPI 都是
+        # 12,858，只有 Scrape.do 低約 7%）
+        "shadow_within_by_provider": _tally(fresh, "ref_provider",
+                                            lambda r: abs(r["diff_pct"]) <= tol),
         "shadow_median_abs_diff_pct": (round(statistics.median(abs(r["diff_pct"]) for r in fresh), 2)
                                        if fresh else None),
         "calendar_vs_ref_pairs": len(cal_vs_ref),
-        "calendar_vs_ref_within_rate": _rate(sum(abs(d) <= tol for d in cal_vs_ref),
+        "calendar_vs_ref_within_rate": _rate(sum(abs(d["diff_pct"]) <= tol for d in cal_vs_ref),
                                              len(cal_vs_ref)),
+        "calendar_vs_ref_by_provider": _tally(cal_vs_ref, "ref_provider",
+                                              lambda r: abs(r["diff_pct"]) <= tol),
         "blocked": sum(e.startswith("blocked") for e in errors),
         "error_kinds": _kinds(errors),
     }
@@ -658,6 +724,16 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
         "no_blocking": ("NO DATA" if not runs else "PASS" if res["blocked"] == 0 else "FAIL"),
     }
     return res
+
+
+def _tally(recs: list[dict], field: str, hit) -> dict[str, str]:
+    """依 field 分組，列出「hit(r) 成立的筆數／總筆數」（例：{"KHH-NGO": "19/40"}）。"""
+    groups: dict[str, list[int]] = {}
+    for r in recs:
+        counts = groups.setdefault(r.get(field) or "?", [0, 0])
+        counts[0] += bool(hit(r))
+        counts[1] += 1
+    return {k: f"{ok}/{n}" for k, (ok, n) in sorted(groups.items())}
 
 
 def _rate(n: int, d: int):

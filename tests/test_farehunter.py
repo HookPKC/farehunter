@@ -93,6 +93,29 @@ def test_stats_are_kept_separate_per_departure_date(tmp_path):
     store.close()
 
 
+def test_store_drops_the_dead_long_range_table(tmp_path):
+    """long_range：1,277 筆、零讀者，使用者 2026-10-26 同意刪除。其他表與資料不動。"""
+    import sqlite3
+    db = tmp_path / "prices.db"
+    Store(str(db)).close()
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE long_range (origin TEXT NOT NULL, destination TEXT NOT NULL,"
+                " depart_date TEXT NOT NULL, return_date TEXT NOT NULL, total REAL NOT NULL,"
+                " out_price REAL NOT NULL, ret_price REAL NOT NULL, updated_at TEXT NOT NULL,"
+                " PRIMARY KEY (origin, destination, depart_date))")
+    con.execute("INSERT INTO long_range VALUES ('KHH','NGO','2099-12-07','2099-12-12',"
+                "14891,7000,7891,'2026-07-18 09:11:34')")
+    con.commit()
+    con.close()
+    st = Store(str(db))
+    st.record(Offer("KHH", "NGO", "2099-12-07", "2099-12-12", 14891.0, "TWD", "IT", 0, "205"))
+    tables = {r[0] for r in st.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "long_range" not in tables
+    assert {"observations", "alerts", "cheap_day_notices"} <= tables
+    st.close()
+    Store(str(db)).close()                     # 第二次開：表已不在，不得出錯
+
+
 def test_alert_dedup(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.record_alert("TPE", "NRT", "2099-09-18", 7000, "absolute")
