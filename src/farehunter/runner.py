@@ -18,22 +18,21 @@ from .analyzer import evaluate
 from .notify import notify, channels_configured
 from . import health
 from . import price_state
+from . import brightdata_flights as brightdata
 
 log = logging.getLogger(__name__)
 
 
-def _resolve_state(store, offer, now):
-    """把 Aviasales candidate 解析成價格狀態。零 API：只讀既有 observations。
+def _resolve_state(store, offer, now, authoritative=None):
+    """把 Aviasales candidate 解析成價格狀態。本身零 API：只讀既有 observations。
 
     candidate 的 observed_at 即本輪抓取時刻（store.record 亦以此刻寫入），
     因此以 now 代表；reference 取同航程、不晚於 now 的最新 google 觀測。
+
+    authoritative：同一輪剛向 Bright Data 查到的 Google 實價（Offer），直接當同輪權威價
+    傳進去（price_state 原本就預留了這個參數），不靠 reference 從 DB 撈回來。
     """
-    cand = price_state.PriceObservation(
-        origin=offer.origin, destination=offer.destination,
-        depart_date=offer.depart_date, return_date=offer.return_date,
-        price=offer.price, currency=offer.currency, carriers=offer.carriers,
-        stops=offer.stops, fare_class=offer.fare_class,
-        source=offer.source, observed_at=now)
+    cand = _as_observation(offer, now)
     row = store.latest_itinerary_google(
         origin=offer.origin, destination=offer.destination,
         depart_date=offer.depart_date, return_date=offer.return_date,
@@ -51,7 +50,62 @@ def _resolve_state(store, offer, now):
             price=row["price"], currency=row["currency"], carriers=row["carriers"],
             stops=row["stops"], fare_class=row["fare_class"],
             source=row["source"], observed_at=ts)
-    return price_state.resolve_alert_price(cand, now, reference=ref)
+    auth = None if authoritative is None else _as_observation(authoritative, now)
+    return price_state.resolve_alert_price(cand, now, reference=ref, authoritative=auth)
+
+
+def _as_observation(offer, observed_at):
+    return price_state.PriceObservation(
+        origin=offer.origin, destination=offer.destination,
+        depart_date=offer.depart_date, return_date=offer.return_date,
+        price=offer.price, currency=offer.currency, carriers=offer.carriers,
+        stops=offer.stops, fare_class=offer.fare_class,
+        source=offer.source, observed_at=observed_at)
+
+
+def _verify_with_brightdata(store, verifier, offer, now, judge, csig, current):
+    """警報發出前用 Bright Data 驗證（ADR 0004）。回傳要發的 (pstate, eval_offer, verdict)，
+    None＝這則不發。current 是驗證前的那一組。
+
+    - 查到同航空公司的直飛價 → 同輪權威價、VERIFIED，再用實價重判：不便宜就不發
+      （跟既有 VERIFIED 的語意一樣）。查不到、失敗或額度用完 → 照原本的狀態發，不漏發。
+    - **24 小時內查過就不重查**：只有同一輪的實價才算 VERIFIED，所以一小時前查過的
+      行程，驗證前的狀態又會回到 UNVERIFIED／CONFLICT、去重的桶子也不同——不擋的話，
+      同一則警報（或實價不便宜的行程）每小時都會再花一次額度。改用那次的實價：
+      不便宜、或已經用它通知過「已驗證」→ 不發；沒有同航空公司的直飛價 → 照原狀態發。
+    """
+    o, d, dep, ret = offer.origin, offer.destination, offer.depart_date, offer.return_date
+    recent = verifier.recent_match(o, d, dep, ret, offer.carriers)
+    if recent is not None:
+        recent_verdict = judge(replace(offer, price=recent.price))
+        if not recent_verdict.is_deal:
+            return None
+        if store.recently_alerted(o, d, dep, recent.price, return_date=ret,
+                                  carrier_signature=csig,
+                                  price_status=price_state.VERIFIED,
+                                  reference_price=None, reason=recent_verdict.reason):
+            return None
+        # 實價夠便宜、卻還沒通知過（例如上次送不出去）→ 重新驗證一次再發
+    elif verifier.checked_recently(o, d, dep, ret):
+        return current
+    auth = verifier.verify_alert(o, d, dep, ret, offer.carriers)
+    if auth is None:
+        return current
+    pstate = _resolve_state(store, offer, now, authoritative=auth)
+    eval_offer = (replace(offer, price=pstate.selected_price)
+                  if pstate.state == price_state.VERIFIED else offer)
+    verdict = judge(eval_offer)
+    if not verdict.is_deal or _already_alerted(store, offer, pstate, verdict, csig):
+        return None
+    return pstate, eval_offer, verdict
+
+
+def _already_alerted(store, offer, pstate, verdict, csig) -> bool:
+    return store.recently_alerted(
+        offer.origin, offer.destination, offer.depart_date, pstate.selected_price,
+        return_date=offer.return_date, carrier_signature=csig,
+        price_status=pstate.state, reference_price=pstate.reference_price,
+        reason=verdict.reason)
 
 # ---- 防重複 guard（fail-open）----------------------------------------------
 # 目的：GitHub schedule、手動 Run、外部排程器（cron-job.org）任意組合觸發時，
@@ -187,6 +241,9 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
     # 半套的注入比完全不注入更危險：它讓人以為時鐘已經被控制住了。
     today_iso = now.date().isoformat()
     transport_errors = 0          # 見 MAX_TRANSPORT_ERRORS
+    # Bright Data（ADR 0004）：沒有 BRIGHTDATA_API_KEY 就是 None，整輪跟以前完全一樣
+    verifier = brightdata.Verifier(store, now) if brightdata.configured() else None
+    sweep_candidates = []         # 本輪寫入的直飛來回快取價，抓完後給巡檢挑
 
     try:
         for route in cfg["routes"]:
@@ -199,6 +256,15 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
             #   stats_by_date   單一出發日 → big_drop（反常便宜是相對事件）
             stats = store.route_stats(origin, dest)
             stats_by_date = store.route_stats_by_date(origin, dest)
+
+            def judge(o, stats=stats, stats_by_date=stats_by_date, merged=merged):
+                return evaluate(
+                    o, stats,
+                    date_stats=stats_by_date.get(o.depart_date),
+                    absolute_threshold=merged.get("absolute_threshold"),
+                    drop_pct=merged.get("drop_pct", 25.0),
+                    min_history=merged.get("min_history", 30),
+                )
             route_recorded = 0
             route_empty = 0
 
@@ -240,6 +306,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     store.record(offer)
                     summary["recorded"] += 1
                     route_recorded += 1
+                    if offer.stops == 0 and offer.return_date:
+                        sweep_candidates.append(offer)
 
                     # ---- evaluate 之前先解析價格狀態（零 API、只讀既有 DB）----
                     # 系統可能已有同航程的 Google 觀測；VERIFIED 時用權威價去
@@ -249,42 +317,40 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     if pstate.state == price_state.VERIFIED:
                         eval_offer = replace(offer, price=pstate.selected_price)
 
-                    verdict = evaluate(
-                        eval_offer, stats,
-                        date_stats=stats_by_date.get(offer.depart_date),
-                        absolute_threshold=merged.get("absolute_threshold"),
-                        drop_pct=merged.get("drop_pct", 25.0),
-                        min_history=merged.get("min_history", 30),
-                    )
+                    verdict = judge(eval_offer)
                     if not pstate.eligible_for_alert:
                         continue          # candidate 過舊：不發主動通知
                     csig = price_state.carrier_signature(offer.carriers)
-                    if verdict.is_deal and not store.recently_alerted(
-                            origin, dest, offer.depart_date,
-                            pstate.selected_price,
-                            return_date=offer.return_date,
-                            carrier_signature=csig,
-                            price_status=pstate.state,
-                            reference_price=pstate.reference_price,
-                            reason=verdict.reason):
-                        sent = notify(eval_offer, verdict, pstate)
-                        if not sent and channels_configured():
-                            log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",
-                                      origin, dest, offer.depart_date)
+                    if not verdict.is_deal or _already_alerted(store, offer, pstate, verdict, csig):
+                        continue
+                    # 發 LINE 之前先用 Bright Data 查同一行程的 Google 實價（ADR 0004）。
+                    # Bright Data 只寫直飛價，轉機的候選查了也對不上，所以不查。
+                    if (verifier is not None and offer.return_date and offer.stops == 0
+                            and pstate.state != price_state.VERIFIED):
+                        checked = _verify_with_brightdata(
+                            store, verifier, offer, now, judge, csig,
+                            (pstate, eval_offer, verdict))
+                        if checked is None:
                             continue
-                        store.record_alert(
-                            origin, dest, offer.depart_date,
-                            pstate.selected_price, verdict.reason,
-                            return_date=offer.return_date,
-                            carrier_signature=csig,
-                            price_source=pstate.selected_source,
-                            price_status=pstate.state,
-                            reference_price=pstate.reference_price,
-                            reference_observed_at=(
-                                pstate.reference_observed_at.isoformat(
-                                    timespec="seconds")
-                                if pstate.reference_observed_at else None))
-                        summary["alerts"] += 1
+                        pstate, eval_offer, verdict = checked
+                    sent = notify(eval_offer, verdict, pstate)
+                    if not sent and channels_configured():
+                        log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",
+                                  origin, dest, offer.depart_date)
+                        continue
+                    store.record_alert(
+                        origin, dest, offer.depart_date,
+                        pstate.selected_price, verdict.reason,
+                        return_date=offer.return_date,
+                        carrier_signature=csig,
+                        price_source=pstate.selected_source,
+                        price_status=pstate.state,
+                        reference_price=pstate.reference_price,
+                        reference_observed_at=(
+                            pstate.reference_observed_at.isoformat(
+                                timespec="seconds")
+                            if pstate.reference_observed_at else None))
+                    summary["alerts"] += 1
 
                 time.sleep(merged.get("pause_seconds", 0.6))
 
@@ -296,6 +362,24 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     health.route_key(origin, dest))
                 log.warning("航線本輪零記錄 %s→%s（%d/%d 個月回空）",
                             origin, dest, route_empty, len(months))
+
+        if verifier is not None and all_searches_failed(summary):
+            # Aviasales 全部失敗的輪次會 exit 1、不 commit prices.db，這輪的帳本會消失；
+            # guard 也不會擋下一輪。這時巡檢等於花了額度卻不記帳，所以不巡檢。
+            log.warning("Aviasales 本輪全部失敗，跳過 Bright Data 巡檢（帳本不會被 commit）")
+            summary["brightdata"] = verifier.stats
+        elif verifier is not None:
+            # 抓完 Aviasales 後，剩下的 Bright Data 額度拿去查各航線最便宜、24 小時內還沒查過
+            # 的行程（ADR 0004）。放在健康檢查之前，健康報告才看得到這輪補的資料。
+            try:
+                verifier.sweep(sweep_candidates,
+                               [(r["origin"], r["destination"]) for r in cfg["routes"]])
+            except Exception:
+                # 巡檢是加分項：任何意外都不能讓整輪中止、跳過後面的匯出（HANDOFF §6 的
+                # 10-18 事故就是一個沒接住的例外讓整輪停掉）
+                log.exception("Bright Data 巡檢意外失敗，本輪略過")
+            summary["brightdata"] = verifier.stats
+            log.info("Bright Data 本輪：%s", verifier.stats)
 
         if summary["zero_record_routes"]:
             log.error("本輪完全沒有抓到資料的航線 %d/%d 條：%s",

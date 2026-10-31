@@ -35,6 +35,7 @@ VALUE_WEIGHTS = {"price": 0.55, "freshness": 0.10, "duration": 0.10,
 API_LABEL = {
     "serpapi": "Google Flights (SerpAPI)",
     "scrapedo": "Google Flights (Scrape.do)",
+    "brightdata": "Google Flights (Bright Data)",
     "searchapi": "Google Flights 日曆 (SearchApi)",
     "travelpayouts": "Travelpayouts / Aviasales 快取",
 }

@@ -17,6 +17,7 @@ TTL_HOURS = {
     "aviasales": 6,          # warehouse tag for Travelpayouts cache
     "serpapi": 24 * 7,
     "scrapedo": 24 * 7,
+    "brightdata": 24 * 7,    # 同一個 Google Flights 搜尋頁，跟 SerpAPI／Scrape.do 同級
     "searchapi": 24 * 10,
     "google": 24 * 14,       # warehouse tag for any real-price capture
 }

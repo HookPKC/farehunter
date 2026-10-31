@@ -49,6 +49,30 @@ CREATE TABLE IF NOT EXISTS cheap_day_notices (
     notified_at TEXT NOT NULL,
     PRIMARY KEY (origin, destination, depart_date)
 );
+
+-- 外部 API 的用量帳本（每日每來源）。Bright Data 每月 5,000 次免費、用完即停：配速要知道
+-- 本月已經用了多少（brightdata_flights.run_allowance）。寫在 prices.db 才會隨每輪 commit
+-- 留下時間序列。requests＝送出的次數（含失敗，保守估算），ok＝拿到可解析頁面的次數。
+CREATE TABLE IF NOT EXISTS api_usage (
+    provider TEXT NOT NULL,
+    day      TEXT NOT NULL,
+    requests INTEGER NOT NULL DEFAULT 0,
+    ok       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider, day)
+);
+
+-- 巡檢最近查過哪些行程（Bright Data 巡檢用，ADR 0004）。查到頁面卻沒有可寫入的直飛價
+-- （那天沒有直飛、航空公司對不上）時 observations 裡不會留下任何東西，沒有這張表的話
+-- 下一輪又會查同一趟、每小時白花一次額度。每輪巡檢前刪掉超過 24 小時的，所以只有幾百筆。
+CREATE TABLE IF NOT EXISTS api_checks (
+    provider    TEXT NOT NULL,
+    origin      TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    depart_date TEXT NOT NULL,
+    return_date TEXT NOT NULL,
+    checked_at  TEXT NOT NULL,
+    PRIMARY KEY (provider, origin, destination, depart_date, return_date)
+);
 """ + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
 
 
@@ -104,7 +128,9 @@ class Store:
         self.conn.close()
 
     # ---- observations ------------------------------------------------------
-    def record(self, offer: Offer) -> None:
+    def record(self, offer: Offer, observed_at: str | None = None) -> None:
+        """observed_at 預設是寫入當下；Bright Data 傳本輪的 now，讓它「24 小時內查過」的
+        判斷全部用同一個時鐘（HANDOFF §3b）。"""
         self.conn.execute(
             """INSERT INTO observations
                (origin, destination, depart_date, return_date, price,
@@ -114,7 +140,7 @@ class Store:
             (offer.origin, offer.destination, offer.depart_date,
              offer.return_date, offer.price, offer.currency,
              offer.carriers, offer.stops, offer.duration,
-             datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
              offer.fare_class, offer.source, offer.provider),
         )
         self.conn.commit()
@@ -310,6 +336,71 @@ class Store:
                 abs(new_ref - prev_ref) >= prev_ref * (improvement_pct / 100.0):
             return False                      # 參考價相對「上一則」有意義變化 → 重新通知
         return True
+
+    def record_api_usage(self, provider: str, day: str, *, ok: bool) -> None:
+        self.conn.execute(
+            """INSERT INTO api_usage (provider, day, requests, ok) VALUES (?, ?, 1, ?)
+               ON CONFLICT(provider, day) DO UPDATE SET
+                 requests = requests + 1, ok = ok + excluded.ok""",
+            (provider, day, int(ok)))
+        self.conn.commit()
+
+    def api_usage_since(self, provider: str, first_day: str) -> int:
+        """first_day（含）之後送出的總次數。"""
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(requests), 0) FROM api_usage WHERE provider=? AND day>=?",
+            (provider, first_day)).fetchone()
+        return int(row[0])
+
+    def has_google_since(self, origin: str, destination: str, depart_date: str,
+                         return_date: str, since: str) -> bool:
+        """同一行程（航線＋去回日）在 since 之後有沒有 Google 實價（任何供應商）。
+
+        跟 serpapi_flights._is_cooled 一樣用 julianday 比較：observed_at 有新舊混合的
+        時間字串格式，直接比字串會在格式不同時比錯。
+        """
+        return self.conn.execute(
+            """SELECT 1 FROM observations
+               WHERE origin=? AND destination=? AND depart_date=? AND return_date=?
+                 AND source='google' AND julianday(observed_at) >= julianday(?)
+               LIMIT 1""",
+            (origin, destination, depart_date, return_date, since)).fetchone() is not None
+
+    def google_rows_since(self, origin: str, destination: str, depart_date: str,
+                          return_date: str, since: str, *, provider: str) -> list:
+        """同一行程在 since 之後、某個供應商寫入的 Google 實價，最新的在前。"""
+        return self.conn.execute(
+            """SELECT price, currency, carriers, stops, fare_class, observed_at
+               FROM observations
+               WHERE origin=? AND destination=? AND depart_date=? AND return_date=?
+                 AND source='google' AND provider=?
+                 AND julianday(observed_at) >= julianday(?)
+               ORDER BY julianday(observed_at) DESC, id DESC""",
+            (origin, destination, depart_date, return_date, provider, since)).fetchall()
+
+    def record_api_check(self, provider: str, origin: str, destination: str,
+                         depart_date: str, return_date: str, checked_at: str) -> None:
+        self.conn.execute(
+            """INSERT INTO api_checks VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(provider, origin, destination, depart_date, return_date)
+               DO UPDATE SET checked_at = excluded.checked_at""",
+            (provider, origin, destination, depart_date, return_date, checked_at))
+        self.conn.commit()
+
+    def api_checked_since(self, provider: str, origin: str, destination: str,
+                          depart_date: str, return_date: str, since: str) -> bool:
+        return self.conn.execute(
+            """SELECT 1 FROM api_checks
+               WHERE provider=? AND origin=? AND destination=? AND depart_date=?
+                 AND return_date=? AND julianday(checked_at) >= julianday(?)""",
+            (provider, origin, destination, depart_date, return_date, since)
+        ).fetchone() is not None
+
+    def prune_api_checks(self, provider: str, before: str) -> None:
+        self.conn.execute("DELETE FROM api_checks WHERE provider=? "
+                          "AND julianday(checked_at) < julianday(?)",
+                          (provider, before))
+        self.conn.commit()
 
     def record_cheap_day_notice(self, origin: str, destination: str,
                                 depart_date: str, price: float,

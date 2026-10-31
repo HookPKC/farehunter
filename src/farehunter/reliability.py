@@ -22,6 +22,7 @@ from typing import Optional
 BASE_RELIABILITY = {
     "serpapi": 0.90,
     "scrapedo": 0.85,
+    "brightdata": 0.90,    # 2026-10-31 實測直飛最低價與 fli 日曆 8/8 相同（ADR 0004）
     "searchapi": 0.80,
     "travelpayouts": 0.55,
     "aviasales": 0.55,     # warehouse tag for Travelpayouts cache

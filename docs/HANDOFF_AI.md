@@ -23,6 +23,10 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 - 快取估價：Travelpayouts/Aviasales，monitor **每小時**（頁面標「≈」「約」）
 - Google 實價：SerpAPI fsc-snapshot **每日** 06:10 UTC（「傳統航空最低」等精確價）
 - 航空公司官網實價：Scrape.do verify-airlines **每日**（驗證看板候選）
+- Google 實價（量最大）：Bright Data，monitor **每小時**順手查（ADR 0004）——警報發出前先驗證
+  同一行程，剩下的額度巡檢各航線最便宜的行程；每月 5,000 次免費、配速用到 95%，帳本在
+  prices.db 的 `api_usage`（巡檢 24 小時內查過哪些行程記在 `api_checks`）。沒有
+  `BRIGHTDATA_API_KEY` 時完全不碰。
 - **觀察中（不參與任何判斷）**：fli Google 日曆 `fli-observe`，跟在 fsc／verify 之後
   每天約 2 次，只寫 `data/fli/*.jsonl.gz`、**不進 prices.db**（理由與第二階段標準見
   ADR 0003）。看板、警報、健康檢查都不讀它。
@@ -40,6 +44,8 @@ Pages 服務，SQLite（`prices.db`）存價，LINE 推播警報。
 背景：`serpapi_flights` 的註解長期誤寫「free tier (~100/month)」，而實測
 180 次/月從未被擋——整個系統圍繞一個錯的前提設計。status 為 `low` /
 `exhausted` 時會記 warning；`headroom` 是機會提示不是警報。
+Bright Data 的用量看 prices.db 的 `api_usage`（每日每來源），配速規則見 ADR 0004；
+**它的 zone 管理 API 回應含 zone 密碼，任何探測都不得印出**。
 
 **觸發與防護四層（2026-07-07 全部就位）**：
 1. 雙觸發：GitHub schedule `:07`（不可靠，實測命中率曾僅 ~7%，保留為備援）＋

@@ -35,6 +35,8 @@ API_KEY_ENV_VARS = (
     "TRAVELPAYOUTS_TOKEN",
     "TELEGRAM_BOT_TOKEN",
     "LINE_CHANNEL_ACCESS_TOKEN",
+    "BRIGHTDATA_API_KEY",     # 設了 runner 就會真的去打 Bright Data（ADR 0004）
+    "BRIGHTDATA_ZONE",
 )
 
 
