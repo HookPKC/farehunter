@@ -37,7 +37,7 @@ def test_export_shapes_and_future_filter(tmp_path):
 
 
 def test_alerts_drop_departed_trips_and_keep_one_row_per_trip(tmp_path):
-    """2026-10-31 的看板：列著 10-29、10-30 出發的警報，KHH→NRT 11/23 也出現兩次。"""
+    """2026-10-31 的看板：列著 10-29、10-30 出發的警報，同一行程也會重複出現。"""
     import datetime as dt
     now = dt.datetime(2026, 10, 30, 17, 0, tzinfo=dt.timezone.utc)   # 台灣已是 10-31 01:00
     db = tmp_path / "t.db"

@@ -319,7 +319,8 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
 
     # 看板的「最新警報」：
     # - 已出發的不列（2026-10-31 還列著 10-29、10-30 出發的）——出發日是當地日期，用台灣日期比；
-    # - 同一行程（航線＋去回日）只留最新一筆（KHH→NRT 11/23 曾因價格再跌被列兩次）；
+    # - 同一行程（航線＋去回日）只留最新一筆（例：TPE→KIX 11/05 價格再跌又送一次）；
+    #   去回日不同就是不同行程，照列（KHH→NRT 11/23 有三種回程日，靠天數分得出來）；
     # - 帶回程日與價格狀態：前端才寫得出「幾天來回」，也才能照全站規則把快取估價寫成「約」。
     today_tw = _now.astimezone(timezone(timedelta(hours=8))).date().isoformat()
     alerts = [dict(r) for r in conn.execute(
