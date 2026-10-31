@@ -339,8 +339,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                             origin, dest, route_empty, len(months))
 
         if verifier is not None:
-            # 抓完 Aviasales 後，剩下的 Bright Data 額度拿去查各航線最便宜、24 小時內還沒有
-            # Google 實價的行程（ADR 0004）。放在健康檢查之前，健康報告才看得到這輪補的資料。
+            # 抓完 Aviasales 後，剩下的 Bright Data 額度拿去查各航線最便宜、24 小時內還沒查過
+            # 的行程（ADR 0004）。放在健康檢查之前，健康報告才看得到這輪補的資料。
             verifier.sweep(sweep_candidates,
                            [(r["origin"], r["destination"]) for r in cfg["routes"]])
             summary["brightdata"] = verifier.stats
