@@ -74,8 +74,21 @@ def find_zone():
             out.setdefault("zone_lookup", []).append({"path": path, "error": redact(str(exc)[:200])})
     names = [(z.get("name"), z.get("type")) for z in zones if isinstance(z, dict)]
     out["zones"] = names
-    serp = [n for n, t in names if t and "serp" in str(t).lower()]
-    return serp[0] if serp else (next((n for n, _ in names if n and "serp" in n.lower()), "") or "serp_api1")
+    for want in ("mcp_unlocker",):
+        if any(n == want for n, _ in names):
+            return want
+    usable = [n for n, t in names if t and str(t).lower() in ("serp", "unblocker")]
+    if usable:
+        return usable[0]
+    # 帳號裡一個能用的 zone 都沒有：照 Bright Data 官方 MCP（brightdata-mcp server.js
+    # ensure_required_zones）完全相同的寫法建一個 Web Unlocker zone。每月 5,000 次免費額度
+    # 就掛在這個 zone 上；用完就停，沒預存金額不會扣款（官方 README「Pricing and Free Tier」）。
+    r = requests.post("https://api.brightdata.com/zone", timeout=30,
+                      headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
+                      json={"zone": {"name": "mcp_unlocker", "type": "unblocker"},
+                            "plan": {"type": "unblocker", "ub_premium": True}})
+    out["zone_created"] = {"name": "mcp_unlocker", "http": r.status_code, "body": redact(r.text[:300])}
+    return "mcp_unlocker" if r.status_code in (200, 201) else ""
 
 
 if KEY and not ZONE:
