@@ -9,6 +9,7 @@
    fli 的日期驗證用真實時鐘，所以這一層的日期一律由 date.today() 推算。
 """
 import gzip
+import itertools
 import json
 import sqlite3
 import subprocess
@@ -402,13 +403,19 @@ def test_load_seen_only_looks_back_dedupe_days(tmp_path):
 
 
 def test_failed_comparisons_are_retried_next_run(tmp_path):
-    """出錯的不算比過；拿到價或 Google 明確說沒有航班的才算。"""
+    """出錯、參考觀測還不到 6 小時的不算比過；拿到價或 Google 明確說沒有航班的才算。
+
+    超過 6 小時的就不再試：那時就算拿到價，報告也不拿它評準確度（main 資料重播：
+    舊寫法會多打 26 次，其中 11 次 lag 已在 22–24 小時）。
+    """
     out = tmp_path / "fli"
     fc.write_records(out, NOW - timedelta(hours=1), [
-        {"kind": "shadow", "key": "ok", "status": "ok"},
-        {"kind": "shadow", "key": "none", "status": "none"},
-        {"kind": "shadow", "key": "err", "status": "error"}])
-    assert fc.load_seen(out, NOW) == {"ok", "none"}
+        {"kind": "shadow", "key": "ok", "status": "ok", "ref_observed_at": _at(2)},
+        {"kind": "shadow", "key": "none", "status": "none", "ref_observed_at": _at(2)},
+        {"kind": "shadow", "key": "err", "status": "error", "ref_observed_at": _at(5.9)},
+        {"kind": "shadow", "key": "stale", "status": "error", "ref_observed_at": _at(6.1)},
+        {"kind": "shadow", "key": "garbled", "status": "error", "ref_observed_at": "x"}])
+    assert fc.load_seen(out, NOW) == {"ok", "none", "stale", "garbled"}
 
 
 def test_run_retries_a_failed_comparison_in_the_next_run(tmp_path):
@@ -425,8 +432,10 @@ def test_run_retries_a_failed_comparison_in_the_next_run(tmp_path):
     third = fc.run(cfg, db, out, now=NOW + timedelta(hours=2), sleep=NO_SLEEP,
                    backend=FakeBackend())
     assert third["shadow_targets"] == 0                     # 比到了就不再比
-    # 同一個參考觀測出現在兩輪，日曆價對參考價只算一次
-    assert fc.report(out, now=NOW + timedelta(hours=2))["calendar_vs_ref_pairs"] == 1
+    # 同一個參考觀測出現在兩輪：日曆價對參考價只算一次；比價數算行程，不算嘗試
+    res = fc.report(out, now=NOW + timedelta(hours=2))
+    assert res["calendar_vs_ref_pairs"] == 1
+    assert res["shadow_pairs"] == 1 and res["shadow_attempts"] == 2 and res["shadow_ok"] == 1
 
 
 def test_run_all_empty_counts_as_failed(tmp_path):
@@ -529,11 +538,16 @@ def _cal(route, idx, status, attempts=1, errors=None, days=None):
             "attempts": attempts, "days": days, "errors": errors}
 
 
+_SH_KEYS = itertools.count()
+
+
 def _sh(diff, lag=1.0, status="ok", route="KHH-NGO", dep="2026-12-07", ret="2026-12-12",
-        ref=14891.0, errors=(), ref_at=None, provider="serpapi"):
+        ref=14891.0, errors=(), ref_at=None, provider="serpapi", key=None):
+    """一筆影子比價紀錄。key 預設每筆不同（真實紀錄裡每個參考觀測一個 key）。"""
     return {"kind": "shadow", "status": status, "diff_pct": diff, "lag_hours": lag,
             "errors": list(errors), "route": route, "depart": dep, "return": ret,
-            "ref_price": ref, "ref_observed_at": ref_at, "ref_provider": provider}
+            "ref_price": ref, "ref_observed_at": ref_at, "ref_provider": provider,
+            "key": key or f"k{next(_SH_KEYS)}"}
 
 
 def _sum(**kw):

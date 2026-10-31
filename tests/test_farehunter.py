@@ -103,12 +103,12 @@ def test_store_drops_the_dead_long_range_table(tmp_path):
                 " depart_date TEXT NOT NULL, return_date TEXT NOT NULL, total REAL NOT NULL,"
                 " out_price REAL NOT NULL, ret_price REAL NOT NULL, updated_at TEXT NOT NULL,"
                 " PRIMARY KEY (origin, destination, depart_date))")
-    con.execute("INSERT INTO long_range VALUES ('KHH','NGO','2026-12-07','2026-12-12',"
+    con.execute("INSERT INTO long_range VALUES ('KHH','NGO','2099-12-07','2099-12-12',"
                 "14891,7000,7891,'2026-07-18 09:11:34')")
     con.commit()
     con.close()
     st = Store(str(db))
-    st.record(Offer("KHH", "NGO", "2026-12-07", "2026-12-12", 14891.0, "TWD", "IT", 0, "205"))
+    st.record(Offer("KHH", "NGO", "2099-12-07", "2099-12-12", 14891.0, "TWD", "IT", 0, "205"))
     tables = {r[0] for r in st.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "long_range" not in tables
     assert {"observations", "alerts", "cheap_day_notices"} <= tables

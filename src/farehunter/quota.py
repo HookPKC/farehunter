@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import calendar
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -60,15 +61,14 @@ def _parse_ts(value) -> datetime | None:
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
-def _next_month(d: date) -> date:
-    """下個月的同一天；那個月沒有這一天（31 日、2 月）就取月底。"""
-    y, m = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
-    for day in (d.day, 30, 29, 28):
-        try:
-            return date(y, m, day)
-        except ValueError:
-            continue
-    raise AssertionError("unreachable")
+def _add_months(d: date, months: int) -> date:
+    """d 往後推 months 個月的同一天；那個月沒有這一天（31 日、2 月）就取月底。
+
+    一律從原日期算，不從上一次的結果接著推：否則 01-31 → 02-28 → 03-28 會一路漂移。
+    """
+    y, m = divmod(d.month - 1 + months, 12)
+    y, m = d.year + y, m + 1
+    return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
 
 
 def next_reset(last_reset_at: str | None, now: datetime) -> date | None:
@@ -79,10 +79,10 @@ def next_reset(last_reset_at: str | None, now: datetime) -> date | None:
     last = _parse_ts(last_reset_at)
     if last is None or last > now:
         return None
-    d = last.date()
-    while d <= now.date():
-        d = _next_month(d)
-    return d
+    months = 1
+    while _add_months(last.date(), months) <= now.date():
+        months += 1
+    return _add_months(last.date(), months)
 
 
 def _days_between(then: str | None, now: datetime) -> float | None:
@@ -139,8 +139,7 @@ def fetch_quota(api_key: str | None = None,
 
 def assess(q: Quota, *, now: datetime | None = None,
            prev: dict | None = None,
-           expected_daily: float = EXPECTED_DAILY,
-           known_reset_at: str | None = KNOWN_RESET_AT) -> dict:
+           expected_daily: float = EXPECTED_DAILY) -> dict:
     """算「還能撐幾天」，而不是「撐不撐得到月底」。
 
     **為什麼不看月底**（2026-09-01 的生產事故）：原本用
@@ -180,7 +179,7 @@ def assess(q: Quota, *, now: datetime | None = None,
         # 上次重置：本輪偵測到 → 上一份記錄的 → 已知的歷史重置（KNOWN_RESET_AT）。
         # 一律往下傳：週期重置是這支程式唯一看得到的額度事件，丟了就要再等一個月。
         "last_reset_at": next(
-            (t for t in ((prev or {}).get("last_reset_at"), known_reset_at)
+            (t for t in ((prev or {}).get("last_reset_at"), KNOWN_RESET_AT)
              if next_reset(t, now)), None),
         "next_reset_estimate": None,
         "days_to_reset": None,
@@ -233,12 +232,13 @@ def assess(q: Quota, *, now: datetime | None = None,
     reset = next_reset(out["last_reset_at"], now)
     survives = False
     if reset is not None:
-        days = (reset - now.date()).days
+        days_to_reset = (reset - now.date()).days
         out["next_reset_estimate"] = reset.isoformat()
-        out["days_to_reset"] = days
-        survives = runway >= days
-        tail += (f"；預計 {reset:%m/%d} 前後重置（還有 {days} 天）→ "
-                 + ("撐得到" if survives else f"會早約 {days - runway:.0f} 天用完"))
+        out["days_to_reset"] = days_to_reset
+        survives = runway >= days_to_reset
+        tail += (f"；預計 {reset:%m/%d} 前後重置（還有 {days_to_reset} 天）→ "
+                 + ("撐得到" if survives
+                    else f"會早約 {days_to_reset - runway:.0f} 天用完"))
     if runway < LOW_RUNWAY_DAYS and not survives:
         out["status"] = "low"
         out["note"] = _note(f"額度快見底：{tail}")
@@ -282,9 +282,11 @@ def snapshot(path: str = "docs/quota.json", *,
         result = assess(q, now=now, prev=prev)
     except Exception as exc:                     # noqa: BLE001 — 見 docstring
         log.warning("額度檢查失敗（不影響本輪抓價）: %s", exc)
+        # 上次重置日照樣往下傳：少了它，隔天就退回 KNOWN_RESET_AT，偵測到的重置日白費
         result = {"status": "error", "note": str(exc)[:300],
                   "plan_name": "", "searches_per_month": None,
-                  "total_searches_left": None, "this_month_usage": None}
+                  "total_searches_left": None, "this_month_usage": None,
+                  "last_reset_at": (prev or {}).get("last_reset_at")}
     result["checked_at"] = now.isoformat(timespec="seconds")
     _log_result(result)
     try:

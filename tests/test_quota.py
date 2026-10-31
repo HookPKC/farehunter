@@ -204,18 +204,22 @@ def test_a_garbled_last_reset_falls_back_to_the_known_one():
     assert r["next_reset_estimate"] == "2026-11-03"
 
 
-def test_no_reset_estimate_before_the_seed_or_without_one():
+def test_no_reset_estimate_before_the_seed_or_without_one(monkeypatch):
     """已知重置比「現在」還晚（舊日期的測試、時鐘錯）→ 不估，行為跟以前一樣。"""
     q = Quota(total_searches_left=74, this_month_usage=176)
     early = assess(q, now=datetime(2026, 9, 1, 11, 33, tzinfo=timezone.utc))
     assert early["last_reset_at"] is None and early["next_reset_estimate"] is None
     assert "重置" not in early["note"]
-    assert assess(q, now=OCT25, known_reset_at=None)["next_reset_estimate"] is None
+    monkeypatch.setattr(Q, "KNOWN_RESET_AT", None)
+    assert assess(q, now=OCT25)["next_reset_estimate"] is None
 
 
 def test_next_reset_handles_month_ends_and_december():
     now = datetime(2027, 2, 10, tzinfo=timezone.utc)
     assert Q.next_reset("2027-01-31T10:00:00+00:00", now).isoformat() == "2027-02-28"
+    # 過了短月不漂移：一律從原日期算，3 月回到 31 日（不是 02-28 接著推的 03-28）
+    assert Q.next_reset("2027-01-31T10:00:00+00:00",
+                        datetime(2027, 3, 10, tzinfo=timezone.utc)).isoformat() == "2027-03-31"
     assert Q.next_reset("2026-12-15T10:00:00+00:00",
                         datetime(2026, 12, 20, tzinfo=timezone.utc)).isoformat() == "2027-01-15"
     # 好幾個月沒偵測到（例如 FSC 停擺）→ 一路推到今天之後
@@ -225,6 +229,21 @@ def test_next_reset_handles_month_ends_and_december():
     assert Q.next_reset("2026-10-03T11:00:00+00:00",
                         datetime(2026, 11, 3, 23, tzinfo=timezone.utc)).isoformat() == "2026-12-03"
     assert Q.next_reset(None, now) is None and Q.next_reset("garbage", now) is None
+
+
+def test_a_failed_check_keeps_the_reset_anchor(tmp_path):
+    """11-05 偵測到重置 → 11-06 查詢失敗 → 11-07 不能退回 10-03 的已知值。"""
+    out = tmp_path / "q.json"
+    out.write_text(json.dumps({"this_month_usage": 10, "checked_at": "2026-11-05T11:00:00+00:00",
+                               "last_reset_at": "2026-11-05T11:00:00+00:00"}), encoding="utf-8")
+    err = snapshot(str(out), api_key="k", session=_Session(exc=RuntimeError("boom")),
+                   now=datetime(2026, 11, 6, 11, tzinfo=timezone.utc))
+    assert err["status"] == "error" and err["last_reset_at"] == "2026-11-05T11:00:00+00:00"
+    acct = dict(ACCOUNT, total_searches_left=230, this_month_usage=20)
+    r = snapshot(str(out), api_key="k", session=_Session(_Resp(acct)),
+                 now=datetime(2026, 11, 7, 11, tzinfo=timezone.utc))
+    assert r["last_reset_at"] == "2026-11-05T11:00:00+00:00"
+    assert r["next_reset_estimate"] == "2026-12-05"
 
 
 def test_snapshot_passes_the_reset_anchor_to_the_next_day(tmp_path):

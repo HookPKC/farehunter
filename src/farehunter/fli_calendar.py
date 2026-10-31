@@ -65,7 +65,7 @@ MAX_TRANSPORT_ERRORS = 5      # 連續這麼多次連線錯誤就停（同 runne
 MIN_SWEEP_GAP_MIN = 30        # FSC 與 Verify 接連跑完時，第二輪只做影子比價
 
 # ADR 0003 第二階段判斷標準（report 子命令據此給 PASS/FAIL/NO DATA）
-CRITERION_CAL_OK = 0.95       # 日曆時段重試後有價的比例（從沒拿到過價的時段視為沒班表、不計）
+CRITERION_CAL_OK = 0.95       # 日曆時段重試後有價的比例（每次都明確回空的時段視為沒班表、不計；出過錯的照算）
 CRITERION_WITHIN = 0.90       # 與參考價 ±SHADOW_TOLERANCE 以內的比例（即時查詢、日曆各一項）
 #: 回應不超過這麼多字元就整段記進錯誤訊息（Google 內部錯誤約 95 字元；正常回應數十 KB）
 DIAG_BODY_MAX = 300
@@ -379,6 +379,11 @@ def _ref_key(r: dict) -> str:
     return f"{r['route']}|{r['depart']}|{r['return']}|{r['ref_provider']}|{r['ref_observed_at']}"
 
 
+def _shadow_key(r: dict) -> str:
+    """一筆影子比價對應的參考觀測。紀錄裡都有 key；沒有的（手寫的舊資料）就現算。"""
+    return r.get("key") or _ref_key(r)
+
+
 def shadow_targets(db_path: str, now: datetime, seen: set[str],
                    lookback_hours: float = SHADOW_LOOKBACK_HOURS,
                    limit: int = SHADOW_MAX) -> list[dict]:
@@ -496,15 +501,21 @@ def _safe_records(path: Path) -> list[dict] | None:
 
 
 def load_seen(out_dir: Path, now: datetime, days: int = DEDUPE_DAYS) -> set[str]:
-    """最近比過的參考觀測。出錯（status=error）的不算比過：下一輪再試一次。
+    """最近比過的參考觀測。
 
-    不會無限重試：候選本身只取 SHADOW_LOOKBACK_HOURS 內的參考觀測，過了就不再出現。
+    出錯（status=error）、而且參考觀測還不到 SHADOW_MAX_LAG_H 小時的，不算比過：下一輪
+    再試一次。超過的就不再試——那時就算拿到價，報告也不拿它評準確度，打了是白打。
     """
     seen = set()
     for path in _files(out_dir, now - timedelta(days=days)):
         for rec in _safe_records(path) or []:
-            if rec.get("kind") == "shadow" and rec.get("key") and rec.get("status") != "error":
-                seen.add(rec["key"])
+            if rec.get("kind") != "shadow" or not rec.get("key"):
+                continue
+            ref_at = _parse_ts(rec.get("ref_observed_at"))
+            if (rec.get("status") == "error" and ref_at is not None
+                    and (now - ref_at).total_seconds() / 3600 <= SHADOW_MAX_LAG_H):
+                continue
+            seen.add(rec["key"])
     return seen
 
 
@@ -640,23 +651,22 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
             cal_runs.append((run_at, days_by_route))
 
     # 第二階段要用的是日曆價：同航線、同出發日、住 STAY_DAYS 晚的日曆價拿來跟參考價比
-    # （不多花任何請求）。日曆取參考觀測前後 SHADOW_MAX_LAG_H 小時內、時間最接近的
-    # 那一輪，不限同一輪：FSC 與 Verify 30 分鐘內先後跑完時，第二輪 fli 不重掃日曆，
+    # （不多花任何請求）。取參考觀測前後 SHADOW_MAX_LAG_H 小時內、那天有價、時間最接近
+    # 的一輪，不限同一輪：FSC 與 Verify 30 分鐘內先後跑完時，第二輪 fli 不重掃日曆，
     # 原本那輪的比價就沒有日曆價可對（2026-10-26 12:49 那輪 5 組全部落空）。
     # 同一個參考觀測可能出現在好幾輪（出錯的留給下一輪重試），日曆價只比一次
     paired: set = set()
     for r in sh:
         stay = (date.fromisoformat(r["return"]) - date.fromisoformat(r["depart"])).days
         ref_at = _parse_ts(r.get("ref_observed_at"))
-        if stay != STAY_DAYS or ref_at is None or r.get("key", id(r)) in paired:
+        if stay != STAY_DAYS or ref_at is None or _shadow_key(r) in paired:
             continue
-        paired.add(r.get("key", id(r)))
-        near = [(abs((run_at - ref_at).total_seconds()) / 3600, price)
-                for run_at, by_route in cal_runs
-                if (price := by_route.get(r["route"], {}).get(r["depart"]))]
-        near = [x for x in near if x[0] <= SHADOW_MAX_LAG_H]
-        if near:
-            price = min(near)[1]
+        paired.add(_shadow_key(r))
+        in_window = [(lag, price) for run_at, by_route in cal_runs
+                     if (price := by_route.get(r["route"], {}).get(r["depart"]))
+                     and (lag := abs((run_at - ref_at).total_seconds()) / 3600) <= SHADOW_MAX_LAG_H]
+        if in_window:
+            price = min(in_window)[1]                       # lag 最小的那一輪
             cal_vs_ref.append({"ref_provider": r.get("ref_provider"),
                                "diff_pct": round((price - r["ref_price"]) / r["ref_price"] * 100, 2)})
 
@@ -670,11 +680,6 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
         statuses.setdefault((r["route"], r.get("idx")), set()).add(r["status"])
     no_schedule = {k for k, st in statuses.items() if st == {"empty"}}
     scored = [r for r in cal if (r["route"], r.get("idx")) not in no_schedule]
-    by_route: dict[str, list[int]] = {}
-    for r in scored:
-        tally = by_route.setdefault(r["route"], [0, 0])
-        tally[0] += r["status"] == "ok"
-        tally[1] += 1
     fresh = [r for r in sh if r["status"] == "ok" and r["lag_hours"] is not None
              and r["lag_hours"] <= SHADOW_MAX_LAG_H]
     tol = SHADOW_TOLERANCE * 100
@@ -686,24 +691,28 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
         "calendar_windows": len(cal), "calendar_scored": len(scored),
         "calendar_no_schedule": sorted(f"{k[0]}#{k[1]}" for k in no_schedule),
         # 一條航線整段失敗時，總比例可能還過得了門檻；逐航線列出才看得到
-        "calendar_by_route": {k: f"{ok}/{n}" for k, (ok, n) in sorted(by_route.items())},
+        "calendar_by_route": _tally(scored, "route", lambda r: r["status"] == "ok"),
         "calendar_ok_rate": _rate(sum(r["status"] == "ok" for r in scored), len(scored)),
         "calendar_first_try_rate": _rate(
             sum(r["status"] == "ok" and r["attempts"] == 1 for r in scored), len(scored)),
         "calendar_error_rate": _rate(sum(r["status"] == "error" for r in scored), len(scored)),
-        "shadow_pairs": len(sh), "shadow_ok": sum(r["status"] == "ok" for r in sh),
+        # 行程數，不是嘗試次數：出錯的行程下一輪會再試，同一組可能出現在好幾輪
+        "shadow_pairs": len({_shadow_key(r) for r in sh}), "shadow_attempts": len(sh),
+        "shadow_ok": sum(r["status"] == "ok" for r in sh),
         "shadow_fresh": len(fresh),
         "shadow_within_rate": _rate(sum(abs(r["diff_pct"]) <= tol for r in fresh), len(fresh)),
         # 參考價有 SerpAPI 與 Scrape.do 兩個來源；分開列，才分得出是 fli 不準還是某個
         # 參考來源本身跟 Google 不一致（2026-10-28／29 KHH-NRT 兩組，fli 與 SerpAPI 都是
         # 12,858，只有 Scrape.do 低約 7%）
-        "shadow_within_by_provider": _within_by(fresh, "ref_provider", tol),
+        "shadow_within_by_provider": _tally(fresh, "ref_provider",
+                                            lambda r: abs(r["diff_pct"]) <= tol),
         "shadow_median_abs_diff_pct": (round(statistics.median(abs(r["diff_pct"]) for r in fresh), 2)
                                        if fresh else None),
         "calendar_vs_ref_pairs": len(cal_vs_ref),
         "calendar_vs_ref_within_rate": _rate(sum(abs(d["diff_pct"]) <= tol for d in cal_vs_ref),
                                              len(cal_vs_ref)),
-        "calendar_vs_ref_by_provider": _within_by(cal_vs_ref, "ref_provider", tol),
+        "calendar_vs_ref_by_provider": _tally(cal_vs_ref, "ref_provider",
+                                              lambda r: abs(r["diff_pct"]) <= tol),
         "blocked": sum(e.startswith("blocked") for e in errors),
         "error_kinds": _kinds(errors),
     }
@@ -717,13 +726,13 @@ def report(out_dir: str = "data/fli", days: int = 14, now: datetime | None = Non
     return res
 
 
-def _within_by(recs: list[dict], field: str, tol: float) -> dict[str, str]:
-    """依 field 分組，列出「價差在 ±tol% 內的組數／總組數」。"""
+def _tally(recs: list[dict], field: str, hit) -> dict[str, str]:
+    """依 field 分組，列出「hit(r) 成立的筆數／總筆數」（例：{"KHH-NGO": "19/40"}）。"""
     groups: dict[str, list[int]] = {}
     for r in recs:
-        tally = groups.setdefault(r.get(field) or "?", [0, 0])
-        tally[0] += abs(r["diff_pct"]) <= tol
-        tally[1] += 1
+        counts = groups.setdefault(r.get(field) or "?", [0, 0])
+        counts[0] += bool(hit(r))
+        counts[1] += 1
     return {k: f"{ok}/{n}" for k, (ok, n) in sorted(groups.items())}
 
 
