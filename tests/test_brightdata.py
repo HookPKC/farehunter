@@ -142,6 +142,16 @@ def test_fetch_errors_never_carry_the_key(monkeypatch, session, match):
     assert "secret-key" not in str(info.value)
 
 
+def test_the_key_is_masked_before_the_message_is_cut(monkeypatch):
+    """金鑰剛好跨在 200 字的截斷點上：先截再遮會留下前半段。"""
+    key = "BDKEY-a1b2c3d4e5f6g7h8i9j0"
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", key)
+    s = _Session(_Resp(500, "x" * 180 + key + "y" * 50))
+    with pytest.raises(bd.BrightDataError) as info:
+        bd.fetch("TPE", "NRT", DEP, RET, session=s)
+    assert key[:8] not in str(info.value) and len(str(info.value)) <= 200
+
+
 def test_fetch_without_key_refuses():
     with pytest.raises(bd.BrightDataError, match="missing"):
         bd.fetch("TPE", "NRT", DEP, RET)
@@ -363,7 +373,7 @@ def test_sweep_stops_at_the_deadline(tmp_path):
 
 # ---- runner：警報前驗證 ---------------------------------------------------------------
 
-def _run(tmp_path, monkeypatch, fetch, offers=None, threshold=8000):
+def _run(tmp_path, monkeypatch, fetch, offers=None, threshold=8000, now=NOW, search=None):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         "defaults:\n  currency: twd\n  months_ahead: 1\n  pause_seconds: 0\n"
@@ -372,7 +382,7 @@ def _run(tmp_path, monkeypatch, fetch, offers=None, threshold=8000):
     offers = offers or [Offer("KHH", "NRT", DEP, RET, 7761.0, "TWD", "GK", 0, "180")]
     monkeypatch.setattr(runner_mod, "TravelpayoutsClient",
                         type("C", (), {"__init__": lambda s, *a, **k: None,
-                                       "search_month": lambda s, *a, **k: {}}))
+                                       "search_month": search or (lambda s, *a, **k: {})}))
     monkeypatch.setattr(runner_mod, "parse_offers", lambda *a, **k: list(offers))
     sent = []
     monkeypatch.setattr(runner_mod, "notify",
@@ -380,7 +390,7 @@ def _run(tmp_path, monkeypatch, fetch, offers=None, threshold=8000):
     monkeypatch.setattr(runner_mod, "channels_configured", lambda: True)
     monkeypatch.setattr(bd, "fetch", fetch)
     monkeypatch.setenv("FAREHUNTER_FORCE", "1")
-    summary = runner_mod.run(str(cfg), str(tmp_path / "prices.db"), now=NOW)
+    summary = runner_mod.run(str(cfg), str(tmp_path / "prices.db"), now=now)
     con = sqlite3.connect(tmp_path / "prices.db")
     alerts = con.execute("SELECT price, price_status FROM alerts").fetchall()
     con.close()
@@ -435,6 +445,75 @@ def test_bright_data_failure_still_sends_the_alert(tmp_path, monkeypatch):
     summary, sent, alerts = _run(tmp_path, monkeypatch, down)
     assert alerts == [(7761.0, "unverified")] and len(sent) == 1
     assert summary["brightdata"]["errors"] >= 1
+
+
+def _counting(page):
+    calls = []
+
+    def fetch(o, d, dep, ret):
+        calls.append((o, d, dep, ret))
+        return page
+
+    return fetch, calls
+
+
+def test_a_verified_alert_is_not_rechecked_every_hour(tmp_path, monkeypatch):
+    """只有同一輪的實價才算 VERIFIED：一小時後驗證前的狀態又回到 UNVERIFIED、去重的桶子
+    也不同。不擋的話同一則警報每小時都會再花一次額度（實際 DB 推估每月可達約 3,300 次）。"""
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    fetch, calls = _counting(_page(_label("7,650", "Jetstar")))
+    _run(tmp_path, monkeypatch, fetch)
+    summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, now=NOW + timedelta(hours=1))
+    assert len(calls) == 1 and sent == [] and alerts == [(7650.0, "verified")]
+    _run(tmp_path, monkeypatch, fetch, now=NOW + timedelta(hours=25))
+    assert len(calls) == 2                       # 超過 24 小時才重新驗證
+
+
+def test_a_trip_google_says_is_not_cheap_is_not_rechecked_every_hour(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    fetch, calls = _counting(_page(_label("9,200", "Jetstar")))
+    for h in (0, 1, 2):
+        summary, sent, alerts = _run(tmp_path, monkeypatch, fetch,
+                                     now=NOW + timedelta(hours=h))
+    assert len(calls) == 1 and sent == [] and alerts == []
+
+
+def test_a_bigger_drop_after_an_unmatched_check_is_sent_without_a_new_request(
+        tmp_path, monkeypatch):
+    """24 小時內查過、但沒有同航空公司的直飛價：快取再降一截照常發（不漏發），不重查。"""
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    fetch, calls = _counting(_page(_label("7,000", "Tigerair Taiwan")))
+    _run(tmp_path, monkeypatch, fetch)
+    cheaper = [Offer("KHH", "NRT", DEP, RET, 6900.0, "TWD", "GK", 0, "180")]
+    summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, offers=cheaper,
+                                 now=NOW + timedelta(hours=1))
+    assert len(calls) == 1 and len(sent) == 1
+    assert alerts == [(7761.0, "unverified"), (6900.0, "unverified")]
+
+
+def test_a_connecting_candidate_is_not_sent_to_bright_data(tmp_path, monkeypatch):
+    """Bright Data 只寫直飛價：轉機的候選查了也對不上，白花一次。"""
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    fetch, calls = _counting(_page(_label("7,000", "Jetstar")))
+    offers = [Offer("KHH", "NRT", DEP, RET, 7761.0, "TWD", "GK", 1, "480")]
+    summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, offers=offers)
+    assert alerts == [(7761.0, "unverified")]
+    assert summary["brightdata"]["alerts_checked"] == 0
+    assert (DEP, RET) not in {c[2:] for c in calls}
+
+
+def test_no_sweep_when_every_aviasales_search_failed(tmp_path, monkeypatch):
+    """全部失敗的輪次 exit 1、不 commit prices.db：巡檢的帳本會消失、下一輪又照算額度。"""
+    from farehunter.travelpayouts import TravelpayoutsError
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    fetch, calls = _counting(_page(_label("7,000", "Jetstar")))
+
+    def down(self, *a, **k):
+        raise TravelpayoutsError(401, "Unauthorized")
+
+    summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, search=down)
+    assert runner_mod.all_searches_failed(summary)
+    assert calls == [] and summary["brightdata"]["requests"] == 0
 
 
 def test_an_unexpected_error_in_the_sweep_does_not_stop_the_run(tmp_path, monkeypatch):

@@ -128,7 +128,9 @@ class Store:
         self.conn.close()
 
     # ---- observations ------------------------------------------------------
-    def record(self, offer: Offer) -> None:
+    def record(self, offer: Offer, observed_at: str | None = None) -> None:
+        """observed_at 預設是寫入當下；Bright Data 傳本輪的 now，讓它「24 小時內查過」的
+        判斷全部用同一個時鐘（HANDOFF §3b）。"""
         self.conn.execute(
             """INSERT INTO observations
                (origin, destination, depart_date, return_date, price,
@@ -138,7 +140,7 @@ class Store:
             (offer.origin, offer.destination, offer.depart_date,
              offer.return_date, offer.price, offer.currency,
              offer.carriers, offer.stops, offer.duration,
-             datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
              offer.fare_class, offer.source, offer.provider),
         )
         self.conn.commit()
@@ -363,6 +365,18 @@ class Store:
                  AND source='google' AND julianday(observed_at) >= julianday(?)
                LIMIT 1""",
             (origin, destination, depart_date, return_date, since)).fetchone() is not None
+
+    def google_rows_since(self, origin: str, destination: str, depart_date: str,
+                          return_date: str, since: str, *, provider: str) -> list:
+        """同一行程在 since 之後、某個供應商寫入的 Google 實價，最新的在前。"""
+        return self.conn.execute(
+            """SELECT price, currency, carriers, stops, fare_class, observed_at
+               FROM observations
+               WHERE origin=? AND destination=? AND depart_date=? AND return_date=?
+                 AND source='google' AND provider=?
+                 AND julianday(observed_at) >= julianday(?)
+               ORDER BY julianday(observed_at) DESC, id DESC""",
+            (origin, destination, depart_date, return_date, provider, since)).fetchall()
 
     def record_api_check(self, provider: str, origin: str, destination: str,
                          depart_date: str, return_date: str, checked_at: str) -> None:

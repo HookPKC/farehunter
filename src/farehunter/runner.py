@@ -29,9 +29,8 @@ def _resolve_state(store, offer, now, authoritative=None):
     candidate 的 observed_at 即本輪抓取時刻（store.record 亦以此刻寫入），
     因此以 now 代表；reference 取同航程、不晚於 now 的最新 google 觀測。
 
-    authoritative：同一輪剛向 Bright Data 查到的 Google 實價（Offer）。DB 裡那筆的
-    observed_at 是寫入當下的真實時刻、晚於 now，reference 查不到它，所以直接傳進來
-    （price_state 原本就預留了這個參數）。
+    authoritative：同一輪剛向 Bright Data 查到的 Google 實價（Offer），直接當同輪權威價
+    傳進去（price_state 原本就預留了這個參數），不靠 reference 從 DB 撈回來。
     """
     cand = _as_observation(offer, now)
     row = store.latest_itinerary_google(
@@ -62,6 +61,43 @@ def _as_observation(offer, observed_at):
         price=offer.price, currency=offer.currency, carriers=offer.carriers,
         stops=offer.stops, fare_class=offer.fare_class,
         source=offer.source, observed_at=observed_at)
+
+
+def _verify_with_brightdata(store, verifier, offer, now, judge, csig, current):
+    """警報發出前用 Bright Data 驗證（ADR 0004）。回傳要發的 (pstate, eval_offer, verdict)，
+    None＝這則不發。current 是驗證前的那一組。
+
+    - 查到同航空公司的直飛價 → 同輪權威價、VERIFIED，再用實價重判：不便宜就不發
+      （跟既有 VERIFIED 的語意一樣）。查不到、失敗或額度用完 → 照原本的狀態發，不漏發。
+    - **24 小時內查過就不重查**：只有同一輪的實價才算 VERIFIED，所以一小時前查過的
+      行程，驗證前的狀態又會回到 UNVERIFIED／CONFLICT、去重的桶子也不同——不擋的話，
+      同一則警報（或實價不便宜的行程）每小時都會再花一次額度。改用那次的實價：
+      不便宜、或已經用它通知過「已驗證」→ 不發；沒有同航空公司的直飛價 → 照原狀態發。
+    """
+    o, d, dep, ret = offer.origin, offer.destination, offer.depart_date, offer.return_date
+    recent = verifier.recent_match(o, d, dep, ret, offer.carriers)
+    if recent is not None:
+        recent_verdict = judge(replace(offer, price=recent.price))
+        if not recent_verdict.is_deal:
+            return None
+        if store.recently_alerted(o, d, dep, recent.price, return_date=ret,
+                                  carrier_signature=csig,
+                                  price_status=price_state.VERIFIED,
+                                  reference_price=None, reason=recent_verdict.reason):
+            return None
+        # 實價夠便宜、卻還沒通知過（例如上次送不出去）→ 重新驗證一次再發
+    elif verifier.checked_recently(o, d, dep, ret):
+        return current
+    auth = verifier.verify_alert(o, d, dep, ret, offer.carriers)
+    if auth is None:
+        return current
+    pstate = _resolve_state(store, offer, now, authoritative=auth)
+    eval_offer = (replace(offer, price=pstate.selected_price)
+                  if pstate.state == price_state.VERIFIED else offer)
+    verdict = judge(eval_offer)
+    if not verdict.is_deal or _already_alerted(store, offer, pstate, verdict, csig):
+        return None
+    return pstate, eval_offer, verdict
 
 
 def _already_alerted(store, offer, pstate, verdict, csig) -> bool:
@@ -288,21 +324,15 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     if not verdict.is_deal or _already_alerted(store, offer, pstate, verdict, csig):
                         continue
                     # 發 LINE 之前先用 Bright Data 查同一行程的 Google 實價（ADR 0004）。
-                    # 查到同航空公司的價格 → 同輪權威價、VERIFIED，再用實價重新判斷是不是
-                    # deal（實價不便宜就不發，跟既有 VERIFIED 的語意一樣）；查不到、失敗或
-                    # 額度用完 → 照原本的狀態發，不會因此漏發。
-                    if (verifier is not None and offer.return_date
+                    # Bright Data 只寫直飛價，轉機的候選查了也對不上，所以不查。
+                    if (verifier is not None and offer.return_date and offer.stops == 0
                             and pstate.state != price_state.VERIFIED):
-                        auth = verifier.verify_alert(origin, dest, offer.depart_date,
-                                                     offer.return_date, offer.carriers)
-                        if auth is not None:
-                            pstate = _resolve_state(store, offer, now, authoritative=auth)
-                            eval_offer = (replace(offer, price=pstate.selected_price)
-                                          if pstate.state == price_state.VERIFIED else offer)
-                            verdict = judge(eval_offer)
-                            if not verdict.is_deal or _already_alerted(
-                                    store, offer, pstate, verdict, csig):
-                                continue
+                        checked = _verify_with_brightdata(
+                            store, verifier, offer, now, judge, csig,
+                            (pstate, eval_offer, verdict))
+                        if checked is None:
+                            continue
+                        pstate, eval_offer, verdict = checked
                     sent = notify(eval_offer, verdict, pstate)
                     if not sent and channels_configured():
                         log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",
@@ -333,7 +363,12 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 log.warning("航線本輪零記錄 %s→%s（%d/%d 個月回空）",
                             origin, dest, route_empty, len(months))
 
-        if verifier is not None:
+        if verifier is not None and all_searches_failed(summary):
+            # Aviasales 全部失敗的輪次會 exit 1、不 commit prices.db，這輪的帳本會消失；
+            # guard 也不會擋下一輪。這時巡檢等於花了額度卻不記帳，所以不巡檢。
+            log.warning("Aviasales 本輪全部失敗，跳過 Bright Data 巡檢（帳本不會被 commit）")
+            summary["brightdata"] = verifier.stats
+        elif verifier is not None:
             # 抓完 Aviasales 後，剩下的 Bright Data 額度拿去查各航線最便宜、24 小時內還沒查過
             # 的行程（ADR 0004）。放在健康檢查之前，健康報告才看得到這輪補的資料。
             try:

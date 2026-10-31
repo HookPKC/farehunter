@@ -120,7 +120,8 @@ def fetch(origin: str, dest: str, depart: str, ret: str,
                               .replace(key, "***")[:200]) from exc
     if r.status_code != 200:
         # 錯誤內容只取開頭、遮掉金鑰；絕不印 zone 管理 API 的回應（含 zone 密碼，見 ADR 0004）
-        raise BrightDataError(f"HTTP {r.status_code}: {r.text[:200]}".replace(key, "***"))
+        # 先遮再截：金鑰若剛好跨在截斷點上，先截會留下前半段
+        raise BrightDataError(f"HTTP {r.status_code}: {r.text}".replace(key, "***")[:200])
     if not r.text:
         raise BrightDataError("HTTP 200 but empty body")
     return r.text
@@ -225,7 +226,7 @@ class Verifier:
             ok = True
             offers, matched = select(origin, dest, depart, ret, itineraries, want_carriers)
             for o in offers:
-                self.store.record(o)
+                self.store.record(o, observed_at=self.now.isoformat(timespec="seconds"))
             self.stats["recorded"] += len(offers)
             self.stats["no_direct"] += not offers
             return matched
@@ -241,6 +242,29 @@ class Verifier:
         finally:
             self.stats["ok"] += ok
             self.store.record_api_usage(PROVIDER, self.now.date().isoformat(), ok=ok)
+
+    def _since(self) -> str:
+        return (self.now - timedelta(hours=RECHECK_HOURS)).isoformat(timespec="seconds")
+
+    def checked_recently(self, origin: str, dest: str, depart: str, ret: str) -> bool:
+        """24 小時內 Bright Data 拿過這趟的頁面（不論有沒有寫入直飛價）。"""
+        return self.store.api_checked_since(PROVIDER, origin, dest, depart, ret, self._since())
+
+    def recent_match(self, origin: str, dest: str, depart: str, ret: str,
+                     carriers: str | None) -> Offer | None:
+        """24 小時內 Bright Data 查到、跟 carriers 同一組航空公司的最新直飛價（沒有就 None）。"""
+        want = carrier_signature(carriers)
+        if want is None:
+            return None
+        for row in self.store.google_rows_since(origin, dest, depart, ret, self._since(),
+                                                provider=PROVIDER):
+            if carrier_signature(row["carriers"]) == want:
+                return Offer(origin=origin, destination=dest, depart_date=depart,
+                             return_date=ret, price=row["price"], currency=row["currency"],
+                             carriers=row["carriers"], stops=row["stops"], duration="",
+                             link=search_url(origin, dest, depart, ret),
+                             fare_class=row["fare_class"], source="google", provider=PROVIDER)
+        return None
 
     def verify_alert(self, origin: str, dest: str, depart: str, ret: str,
                      want_carriers: str | None) -> Offer | None:
@@ -258,7 +282,7 @@ class Verifier:
         """
         if self.left <= 0:
             return
-        since = (self.now - timedelta(hours=RECHECK_HOURS)).isoformat(timespec="seconds")
+        since = self._since()
         self.store.prune_api_checks(PROVIDER, since)
         earliest = (self.now.date() + timedelta(days=MIN_LEAD_DAYS)).isoformat()
         queues: dict[tuple[str, str], list[tuple[str, str, str | None]]] = {r: [] for r in routes}
