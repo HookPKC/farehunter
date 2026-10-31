@@ -112,13 +112,19 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
 .empty{padding:var(--s5) var(--s4);color:var(--ink3);font-size:var(--fs-m);
   background:var(--bg1);line-height:1.6}
 .empty b{color:var(--ink2)}
-/* 手機版警報列：允許換行成兩行——第一行 航線/價格/出發日、第二行 理由·日期整行靠右。
+/* 手機版警報列：換成三行——航線／價格、出發日與天數、理由·狀態·日期（靠右）。
    僅窄螢幕生效，桌面(≥560px)維持單列原樣。 */
 @media (max-width:559px){
   .alert-row{flex-wrap:wrap;row-gap:2px}
-  .alert-row span:nth-child(3){white-space:nowrap}   /* 出發日不再內部斷行 */
+  .alert-row .dt{white-space:nowrap;flex-basis:100%}   /* 出發日與天數固定獨佔第二行，各列排法一致 */
   .alert-row .why{flex-basis:100%;white-space:normal;text-align:right;margin-left:0}
 }
+/* 超過 8 筆收進「再看 N 筆」：標題的筆數要跟清單內容一致。展開樣式沿用 .more（▸ 箭頭），
+   這裡只放大成一整列。上緣不另畫線：第 8 列的下框線已經是分隔，再畫會變雙線。 */
+.more.alert-more{margin-top:0}
+.more.alert-more>summary{display:flex;padding:var(--s3) var(--s4);font-size:var(--fs-s)}
+.more.alert-more>summary:hover{background:var(--bg2)}
+.alert-more .alert-row:first-of-type{border-top:1px solid var(--line1)}
 
 /* ============ Cheap days（哪天特別便宜）============
    沿用 .alerts 的容器語彙，只多一欄「落差」與一個 ★ 標記。刻意不做成卡片：
@@ -616,6 +622,10 @@ $("navsort").addEventListener("click", ()=>{
 const twTime = iso => new Date(iso).toLocaleString("zh-TW",
   {timeZone:"Asia/Taipei", month:"2-digit", day:"2-digit",
    hour:"2-digit", minute:"2-digit", hour12:false});
+const twDate = iso => new Date(iso).toLocaleDateString("zh-TW",
+  {timeZone:"Asia/Taipei", month:"2-digit", day:"2-digit"});
+// 去回日相差幾天（跟 LINE 通知的「N 天來回」同一個算法）；沒有回程日回 null
+const stayNights = (dep, ret) => ret ? Math.round((new Date(ret) - new Date(dep)) / 864e5) : null;
 const FRESH_NOTE_MIN = 90, FRESH_WARN_MIN = 180;
 let FRESH_GEN = null, FRESH_ENV = null, FRESH_TIMER = null;
 function renderFreshness(){
@@ -660,14 +670,31 @@ function render(data){
     ["24H 警報", data.totals.alerts_24h],
   ].map(([k,v])=>`<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 
-  $("alert-count").textContent = data.alerts.length ? `· ${data.alerts.length}` : "";
-  $("alerts").innerHTML = data.alerts.length
-    ? data.alerts.slice(0,8).map(a=>`<a class="alert-row"
-        href="#${a.origin}-${a.destination}">
+  // 最新警報。export 已濾掉已出發、同一行程只留最新；這裡再濾一次已出發的，
+  // 因為 data.json 可能隔了一天沒更新。價格交給全站同一套 priceDisp：快取估價「約」＋百位，
+  // 跟 LINE 通知的「疑似低價・尚未經 Google 驗證」一致。警報只由 monitor 寫入，舊列沒記
+  // 來源（NULL）的都是 Aviasales 快取，照快取處理。標籤也跟著來源走，不會出現精確數字配快取標籤。
+  // sent_at 是 UTC，日期換成台灣時間（不然台灣早上 8 點前送出的會顯示成前一天）。
+  const todayTW = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Taipei"});
+  const alerts = (data.alerts||[]).filter(a => a.depart_date >= todayTW);
+  const alertRow = a => {
+    const src = a.price_source || "aviasales";
+    const tag = a.price_status === "verified" ? "已驗證"
+      : a.price_status === "conflict" ? "價格有落差"
+      : isCacheSrc(src) ? "快取估價" : "Google 觀測價";
+    const nights = stayNights(a.depart_date, a.return_date);
+    return `<a class="alert-row" href="#${a.origin}-${a.destination}">
         <span class="rt">${a.origin}→${a.destination}</span>
-        <span class="pr">${fmt(a.price)}</span>
-        <span>${a.depart_date.slice(5).replace("-","/")} 出發</span>
-        <span class="why">${REASONS[a.reason]||a.reason} · ${a.sent_at.slice(5,10).replace("-","/")}</span></a>`).join("")
+        <span class="pr">${priceDisp(a.price, src)}</span>
+        <span class="dt">${a.depart_date.slice(5).replace("-","/")} 出發${nights ? ` · ${nights} 天來回` : ""}</span>
+        <span class="why">${REASONS[a.reason]||a.reason} · ${tag} · ${twDate(a.sent_at.replace(" ", "T") + "Z")}</span></a>`;
+  };
+  $("alert-count").textContent = alerts.length ? `· ${alerts.length}` : "";
+  $("alerts").innerHTML = alerts.length
+    ? alerts.slice(0,8).map(alertRow).join("")
+      + (alerts.length > 8
+         ? `<details class="more alert-more"><summary>再看 ${alerts.length - 8} 筆</summary>${
+             alerts.slice(8).map(alertRow).join("")}</details>` : "")
     : `<div class="empty"><b>目前沒有警報。</b><br>
        價格低於門檻或出現歷史新低時會列在這裡；統計規則約累積 30 筆觀察後自動啟用。</div>`;
 
@@ -786,8 +813,7 @@ function render(data){
         const aln = x.source==="google" && !x.carriers
           ? (x.ref_carriers ? `≈ ${alFull(x.ref_carriers.split(",")[0])}` : "點入看航空")
           : alFull((x.carriers||"").split(",")[0]);
-        const nights = x.return_date
-          ? Math.round((new Date(x.return_date)-new Date(x.depart_date))/864e5) : null;
+        const nights = stayNights(x.depart_date, x.return_date);
         return `<a class="chip ${cls} ${cest?'cest':''}" target="_blank" rel="noopener"
           aria-label="${x.depart_date} 週${WD[dt.getDay()]}${nights?` ${nights}天來回`:""} ${cest?'快取估價 約':''}${fmt(cest?RND100(x.price):x.price)} 元 ${aln}"
           href="${gfLink(r.origin,r.destination,x.depart_date,x.return_date)}">
