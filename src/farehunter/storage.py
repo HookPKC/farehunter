@@ -63,7 +63,9 @@ CREATE TABLE IF NOT EXISTS api_usage (
 
 -- 巡檢最近查過哪些行程（Bright Data 巡檢用，ADR 0004）。查到頁面卻沒有可寫入的直飛價
 -- （那天沒有直飛、航空公司對不上）時 observations 裡不會留下任何東西，沒有這張表的話
--- 下一輪又會查同一趟、每小時白花一次額度。每輪巡檢前刪掉超過 24 小時的，所以只有幾百筆。
+-- 下一輪又會查同一趟、每小時白花一次額度。24 小時內不重查；紀錄留 7 天，讓冷門線記得
+-- 哪些星期幾查了也沒有直飛（api_misses_by_date）。每輪巡檢前刪掉更舊的，約一千多筆。
+-- parsed＝頁面上解析得到航班：解析不到的頁面（驗證碼、改版）不能拿來判斷那天有沒有飛。
 CREATE TABLE IF NOT EXISTS api_checks (
     provider    TEXT NOT NULL,
     origin      TEXT NOT NULL,
@@ -71,6 +73,7 @@ CREATE TABLE IF NOT EXISTS api_checks (
     depart_date TEXT NOT NULL,
     return_date TEXT NOT NULL,
     checked_at  TEXT NOT NULL,
+    parsed      INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (provider, origin, destination, depart_date, return_date)
 );
 """ + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
@@ -117,6 +120,10 @@ class Store:
         # 刪除；資料仍在 git 歷史的 prices.db 裡（checkout 2026-10-26 以前的版本）。
         # 寫明 main.：此時封存檔還沒 attach，但不靠呼叫順序保證只刪主檔的表。
         self.conn.execute("DROP TABLE IF EXISTS main.long_range")
+        # migration: api_checks.parsed（2026-11-01）。舊列沒有這個資訊，當成有解析到。
+        if "parsed" not in [r[1] for r in self.conn.execute("PRAGMA table_info(api_checks)")]:
+            self.conn.execute(
+                "ALTER TABLE api_checks ADD COLUMN parsed INTEGER NOT NULL DEFAULT 1")
         self.conn.commit()
         # 一開檔就核對封存檔（ADR 0002）。所有 writer（monitor／FSC／Verify／
         # cheap_day_notify）都在打任何付費 API 之前建 Store，封存檔不完整時在
@@ -379,12 +386,15 @@ class Store:
             (origin, destination, depart_date, return_date, provider, since)).fetchall()
 
     def record_api_check(self, provider: str, origin: str, destination: str,
-                         depart_date: str, return_date: str, checked_at: str) -> None:
+                         depart_date: str, return_date: str, checked_at: str,
+                         *, parsed: bool = True) -> None:
         self.conn.execute(
-            """INSERT INTO api_checks VALUES (?, ?, ?, ?, ?, ?)
+            """INSERT INTO api_checks
+                 (provider, origin, destination, depart_date, return_date, checked_at, parsed)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(provider, origin, destination, depart_date, return_date)
-               DO UPDATE SET checked_at = excluded.checked_at""",
-            (provider, origin, destination, depart_date, return_date, checked_at))
+               DO UPDATE SET checked_at = excluded.checked_at, parsed = excluded.parsed""",
+            (provider, origin, destination, depart_date, return_date, checked_at, int(parsed)))
         self.conn.commit()
 
     def api_checked_since(self, provider: str, origin: str, destination: str,
@@ -395,6 +405,33 @@ class Store:
                  AND return_date=? AND julianday(checked_at) >= julianday(?)""",
             (provider, origin, destination, depart_date, return_date, since)
         ).fetchone() is not None
+
+    def google_nonstop_by_date(self, origin: str, destination: str,
+                               since: str) -> list[tuple[str, float]]:
+        """since 之後這條航線各出發日最近一次的 Google 直飛實價時間（任何供應商），
+        回傳 (depart_date, julianday)。"""
+        return [tuple(r) for r in self.conn.execute(
+            """SELECT depart_date, MAX(julianday(observed_at)) FROM observations
+               WHERE origin=? AND destination=? AND source='google' AND stops=0
+                 AND julianday(observed_at) >= julianday(?)
+               GROUP BY depart_date""", (origin, destination, since))]
+
+    def api_misses_by_date(self, provider: str, origin: str, destination: str,
+                           since: str) -> list[tuple[str, float]]:
+        """since 之後這個供應商拿到頁面、解析得到航班、卻沒有寫入任何觀測的行程，依出發日
+        回傳 (depart_date, 最近一次的 julianday)。那一趟同時寫入的觀測（observed_at 等於
+        checked_at）算有結果；解析不到航班的頁面（parsed=0）看不出那天有沒有飛，不算。"""
+        return [tuple(r) for r in self.conn.execute(
+            """SELECT c.depart_date, MAX(julianday(c.checked_at)) FROM api_checks c
+               WHERE c.provider=? AND c.origin=? AND c.destination=? AND c.parsed=1
+                 AND julianday(c.checked_at) >= julianday(?)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM observations o
+                   WHERE o.provider=c.provider AND o.origin=c.origin
+                     AND o.destination=c.destination AND o.depart_date=c.depart_date
+                     AND o.return_date=c.return_date
+                     AND julianday(o.observed_at) >= julianday(c.checked_at))
+               GROUP BY c.depart_date""", (provider, origin, destination, since))]
 
     def prune_api_checks(self, provider: str, before: str) -> None:
         self.conn.execute("DELETE FROM api_checks WHERE provider=? "

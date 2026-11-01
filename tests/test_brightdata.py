@@ -305,6 +305,163 @@ def test_fixed_dates_cover_every_weekday():
         assert min(dep for dep, _ in trips) >= (NOW.date() + timedelta(days=days + 14)).isoformat()
 
 
+# ---- 冷門線：只挑有直飛的星期幾 ------------------------------------------------------
+
+MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
+
+
+def _weekdays(trips):
+    return [datetime.fromisoformat(dep).weekday() for dep, _ in trips]
+
+
+def test_fixed_dates_stick_to_weekdays_with_direct_flights():
+    """KHH-NGO 冬季只有週一、週三有直飛：其他星期幾都落空過，就只查週一、週三。"""
+    trips = bd.anchor_trips(NOW, prefer=frozenset({MON, WED}),
+                            avoid=frozenset({TUE, THU, FRI, SAT, SUN}))
+    assert len(trips) == 8 and set(_weekdays(trips)) == {MON, WED}
+    first, last = (datetime.fromisoformat(trips[i][0]) for i in (0, -1))
+    assert (last - first).days >= 35                  # 平均分散，不是擠在同一週
+    assert all((datetime.fromisoformat(r) - datetime.fromisoformat(d)).days == bd.STAY_NIGHTS
+               for d, r in trips)
+
+
+def test_untried_weekdays_are_tried_first_and_misses_are_skipped():
+    trips = bd.anchor_trips(NOW, prefer=frozenset({WED}), avoid=frozenset({TUE}))
+    wds = _weekdays(trips)
+    assert sorted(wds[:5]) == [MON, THU, FRI, SAT, SUN]   # 還沒試過的各試一天
+    assert set(wds[5:]) == {WED} and TUE not in wds and len(trips) == 8
+
+
+def test_fixed_dates_cover_the_whole_period_including_peak_season():
+    """有飛的星期幾很多時（KHH-CTS），日子也要散到整段期間，不能擠在第一週。"""
+    trips = bd.anchor_trips(NOW, prefer=frozenset({MON, TUE, WED, THU, FRI, SAT}),
+                            avoid=frozenset({SUN}))
+    deps = [datetime.fromisoformat(d).date() for d, _ in trips]
+    assert len(deps) == 8 and SUN not in {d.weekday() for d in deps}
+    assert (deps[-1] - deps[0]).days >= 50 and len({d.isocalendar()[1] for d in deps}) >= 6
+    assert bd._spread(list(range(9)), 1) == [4]        # 只挑一個時取中間，不是最早那天
+
+
+def test_no_fixed_dates_when_every_weekday_came_up_empty():
+    assert bd.anchor_trips(NOW, avoid=frozenset(range(7))) == []
+
+
+def _ret(dep):
+    return (datetime.fromisoformat(dep) + timedelta(days=bd.STAY_NIGHTS)).date().isoformat()
+
+
+def _check(st, o, d, dep, at, *, parsed=True):
+    st.record_api_check("brightdata", o, d, dep, _ret(dep),
+                        at.isoformat(timespec="seconds"), parsed=parsed)
+
+
+def _obs(st, o, d, dep, at, provider="brightdata", stops=0):
+    ret = _ret(dep)
+    st.conn.execute(
+        "INSERT INTO observations (origin, destination, depart_date, return_date, price,"
+        " currency, carriers, stops, duration, observed_at, fare_class, source, provider)"
+        " VALUES (?,?,?,?,8000,'TWD','IT',?,'',?,'any','google',?)",
+        (o, d, dep, ret, stops, at.isoformat(timespec="seconds"), provider))
+    st.conn.commit()
+    return ret
+
+
+def _next(wd, after=20):
+    day = NOW.date() + timedelta(days=after)
+    return (day + timedelta(days=(wd - day.weekday()) % 7)).isoformat()
+
+
+def test_weekday_outcomes_follow_the_latest_result(tmp_path):
+    st = _store(tmp_path)
+    # 週三：10 天前 SerpAPI 查到直飛 → 有飛
+    _obs(st, "KHH", "NGO", _next(WED), NOW - timedelta(days=10), provider="serpapi")
+    # 週二：2 天前 Bright Data 拿到頁面卻沒寫入 → 落空
+    _check(st, "KHH", "NGO", _next(TUE), NOW - timedelta(days=2))
+    # 週一：5 天前落空，但 1 天前查到直飛 → 以最近一次為準，有飛
+    _check(st, "KHH", "NGO", _next(MON), NOW - timedelta(days=5))
+    _obs(st, "KHH", "NGO", _next(MON, after=40), NOW - timedelta(days=1))
+    _check(st, "KHH", "NGO", _next(MON, after=40), NOW - timedelta(days=1))
+    # 不算：31 天前的直飛、轉機的實價、別條航線、解析不到航班的頁面（驗證碼之類）
+    _obs(st, "KHH", "NGO", _next(SAT), NOW - timedelta(days=31))
+    _obs(st, "KHH", "NGO", _next(SUN), NOW - timedelta(days=1), stops=1)
+    _obs(st, "KHH", "CTS", _next(FRI), NOW - timedelta(days=1))
+    _check(st, "KHH", "NGO", _next(THU), NOW - timedelta(days=1), parsed=False)
+    v = bd.Verifier(st, NOW, allowance=1, fetcher=lambda *a: "")
+    known = v.weekday_outcomes("KHH", "NGO")
+    assert (known.prefer, known.avoid) == (frozenset({MON, WED}), frozenset({TUE}))
+    # 8 天前的落空已經過期
+    assert bd.Verifier(st, NOW + timedelta(days=6), allowance=1,
+                       fetcher=lambda *a: "").weekday_outcomes("KHH", "NGO").avoid == frozenset()
+
+
+def test_a_recheck_updates_whether_the_page_was_readable(tmp_path):
+    """同一趟先遇到驗證碼（看不出有沒有飛），25 小時後重查只有轉機 → 改算落空。"""
+    st = _store(tmp_path)
+    dep = _next(TUE)
+    for h, page in ((0, "<html>captcha</html>"),
+                    (25, _page(_label("15,000", "Tigerair Taiwan", nonstop=False)))):
+        bd.Verifier(st, NOW + timedelta(hours=h), allowance=1,
+                    fetcher=lambda *a, page=page: page).check("KHH", "NGO", dep, _ret(dep))
+        avoid = bd.Verifier(st, NOW + timedelta(hours=h), allowance=0).weekday_outcomes(
+            "KHH", "NGO").avoid
+        assert avoid == (frozenset({TUE}) if h else frozenset())
+
+
+def test_an_old_checks_table_gets_the_parsed_column(tmp_path):
+    """正式 prices.db 的 api_checks 是 PR #9 建的、沒有 parsed：開檔時補上，舊列當成有解析到。"""
+    db = tmp_path / "prices.db"
+    con = sqlite3.connect(db)
+    con.execute("""CREATE TABLE api_checks (provider TEXT NOT NULL, origin TEXT NOT NULL,
+        destination TEXT NOT NULL, depart_date TEXT NOT NULL, return_date TEXT NOT NULL,
+        checked_at TEXT NOT NULL,
+        PRIMARY KEY (provider, origin, destination, depart_date, return_date))""")
+    con.execute("INSERT INTO api_checks VALUES ('brightdata','KHH','NGO',?,?,?)",
+                (_next(TUE), _ret(_next(TUE)), (NOW - timedelta(days=1)).isoformat(timespec="seconds")))
+    con.commit()
+    con.close()
+    st = Store(str(db))
+    assert [tuple(r) for r in st.conn.execute("SELECT parsed FROM api_checks")] == [(1,)]
+    assert bd.Verifier(st, NOW, allowance=0).weekday_outcomes("KHH", "NGO").avoid == {TUE}
+
+
+def test_checks_through_the_real_path_are_classified_right(tmp_path):
+    """走 check()：寫入直飛價的那趟算有飛（observed_at 跟 checked_at 必須是同一個時間戳）；
+    只有轉機的算落空；解析不到航班的頁面看不出那天有沒有飛，不算落空。"""
+    st = _store(tmp_path)
+    pages = {MON: _page(_label("8,791", "Tigerair Taiwan")),
+             TUE: _page(_label("15,000", "Tigerair Taiwan", nonstop=False)),
+             WED: "<html>captcha</html>"}
+    v = bd.Verifier(st, NOW, allowance=3,
+                    fetcher=lambda o, d, dep, ret: pages[datetime.fromisoformat(dep).weekday()])
+    for wd in (MON, TUE, WED):
+        v.check("KHH", "NGO", _next(wd), _ret(_next(wd)))
+    known = bd.Verifier(st, NOW + timedelta(hours=1), allowance=0).weekday_outcomes("KHH", "NGO")
+    assert (known.prefer, known.avoid) == (frozenset({MON}), frozenset({TUE}))
+
+
+def test_cold_route_sweep_skips_weekdays_without_direct_flights(tmp_path):
+    """接起來跑：週二落空過 → 巡檢不查週二；週三有飛 → 會查到週三。"""
+    st = _store(tmp_path)
+    _obs(st, "KHH", "NGO", _next(WED), NOW - timedelta(days=3))
+    _check(st, "KHH", "NGO", _next(TUE), NOW - timedelta(days=2))
+    asked = []
+    v = bd.Verifier(st, NOW, allowance=8,
+                    fetcher=lambda o, d, dep, ret: asked.append(dep) or _page(_label("8,791", "Tigerair Taiwan")))
+    v.sweep([], [("KHH", "NGO")])
+    wds = [datetime.fromisoformat(dep).weekday() for dep in asked]
+    assert len(asked) == 8 and TUE not in wds and WED in wds
+
+
+def test_a_page_without_direct_flights_says_why(tmp_path, caplog):
+    """沒寫入時要看得出是那天沒有直飛，還是航空公司名稱對不上（對照表要補）。"""
+    st = _store(tmp_path)
+    v = bd.Verifier(st, NOW, allowance=1, fetcher=lambda *a: _page(
+        _label("7,000", "Brand New Air"), _label("9,000", "Jetstar", nonstop=False)))
+    with caplog.at_level("INFO", logger="farehunter.brightdata_flights"):
+        v.check("TPE", "NRT", DEP, RET)
+    assert "2 個航班、直飛 1 個" in caplog.text and "Brand New Air" in caplog.text
+
+
 def test_a_trip_without_direct_flights_is_not_rechecked_for_a_day(tmp_path):
     """拿到頁面但沒有直飛價時 observations 不會留下東西；沒有記「查過」的話每小時都會重查。"""
     st = _store(tmp_path)
@@ -324,7 +481,10 @@ def test_a_trip_without_direct_flights_is_not_rechecked_for_a_day(tmp_path):
     bd.Verifier(st, NOW + timedelta(hours=26), allowance=1,
                 fetcher=connecting_only).sweep(cands, [("TPE", "NRT")])
     assert asked == [_day(30), _day(31), _day(30)]      # 超過 24 小時才再查
-    # 超過 24 小時的紀錄（31 天後那趟，25 小時前查的）會被清掉，表不會一直長
+    assert st.conn.execute("SELECT COUNT(*) FROM api_checks").fetchone()[0] == 2  # 超過 24 小時照樣留著
+    # 紀錄留 7 天（冷門線要記得哪些星期幾沒飛），超過的會被清掉，表不會一直長
+    bd.Verifier(st, NOW + timedelta(days=8), allowance=1,
+                fetcher=connecting_only).sweep(cands, [("TPE", "NRT")])
     assert [r[0] for r in st.conn.execute("SELECT depart_date FROM api_checks")] == [_day(30)]
 
 
