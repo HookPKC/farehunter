@@ -46,6 +46,8 @@ SWEEP_DEADLINE_S = 300       # 巡檢在單輪內最多花這麼久，到了就�
 RECHECK_HOURS = 24           # 同一行程 24 小時內已有 Google 實價就不再查
 STAY_NIGHTS = 5              # 快取沒資料的航線，巡檢固定查 5 晚來回
 ANCHOR_STEP_DAYS = 8         # 固定日期的間隔；不是 7 的倍數，同一張清單裡星期幾各不相同
+HIT_MEMORY_DAYS = 30         # 冷門線：最近 30 天有 Google 直飛實價的星期幾優先查
+MISS_MEMORY_DAYS = 7         # 冷門線：7 天內查了卻沒有直飛的星期幾先跳過（api_checks 也留這麼久）
 MIN_LEAD_DAYS = 2            # 太近的出發日不查（快取價多半已失效，也難以成行）
 
 #: Google Flights 英文介面顯示的航空公司名稱 → IATA 代碼。只收我們航線上會出現的；
@@ -225,6 +227,8 @@ class Verifier:
                 raise BrightDataError("page fetched but no itineraries parsed")
             ok = True
             offers, matched = select(origin, dest, depart, ret, itineraries, want_carriers)
+            if not offers:
+                _log_no_direct(origin, dest, depart, ret, itineraries)
             for o in offers:
                 self.store.record(o, observed_at=self.now.isoformat(timespec="seconds"))
             self.stats["recorded"] += len(offers)
@@ -272,6 +276,29 @@ class Verifier:
         self.stats["alerts_checked"] += 1
         return self.check(origin, dest, depart, ret, want_carriers)
 
+    def weekday_outcomes(self, origin: str, dest: str) -> tuple[frozenset, frozenset]:
+        """冷門線各星期幾（0＝週一）的最近結果：(有直飛的, 最近一次落空的)。
+
+        看出發日的星期幾，以最近一次為準：30 天內有 Google 直飛實價（任何供應商）→ 優先；
+        7 天內 Bright Data 查了卻沒寫入、而且之後沒再查到 → 先跳過。班表會換季（KHH-NGO
+        夏季是週一、週六，2026-10 冬季班表改成週一、週三），所以只看最近的 Google 實價，
+        不看幾個月前的快取。
+        """
+        def since(days):
+            return (self.now - timedelta(days=days)).isoformat(timespec="seconds")
+
+        latest: dict[int, tuple[float, bool]] = {}      # 星期幾 → (最近時間, 有沒有直飛)
+        for rows, hit in ((self.store.google_nonstop_by_date(origin, dest, since(HIT_MEMORY_DAYS)), True),
+                          (self.store.api_misses_by_date(PROVIDER, origin, dest,
+                                                         since(MISS_MEMORY_DAYS)), False)):
+            for dep, jd in rows:
+                wd = datetime.fromisoformat(dep).weekday()
+                if wd not in latest or jd > latest[wd][0]:
+                    latest[wd] = (jd, hit)
+        prefer = frozenset(wd for wd, (_, hit) in latest.items() if hit)
+        avoid = frozenset(wd for wd, (_, hit) in latest.items() if not hit)
+        return prefer, avoid
+
     def sweep(self, candidates: list[Offer], routes: list[tuple[str, str]]) -> None:
         """把剩下的額度花在「各航線最便宜、24 小時內沒查過」的行程上。
 
@@ -283,7 +310,8 @@ class Verifier:
         if self.left <= 0:
             return
         since = self._since()
-        self.store.prune_api_checks(PROVIDER, since)
+        self.store.prune_api_checks(
+            PROVIDER, (self.now - timedelta(days=MISS_MEMORY_DAYS)).isoformat(timespec="seconds"))
         earliest = (self.now.date() + timedelta(days=MIN_LEAD_DAYS)).isoformat()
         queues: dict[tuple[str, str], list[tuple[str, str, str | None]]] = {r: [] for r in routes}
         seen = set()
@@ -294,9 +322,11 @@ class Verifier:
                 continue
             seen.add(key)
             queues[(c.origin, c.destination)].append((c.depart_date, c.return_date, c.carriers))
-        for route, q in queues.items():
+        for (o, d), q in queues.items():
             if not q:
-                q.extend((d, r, None) for d, r in anchor_trips(self.now))
+                prefer, avoid = self.weekday_outcomes(o, d)
+                q.extend((dep, ret, None)
+                         for dep, ret in anchor_trips(self.now, prefer=prefer, avoid=avoid))
         order = list(queues)
         if order:
             k = int(self.now.timestamp() // 3600) % len(order)
@@ -322,17 +352,57 @@ class Verifier:
                     break
 
 
-def anchor_trips(now: datetime, count: int = 8) -> list[tuple[str, str]]:
-    """快取沒資料的航線要查哪些日子：2 週後起每 ANCHOR_STEP_DAYS 天一個出發日（最遠約
-    11 週），住 STAY_NIGHTS 晚。
+def anchor_trips(now: datetime, count: int = 8, *, prefer: frozenset = frozenset(),
+                 avoid: frozenset = frozenset()) -> list[tuple[str, str]]:
+    """快取沒資料的航線要查哪些日子：2 週後起、最遠約 11 週的出發日，住 STAY_NIGHTS 晚。
 
-    冷門線不是天天飛（KHH-NGO 只有週一、週三有直飛），間隔若是 7 天，整張清單會落在
-    同一個星期幾，碰上沒航班的那天就全部白查（2026-10-31 實跑：全是週二，3 次 0 筆）。
-    起點也隨日期輪替，每天查到的日子不同。
+    冷門線不是天天飛（KHH-NGO 冬季只有週一、週三有直飛），沒飛的那天查了也是白查
+    （2026-10-31～11-01：KHH-NGO 查 11 次只有 1 次有直飛）。所以：
+    - 還沒試過的星期幾（不在 prefer、也不在 avoid）先各試最早的一天；
+    - 再從有直飛的星期幾（prefer）平均挑日子補滿 count 個；
+    - 最近落空的星期幾（avoid）不查，等 MISS_MEMORY_DAYS 天後紀錄過期再試。
+    兩者都沒有資料時，每 ANCHOR_STEP_DAYS 天一個（不是 7 的倍數，星期幾各不相同）。
+    起點隨日期輪替，每天查到的日子不同。
     """
     start = now.date() + timedelta(days=14 + now.timetuple().tm_yday % 7)
-    out = []
-    for k in range(count):
-        dep = start + timedelta(days=ANCHOR_STEP_DAYS * k)
-        out.append((dep.isoformat(), (dep + timedelta(days=STAY_NIGHTS)).isoformat()))
-    return out
+    if not prefer and not avoid:
+        days = [start + timedelta(days=ANCHOR_STEP_DAYS * k) for k in range(count)]
+    else:
+        pool = [start + timedelta(days=i) for i in range(ANCHOR_STEP_DAYS * count)]
+        days, tried = [], set()
+        for day in pool:
+            wd = day.weekday()
+            if wd not in prefer and wd not in avoid and wd not in tried:
+                tried.add(wd)
+                days.append(day)
+        # 剩下的名額平均分給每個有直飛的星期幾，各自在整段期間裡平均挑日子
+        room = max(0, count - len(days))
+        groups = [[day for day in pool if day.weekday() == wd] for wd in sorted(prefer)]
+        picks = []
+        for i, group in enumerate(groups):
+            n = room // len(groups) + (1 if i < room % len(groups) else 0)
+            picks += _spread(group, n)
+        days += sorted(picks)
+    return [(d.isoformat(), (d + timedelta(days=STAY_NIGHTS)).isoformat()) for d in days]
+
+
+def _spread(days: list, n: int) -> list:
+    """從 days 裡平均挑 n 個（頭尾都含）。"""
+    if n <= 0:
+        return []
+    if n >= len(days):
+        return list(days)
+    if n == 1:
+        return [days[0]]
+    return [days[round(k * (len(days) - 1) / (n - 1))] for k in range(n)]
+
+
+def _log_no_direct(origin: str, dest: str, depart: str, ret: str,
+                   itineraries: list[Itinerary]) -> None:
+    """頁面正常卻沒有可寫入的直飛價：記下是那天沒有直飛，還是航空公司名稱對不上。"""
+    nonstop = [it for it in itineraries if it.nonstop]
+    unknown = sorted({a for it in nonstop for a in it.airlines
+                      if AIRLINE_CODES.get(a.strip().lower()) is None})
+    log.info("Bright Data %s→%s %s/%s 沒有可寫入的直飛價：%d 個航班、直飛 %d 個%s",
+             origin, dest, depart, ret, len(itineraries), len(nonstop),
+             f"，對照表沒有的航空公司：{', '.join(unknown)}" if unknown else "")
