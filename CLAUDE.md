@@ -3,6 +3,10 @@
 台灣出發機票低價監控（Python）。資料源為 Travelpayouts / Aviasales Data API。
 專案結構與執行方式見 `README.md`。
 
+**一律用繁體中文回覆使用者**，包括工具呼叫之間的說明、排程檢查的回報；程式碼、指令、
+檔名、專有名詞可以保留原文。`.claude/settings.json` 設了 `language`，另有 hook 每則訊息提醒、
+回覆完檢查（`.claude/hooks/zh_only.py`）：最後一則回覆主要是英文就會被擋下重寫。
+
 ## Agent skills
 
 ### Issue tracker
