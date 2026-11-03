@@ -382,7 +382,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
             log.info("Bright Data 本輪：%s", verifier.stats)
 
         if summary["zero_record_routes"]:
-            log.error("本輪完全沒有抓到資料的航線 %d/%d 條：%s",
+            # 只看 Aviasales：Bright Data 寫入的 Google 實價不算在內（冷門線常只有它）
+            log.error("本輪 Aviasales 完全沒有資料的航線 %d/%d 條：%s",
                       len(summary["zero_record_routes"]), len(cfg["routes"]),
                       ", ".join(summary["zero_record_routes"]))
 
