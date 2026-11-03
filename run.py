@@ -18,7 +18,7 @@ if __name__ == "__main__":
     # 零記錄航線與航線健康印在 stdout 而非只寫 log：job log 的 summary 行很容易
     # 被 200 行 INFO 淹掉，這兩行是「本輪有沒有航線悄悄斷線」的單一落點。
     if summary.get("zero_record_routes"):
-        print(f"⚠ 本輪零記錄航線: {', '.join(summary['zero_record_routes'])}")
+        print(f"⚠ 本輪 Aviasales 零記錄航線: {', '.join(summary['zero_record_routes'])}")
     _h = summary.get("health")
     if _h:
         print(f"航線健康: {_h['counts']}"

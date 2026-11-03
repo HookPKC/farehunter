@@ -42,7 +42,7 @@ class NormalizedOffer:
     return_date: Optional[str] = None
     observed_at: Optional[str] = None      # ISO 8601 UTC
     link: str = ""
-    provider: Optional[str] = None         # exact API behind the row (serpapi|scrapedo|searchapi|travelpayouts)
+    provider: Optional[str] = None         # exact API behind the row (serpapi|scrapedo|brightdata|searchapi|travelpayouts)
     raw_quality_score: float = 0.0
 
     def to_dict(self) -> dict:
