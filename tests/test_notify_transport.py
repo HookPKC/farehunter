@@ -31,7 +31,7 @@ LINE_TOKEN = "line-secret-token"
 
 def _env(monkeypatch, telegram=True, line=True):
     for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-              "LINE_CHANNEL_ACCESS_TOKEN", "LINE_USER_ID"):
+              "LINE_CHANNEL_ACCESS_TOKEN", "LINE_USER_ID", "LINE_BROADCAST"):
         monkeypatch.delenv(k, raising=False)
     if telegram:
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TG_TOKEN)
@@ -205,3 +205,98 @@ def test_cheap_day_run_counts_failure_instead_of_crashing(tmp_path, monkeypatch)
     st = Store(str(db))
     assert st.conn.execute("SELECT COUNT(*) FROM cheap_day_notices").fetchone()[0] == 0
     st.close()
+
+
+# ---- LINE 廣播給所有好友（LINE_BROADCAST=1） ---------------------------------------
+
+class _JsonResp:
+    def __init__(self, data, status=200):
+        self.status_code, self._data, self.text = status, data, json.dumps(data)
+
+    def json(self):
+        return self._data
+
+
+class _LineApi:
+    """假的 LINE API：記下 POST 到哪裡、帶什麼；額度可設定，或讓查額度失敗。"""
+    def __init__(self, limit=200, used=0, unlimited=False, quota_error=None):
+        self.limit, self.used, self.unlimited, self.quota_error = limit, used, unlimited, quota_error
+        self.posts = []
+
+    def get(self, url, **kw):
+        if self.quota_error:
+            raise self.quota_error(f"refused; headers={kw.get('headers')}")
+        if url.endswith("/quota"):
+            return _JsonResp({"type": "none"} if self.unlimited
+                             else {"type": "limited", "value": self.limit})
+        return _JsonResp({"totalUsage": self.used})
+
+    def post(self, url, **kw):
+        self.posts.append((url, kw["json"]))
+        return _Resp()
+
+
+def _broadcast_env(monkeypatch, user=True):
+    _env(monkeypatch, telegram=False, line=True)
+    monkeypatch.setenv("LINE_BROADCAST", "1")
+    if not user:
+        monkeypatch.delenv("LINE_USER_ID")
+
+
+def test_broadcast_reaches_every_friend_when_quota_is_ample(monkeypatch):
+    _broadcast_env(monkeypatch)
+    api = _LineApi(limit=200, used=100)
+    assert N.send_line("便宜機票", session=api) is True
+    (url, body), = api.posts
+    assert url.endswith("/message/broadcast") and "to" not in body
+    assert body["messages"][0]["text"] == "便宜機票"
+
+
+def test_low_quota_falls_back_to_the_owner_only(monkeypatch, caplog):
+    """5 個人每月約 230 則，會超過免費的 200 則；快用完時至少擁有者還收得到。"""
+    _broadcast_env(monkeypatch)
+    api = _LineApi(limit=200, used=200 - N.LINE_OWNER_RESERVE + 1)
+    with caplog.at_level(logging.WARNING, logger="farehunter.notify"):
+        assert N.send_line("便宜機票", session=api) is True
+    (url, body), = api.posts
+    assert url.endswith("/message/push") and body["to"] == "U42"
+    assert "只發給擁有者" in caplog.text
+    # 剛好剩保留的則數時照樣廣播
+    api = _LineApi(limit=200, used=200 - N.LINE_OWNER_RESERVE)
+    N.send_line("便宜機票", session=api)
+    assert api.posts[0][0].endswith("/message/broadcast")
+
+
+def test_unlimited_or_unknown_quota_still_broadcasts(monkeypatch, caplog):
+    _broadcast_env(monkeypatch)
+    api = _LineApi(unlimited=True)
+    N.send_line("hi", session=api)
+    assert api.posts[0][0].endswith("/message/broadcast")
+    api = _LineApi(quota_error=requests.Timeout)
+    with caplog.at_level(logging.ERROR, logger="farehunter.notify"):
+        assert N.send_line("hi", session=api) is True
+    assert api.posts[0][0].endswith("/message/broadcast")
+    assert LINE_TOKEN not in caplog.text
+
+
+def test_broadcast_without_an_owner_id_skips_the_quota_check(monkeypatch):
+    _broadcast_env(monkeypatch, user=False)
+    api = _LineApi(quota_error=AssertionError)        # 不該去查額度
+    assert N.send_line("hi", session=api) is True
+    assert api.posts[0][0].endswith("/message/broadcast")
+
+
+def test_without_the_switch_it_still_pushes_to_the_owner_only(monkeypatch):
+    _env(monkeypatch, telegram=False, line=True)
+    api = _LineApi(quota_error=AssertionError)
+    assert N.send_line("hi", session=api) is True
+    (url, body), = api.posts
+    assert url.endswith("/message/push") and body["to"] == "U42"
+
+
+def test_workflows_broadcast_alerts_but_not_the_test_message():
+    """警報與便宜日推播給所有好友；手動測試通知只發給擁有者，免得吵到朋友。"""
+    wf = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    for name in ("monitor.yml", "verify-airlines.yml"):
+        assert 'LINE_BROADCAST: "1"' in (wf / name).read_text(encoding="utf-8")
+    assert "LINE_BROADCAST" not in (wf / "test-notify.yml").read_text(encoding="utf-8")
