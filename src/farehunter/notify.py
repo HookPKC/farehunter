@@ -1,8 +1,9 @@
-"""Notification channels: Telegram Bot API and LINE Messaging API (push).
+"""Notification channels: Telegram Bot API and LINE Messaging API.
 
 Both are optional — a channel is active only when its env vars are set:
   Telegram: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-  LINE:     LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID
+  LINE:     LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID（push 給這一個人）；
+            LINE_BROADCAST=1 時改成廣播給官方帳號的所有好友（見 send_line）
 """
 from __future__ import annotations
 
@@ -161,19 +162,50 @@ def send_telegram(text: str, session: requests.Session | None = None) -> bool:
     return True
 
 
+LINE_API = "https://api.line.me/v2/bot/message"
+#: 廣播時，本月剩不到這麼多則就改成只 push 給 LINE_USER_ID。LINE 官方帳號每位收件人算
+#: 一則，廣播給 5 個人就用掉 5 則；免費方案每月約 200 則，用完連擁有者都收不到。
+LINE_OWNER_RESERVE = 30
+
+
+def _line_quota_left(s, headers: dict, token: str) -> int | None:
+    """本月還剩幾則；不限量或查不到時回 None。查額度不扣則數。"""
+    try:
+        quota = s.get(f"{LINE_API}/quota", headers=headers, timeout=SEND_TIMEOUT)
+        used = s.get(f"{LINE_API}/quota/consumption", headers=headers, timeout=SEND_TIMEOUT)
+        if quota.status_code != 200 or used.status_code != 200:
+            return None
+        q = quota.json()
+        if q.get("type") != "limited":
+            return None
+        return int(q["value"]) - int(used.json()["totalUsage"])
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        _log_transport_error("LINE quota", exc, token)
+        return None
+
+
 def send_line(text: str, session: requests.Session | None = None) -> bool:
+    """LINE_BROADCAST=1：廣播給官方帳號的所有好友；本月額度剩不到 LINE_OWNER_RESERVE
+    則時改成只 push 給 LINE_USER_ID，至少擁有者不會漏掉通知。其餘情況照舊 push 給
+    LINE_USER_ID 一個人。額度查不到時照樣廣播。"""
     token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
     user_id = os.environ.get("LINE_USER_ID")
-    if not token or not user_id:
+    broadcast = os.environ.get("LINE_BROADCAST") == "1"
+    if not token or not (user_id or broadcast):
         return False
     s = session or requests
+    headers = {"Authorization": f"Bearer {token}"}
+    messages = [{"type": "text", "text": text[:5000]}]
+    if broadcast and user_id:
+        left = _line_quota_left(s, headers, token)
+        if left is not None and left < LINE_OWNER_RESERVE:
+            log.warning("LINE 本月只剩 %d 則（保留 %d 則給擁有者）：這則只發給擁有者",
+                        left, LINE_OWNER_RESERVE)
+            broadcast = False
+    url, body = ((f"{LINE_API}/broadcast", {"messages": messages}) if broadcast else
+                 (f"{LINE_API}/push", {"to": user_id, "messages": messages}))
     try:
-        resp = s.post(
-            "https://api.line.me/v2/bot/message/push",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"to": user_id, "messages": [{"type": "text", "text": text[:5000]}]},
-            timeout=SEND_TIMEOUT,
-        )
+        resp = s.post(url, headers=headers, json=body, timeout=SEND_TIMEOUT)
     except requests.RequestException as exc:
         _log_transport_error("LINE", exc, token)
         return False
