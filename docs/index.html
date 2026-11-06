@@ -201,6 +201,12 @@ h2 .sortbtn:active{transform:scale(.97)}
 .fresh-tag.ok{color:var(--pos)}
 .fresh-tag.warn{color:var(--neg)}
 .spark{display:block;width:100%;height:60px;margin:var(--s3) 0 2px}
+/* 走勢圖的價格刻度（第 12 項）：SVG 會被拉伸，文字放在 HTML 疊上去才不會變形 */
+.spark-wrap{position:relative}
+.spark-hi,.spark-lo{position:absolute;left:0;font-family:var(--mono);font-size:10.5px;
+  color:var(--ink2);background:rgba(10,14,22,.72);padding:0 4px;border-radius:3px;line-height:1.5}
+.spark-hi{top:var(--s3)}
+.spark-lo{bottom:2px}
 .spark-cap{font-family:var(--mono);font-size:11.5px;color:var(--ink3);
   display:flex;justify-content:space-between;letter-spacing:.05em}
 
@@ -209,6 +215,9 @@ h2 .sortbtn:active{transform:scale(.97)}
   -webkit-overflow-scrolling:touch;scrollbar-width:none;
   scroll-snap-type:x proximity}
 .cal::-webkit-scrollbar{display:none}
+/* 右緣淡出：手機上看得出還能往右滑（第 11 項） */
+.cal,.mscroll{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 32px),transparent);
+  mask-image:linear-gradient(to right,#000 calc(100% - 32px),transparent)}
 .chip{flex:0 0 auto;scroll-snap-align:start;text-decoration:none;text-align:center;
   border:1px solid var(--line1);border-radius:var(--r-m);
   padding:var(--s2) var(--s3);background:var(--bg2);min-width:104px;
@@ -230,9 +239,10 @@ h2 .sortbtn:active{transform:scale(.97)}
 .mrow-cap{font-size:11px;color:var(--ink3);letter-spacing:.1em;text-transform:uppercase;
   margin:0 0 var(--s2)}
 .mrow-cap b{color:var(--pos);font-weight:600}
-.mscroll{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.mscroll{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;
+  scroll-snap-type:x proximity;padding-right:24px}
 .mscroll::-webkit-scrollbar{display:none}
-.mcell{flex:0 0 auto;text-decoration:none;text-align:center;min-width:64px;
+.mcell{flex:0 0 auto;scroll-snap-align:start;text-decoration:none;text-align:center;min-width:64px;
   border:1px solid var(--line1);border-radius:var(--r-s);padding:5px 6px;
   background:var(--bg2);transition:border-color var(--t-fast),background var(--t-fast)}
 .mcell:hover{border-color:var(--line2);background:var(--bg3)}
@@ -283,12 +293,6 @@ h2 .sortbtn:active{transform:scale(.97)}
 .dbody{margin-top:6px;padding:9px 11px;border:1px solid var(--line1);
   border-radius:var(--r-s);background:var(--bg2)}
 .dmeta{font-size:11px;color:var(--ink2);margin-bottom:4px}
-.drow{display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--ink3);
-  margin-top:3px}
-.drow .dk{flex:0 0 64px}
-.drow .dbar{flex:1;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden}
-.drow .dbar i{display:block;height:100%;background:#8B97AD;border-radius:3px}
-.drow .dv{flex:0 0 26px;text-align:right;font-family:var(--mono)}
 .src-tag{display:inline-block;margin-left:8px;font-size:10px;color:var(--ink3);
   border:1px solid var(--line2);border-radius:4px;padding:1px 6px;vertical-align:middle}
 .chip.cest .p{opacity:.78}
@@ -423,7 +427,7 @@ function sparkline(hist, median, routeId){
       stroke="#8B97AD" stroke-width="1" stroke-dasharray="3 4" opacity=".5"/>`:"";
   const iMin=ps.indexOf(lo), last=ps.length-1;
   const gid = `g-${routeId||iMin+"-"+last}`;
-  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"
+  return `<div class="spark-wrap"><svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"
     role="img" aria-label="每日觀測最低價趨勢，區間 ${fmt(lo)} 至 ${fmt(hi)}">
     <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#FFB300" stop-opacity=".18"/>
@@ -436,7 +440,7 @@ function sparkline(hist, median, routeId){
     <circle cx="${X(iMin).toFixed(1)}" cy="${Y(lo).toFixed(1)}" r="3.5"
       fill="none" stroke="#3FD68F" stroke-width="1.5"/>
     <circle cx="${X(last).toFixed(1)}" cy="${Y(ps[last]).toFixed(1)}" r="3.5" fill="#FFB300"/>
-  </svg>`;
+  </svg><span class="spark-hi">約 ${fmt(RND100(hi))}</span><span class="spark-lo">約 ${fmt(RND100(lo))}</span></div>`;
 }
 
 // 星期幾。沿用上方既有的 WD 陣列（不重新宣告）。
@@ -549,24 +553,17 @@ function secTag(label, o){
   return `<span class="stag">${label} ${priceDisp(o.price,o.source)}${dd?` · ${dd}`:""}</span>`;
 }
 function detailBlock(fr){
-  const b = fr.best_option, s = b.subscores || {};
+  const b = fr.best_option;
   const src = isCacheSrc(b.source) ? "航空票價快取（估算）" : "Google Flights 觀測價";
   const ots = b.provenance && b.provenance.observed_at;
   const age = ots ? new Date(ots).toLocaleString("zh-TW",
     {timeZone:"Asia/Taipei",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}) + " 台灣時間" : "";
   const dd = b.depart_date ? b.depart_date.slice(5).replace("-","/") : "";
   const rr = b.return_date ? b.return_date.slice(5).replace("-","/") : "";
-  const rows = [["價格",s.price],["資料新鮮度",s.freshness],["飛行時間",s.duration],
-               ["來源可信度",s.source_reliability],["資料完整度",s.confidence]];
-  const bars = rows.map(([k,v])=>`<div class="drow"><span class="dk">${k}</span>
-      <span class="dbar"><i style="width:${Math.max(0,Math.min(100,v||0))}%"></i></span>
-      <span class="dv">${v??"—"}</span></div>`).join("");
   return `<details class="more"><summary>詳細資料</summary>
     <div class="dbody">
       <div class="dmeta">資料來源：${src}${age?`｜觀測於 ${age}`:""}</div>
       <div class="dmeta">推薦航班：${dd} 出發${rr?`／${rr} 回`:""}${b.price!=null?`　約 ${fmt(isCacheSrc(b.source)?RND100(b.price):b.price)} 起`:""}</div>
-      <div class="dmeta">綜合評估 ${b.decision_score}／100</div>
-      ${bars}
     </div></details>`;
 }
 function recommendStrip(r){
@@ -843,7 +840,6 @@ function render(data){
         <div class="stub">
           <span>歷史低 <b>${fmt(r.stats.min)}</b></span>
           <span>中位 <b>${fmt(med)}</b></span>
-          <span>樣本 <b>${fmt(r.stats.n)}</b></span>
           ${(() => {
             const LV = {low:["Google 判定偏低","lo"], typical:["Google 判定正常",""],
                         high:["Google 判定偏高","hi"]};
