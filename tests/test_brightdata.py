@@ -125,6 +125,7 @@ def test_fetch_sends_the_tested_request(monkeypatch):
     assert url == bd.API_URL and kw["headers"]["Authorization"] == "Bearer secret-key"
     assert kw["json"]["zone"] == "mcp_unlocker" and kw["json"]["format"] == "raw"
     assert "curr=TWD" in kw["json"]["url"] and "hl=en" in kw["json"]["url"]
+    assert kw["timeout"] == (bd.CONNECT_TIMEOUT_S, bd.READ_TIMEOUT_S) and bd.READ_TIMEOUT_S > 60
     monkeypatch.setenv("BRIGHTDATA_ZONE", "my_zone")
     bd.fetch("TPE", "NRT", DEP, RET, session=s)
     assert s.calls[1][1]["json"]["zone"] == "my_zone"
@@ -205,6 +206,115 @@ def test_a_page_without_itineraries_counts_as_an_error(tmp_path):
     assert v.stats["errors"] == 1 and v.stats["ok"] == 0
 
 
+def test_a_run_stops_using_bright_data_when_its_time_budget_is_spent(tmp_path):
+    """等待放寬到 120 秒後，連續逾時會逼近 job 的 30 分鐘上限；整輪有總時間上限。"""
+    st = _store(tmp_path)
+    t = [0.0]
+
+    def hang(*a):
+        t[0] += bd.READ_TIMEOUT_S + bd.CONNECT_TIMEOUT_S
+        raise bd.BrightDataTimeout("transport: ReadTimeout")
+
+    v = bd.Verifier(st, NOW, allowance=15, fetcher=hang, clock=lambda: t[0])
+    for _ in range(15):
+        v.check("TPE", "NRT", DEP, RET)
+    assert v.stats["requests"] == 5 and v.stats["timeouts"] == 5     # 5 × 130 秒就超過 600 秒
+    v.sweep([_offer("TPE", "NRT", _day(30 + i), 7000 + i) for i in range(5)], [("TPE", "NRT")])
+    assert v.stats["requests"] == 5 and v.stats["swept"] == 0
+
+
+def test_a_sweep_stops_when_the_time_budget_runs_out_midway(tmp_path):
+    """警報驗證已經花掉大半時間：巡檢查到超過上限就停，剩下的候選不算「巡檢過」。"""
+    st = _store(tmp_path)
+    t = [0.0]
+
+    def slow(*a):
+        t[0] += 250.0
+        return _page(_label("7,000", "Jetstar"))
+
+    v = bd.Verifier(st, NOW, allowance=10, fetcher=slow, clock=lambda: t[0])
+    v.check("TPE", "NRT", DEP, RET)
+    v.check("TPE", "NRT", DEP, RET)                              # 已花 500 秒
+    v.sweep([_offer("TPE", "NRT", _day(30 + i), 7000 + i) for i in range(5)], [("TPE", "NRT")])
+    assert v.stats["requests"] == 3 and v.stats["swept"] == 1    # 750 秒 ≥ 600 就停
+
+
+def test_time_spent_outside_bright_data_does_not_count(tmp_path):
+    """Verifier 在抓 Aviasales 之前就建立；抓價花的時間不能算進 Bright Data 的時間上限。"""
+    st = _store(tmp_path)
+    t = [0.0]
+    v = bd.Verifier(st, NOW, allowance=2, fetcher=lambda *a: _page(_label("7,000", "Jetstar")),
+                    clock=lambda: t[0])
+    t[0] += 20 * 60                                  # 抓 Aviasales 花了 20 分鐘
+    v.check("TPE", "NRT", DEP, RET)
+    v.sweep([_offer("TPE", "NRT", _day(30), 7000)], [("TPE", "NRT")])
+    assert v.stats["requests"] == 2 and v.stats["swept"] == 1
+
+
+def test_timeouts_are_told_apart_from_other_failures(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "secret-key")
+    with pytest.raises(bd.BrightDataTimeout, match="transport"):
+        bd.fetch("TPE", "NRT", DEP, RET, session=_Session(exc=requests.ReadTimeout("slow")))
+    with pytest.raises(bd.BrightDataError) as info:
+        bd.fetch("TPE", "NRT", DEP, RET, session=_Session(exc=requests.ConnectionError("refused")))
+    assert not isinstance(info.value, bd.BrightDataTimeout)
+
+
+def test_slow_pages_are_measured(tmp_path):
+    """2026-11 約 7% 的請求等了 60 秒還沒回來；放寬到 120 秒後要看得出救回多少。"""
+    st = _store(tmp_path)
+    t = [0.0]
+    durations = iter([75.0, 10.0])
+
+    def fetch(*a):
+        t[0] += next(durations, 0.0)
+        return _page(_label("7,000", "Jetstar"))
+
+    v = bd.Verifier(st, NOW, allowance=3, fetcher=fetch, clock=lambda: t[0])
+    v.check("TPE", "NRT", DEP, RET)
+    v.check("TPE", "NRT", DEP, RET)
+    assert v.stats["ok_over_60s"] == 1 and v.stats["slowest_s"] == 75
+
+    def timeout(*a):
+        t[0] += 120.0
+        raise bd.BrightDataTimeout("transport: ReadTimeout")
+
+    v.fetch = timeout
+    v.check("TPE", "NRT", DEP, RET)
+    assert v.stats["ok_over_60s"] == 1 and v.stats["slowest_s"] == 75   # 失敗的不算
+    assert v.stats["timeouts"] == 1
+
+    def slow_captcha(*a):                     # 拿到頁面、但解析不到：不算「救回來」
+        t[0] += 90.0
+        return "<html>captcha</html>"
+
+    v2 = bd.Verifier(st, NOW, allowance=1, fetcher=slow_captcha, clock=lambda: t[0])
+    v2.check("TPE", "NRT", DEP, RET)
+    assert v2.stats["ok_over_60s"] == 0 and v2.stats["slowest_s"] == 90
+    assert v2.stats["errors"] == 1 and v2.stats["timeouts"] == 0         # 失敗、但不是逾時
+    # 逐日帳本：一週後用來評估等待上限值不值得（ADR 0004）
+    row = st.conn.execute("SELECT requests, ok, timeouts, slow_ok, seconds FROM api_usage").fetchone()
+    assert tuple(row) == (4, 2, 1, 1, 75.0 + 10.0 + 120.0 + 90.0)
+
+
+def test_skipped_verifications_are_not_counted_as_checked(tmp_path):
+    """額度或時間用完時沒有真的送出請求，不算進 alerts_checked（第二輪規格審查）。"""
+    st = _store(tmp_path)
+    t = [0.0]
+
+    def hang(*a):
+        t[0] += 130.0
+        raise bd.BrightDataTimeout("transport: ReadTimeout")
+
+    v = bd.Verifier(st, NOW, allowance=15, fetcher=hang, clock=lambda: t[0])
+    for _ in range(8):
+        v.verify_alert("KHH", "NRT", DEP, RET, "GK")
+    assert v.stats["requests"] == 5 and v.stats["alerts_checked"] == 5
+    v0 = bd.Verifier(st, NOW, allowance=0, fetcher=hang, clock=lambda: t[0])
+    assert v0.verify_alert("KHH", "NRT", DEP, RET, "GK") is None
+    assert v0.stats["alerts_checked"] == 0
+
+
 def test_an_unexpected_error_is_also_soft(tmp_path):
     """解析程式的 bug 之類的意外，也只記錯誤、不往上丟（Bright Data 是加分項）。"""
     st = _store(tmp_path)
@@ -233,11 +343,13 @@ def test_freshness_survives_mixed_timestamp_formats(tmp_path):
 
 def test_allowance_comes_from_this_months_ledger(tmp_path):
     st = _store(tmp_path)
-    st.conn.execute("INSERT INTO api_usage VALUES ('brightdata', '2026-10-31', 4000, 4000)")
+    st.conn.execute("INSERT INTO api_usage (provider, day, requests, ok)"
+                    " VALUES ('brightdata', '2026-10-31', 4000, 4000)")
     st.conn.commit()
     # 11/15 06:17 到月底約 378 小時：ceil(4750 / 378) = 13。上個月的 4,000 若被算進來會是 2
     assert bd.Verifier(st, NOW).left == 13
-    st.conn.execute("INSERT INTO api_usage VALUES ('brightdata', '2026-11-02', 4740, 4740)")
+    st.conn.execute("INSERT INTO api_usage (provider, day, requests, ok)"
+                    " VALUES ('brightdata', '2026-11-02', 4740, 4740)")
     st.conn.commit()
     assert bd.Verifier(st, NOW).left == 1             # 只剩 10 次：每輪 1 次
 
@@ -422,6 +534,23 @@ def test_an_old_checks_table_gets_the_parsed_column(tmp_path):
     st = Store(str(db))
     assert [tuple(r) for r in st.conn.execute("SELECT parsed FROM api_checks")] == [(1,)]
     assert bd.Verifier(st, NOW, allowance=0).weekday_outcomes("KHH", "NGO").avoid == {TUE}
+
+
+def test_an_old_usage_table_gets_the_timing_columns(tmp_path):
+    """正式 prices.db 的 api_usage 是 PR #9 建的、只有次數：開檔時補上耗時欄位，舊列記 0。"""
+    db = tmp_path / "prices.db"
+    con = sqlite3.connect(db)
+    con.execute("""CREATE TABLE api_usage (provider TEXT NOT NULL, day TEXT NOT NULL,
+        requests INTEGER NOT NULL DEFAULT 0, ok INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (provider, day))""")
+    con.execute("INSERT INTO api_usage VALUES ('brightdata', '2026-11-15', 3, 2)")
+    con.commit()
+    con.close()
+    st = Store(str(db))
+    st.record_api_usage("brightdata", "2026-11-15", ok=False, timeout=True, seconds=130.0)
+    row = st.conn.execute("SELECT requests, ok, timeouts, slow_ok, seconds FROM api_usage").fetchone()
+    assert tuple(row) == (4, 2, 1, 0, 130.0)
+    assert st.api_usage_since("brightdata", "2026-11-01") == 4
 
 
 def test_checks_through_the_real_path_are_classified_right(tmp_path):
@@ -627,6 +756,74 @@ def test_a_verified_alert_is_not_rechecked_every_hour(tmp_path, monkeypatch):
     assert len(calls) == 1 and sent == [] and alerts == [(7650.0, "verified")]
     _run(tmp_path, monkeypatch, fetch, now=NOW + timedelta(hours=25))
     assert len(calls) == 2                       # 超過 24 小時才重新驗證
+
+
+def test_a_verified_trip_is_not_renotified_when_a_later_check_fails(tmp_path, monkeypatch):
+    """實例：KHH-OKA 先發已驗證 7,315，隔天驗證逾時，又以未驗證 7,255 發給所有好友。
+    已驗證過的行程，驗證落空時降級不重發（但照樣先驗證：實價可能已經大跌）。"""
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    calls = []
+
+    def fetch(o, d, dep, ret):
+        calls.append(dep)
+        if len(calls) > 1:
+            raise bd.BrightDataTimeout("transport: ReadTimeout")
+        return _page(_label("7,650", "Jetstar"))
+
+    _run(tmp_path, monkeypatch, fetch)
+    summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, now=NOW + timedelta(hours=25))
+    assert sent == [] and alerts == [(7650.0, "verified")]
+    assert summary["brightdata"]["alerts_checked"] == 1
+
+
+def test_a_real_price_drop_after_a_verified_alert_is_still_sent(tmp_path, monkeypatch):
+    """PR #16 規格審查的重現：已驗證 7,650，隔天快取還是 7,761，但 Google 跌到 6,500。
+    降級判斷若放在驗證前，會拿快取價去比而擋掉；放在驗證後，這則新低價照發。"""
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    pages = iter([_page(_label("7,650", "Jetstar")), _page(_label("6,500", "Jetstar"))])
+    fetch = lambda *a: next(pages, _page(_label("6,500", "Jetstar")))
+    _run(tmp_path, monkeypatch, fetch)
+    summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, now=NOW + timedelta(hours=25))
+    assert alerts == [(7650.0, "verified"), (6500.0, "verified")]
+
+
+def test_a_downgrade_with_another_reason_is_not_resent(tmp_path, monkeypatch):
+    """第二輪規格審查的重現：已驗證 new_low 8,000，隔天驗證逾時、改判 big_drop 8,500（更貴）。
+    同一趟就是同一趟，不因為警報理由不同就再發一次。"""
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    st = Store(str(tmp_path / "prices.db"))
+    for i in range(30):             # 這個出發日 30 筆 12,000 的歷史：樣本夠，8,500 也算大跌
+        st.record(Offer("KHH", "NRT", DEP, RET, 12000.0, "TWD", "GK", 0, "180"),
+                  observed_at=(NOW - timedelta(days=10, hours=i)).isoformat(timespec="seconds"))
+    st.close()
+    calls = []
+
+    def fetch(o, d, dep, ret):
+        calls.append(dep)
+        if len(calls) > 1:
+            raise bd.BrightDataTimeout("transport: ReadTimeout")
+        return _page(_label("8,000", "Jetstar"))
+
+    offers = [Offer("KHH", "NRT", DEP, RET, 8500.0, "TWD", "GK", 0, "180")]
+    _, first, _ = _run(tmp_path, monkeypatch, fetch, offers=offers, threshold=1)  # 門檻 1：不觸發 absolute
+    assert [(o.price, v.reason, s.state) for o, v, s in first] == [(8000.0, "new_low", "verified")]
+    summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, offers=offers, threshold=1,
+                                 now=NOW + timedelta(hours=25))
+    assert sent == [] and alerts == [(8000.0, "verified")]
+    assert summary["brightdata"]["alerts_checked"] == 1      # 照樣先驗證（逾時）才擋
+
+
+def test_without_bright_data_a_downgrade_is_not_resent(tmp_path, monkeypatch):
+    """沒設金鑰時也一樣：同一趟已用 Google 實價通知過，快取價沒有再便宜一截就不重發。"""
+    st = Store(str(tmp_path / "prices.db"))
+    st.record_alert("KHH", "NRT", DEP, 7650.0, "absolute", return_date=RET,
+                    carrier_signature="GK", price_source="google", price_status="verified")
+    st.close()
+    summary, sent, alerts = _run(tmp_path, monkeypatch, lambda *a: None)
+    assert sent == [] and alerts == [(7650.0, "verified")]
+    cheaper = [Offer("KHH", "NRT", DEP, RET, 6800.0, "TWD", "GK", 0, "180")]   # 便宜 11%
+    summary, sent, alerts = _run(tmp_path, monkeypatch, lambda *a: None, offers=cheaper)
+    assert len(sent) == 1 and alerts[-1] == (6800.0, "unverified")
 
 
 def test_a_trip_google_says_is_not_cheap_is_not_rechecked_every_hour(tmp_path, monkeypatch):

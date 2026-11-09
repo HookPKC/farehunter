@@ -53,11 +53,16 @@ CREATE TABLE IF NOT EXISTS cheap_day_notices (
 -- 外部 API 的用量帳本（每日每來源）。Bright Data 每月 5,000 次免費、用完即停：配速要知道
 -- 本月已經用了多少（brightdata_flights.run_allowance）。寫在 prices.db 才會隨每輪 commit
 -- 留下時間序列。requests＝送出的次數（含失敗，保守估算），ok＝拿到可解析頁面的次數。
+-- 2026-11-09 起另記耗時，用來評估等待上限 60→120 秒值不值得（ADR 0004）：timeouts＝等不到
+-- 回應的次數，slow_ok＝成功、但超過 60 秒（舊上限可能會丟掉）的次數，seconds＝總共花的秒數。
 CREATE TABLE IF NOT EXISTS api_usage (
     provider TEXT NOT NULL,
     day      TEXT NOT NULL,
     requests INTEGER NOT NULL DEFAULT 0,
     ok       INTEGER NOT NULL DEFAULT 0,
+    timeouts INTEGER NOT NULL DEFAULT 0,
+    slow_ok  INTEGER NOT NULL DEFAULT 0,
+    seconds  REAL    NOT NULL DEFAULT 0,
     PRIMARY KEY (provider, day)
 );
 
@@ -77,6 +82,15 @@ CREATE TABLE IF NOT EXISTS api_checks (
     PRIMARY KEY (provider, origin, destination, depart_date, return_date)
 );
 """ + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
+
+
+#: 警報去重的「新消息」門檻：比已通知的最低價再便宜這麼多才重發
+IMPROVEMENT_PCT = 10.0
+
+
+def meaningfully_cheaper(price: float, base: float, pct: float = IMPROVEMENT_PCT) -> bool:
+    """price 比 base 便宜 pct% 以上（含剛好 pct%）。"""
+    return price <= base * (1 - pct / 100.0)
 
 
 class Store:
@@ -124,6 +138,12 @@ class Store:
         if "parsed" not in [r[1] for r in self.conn.execute("PRAGMA table_info(api_checks)")]:
             self.conn.execute(
                 "ALTER TABLE api_checks ADD COLUMN parsed INTEGER NOT NULL DEFAULT 1")
+        # migration: api_usage 的耗時欄位（2026-11-09）。舊列沒有這些資訊，記 0。
+        ucols = [r[1] for r in self.conn.execute("PRAGMA table_info(api_usage)")]
+        for col, kind in (("timeouts", "INTEGER"), ("slow_ok", "INTEGER"), ("seconds", "REAL")):
+            if col not in ucols:
+                self.conn.execute(
+                    f"ALTER TABLE api_usage ADD COLUMN {col} {kind} NOT NULL DEFAULT 0")
         self.conn.commit()
         # 一開檔就核對封存檔（ADR 0002）。所有 writer（monitor／FSC／Verify／
         # cheap_day_notify）都在打任何付費 API 之前建 Store，封存檔不完整時在
@@ -281,10 +301,40 @@ class Store:
             return "LOWER(reason) = ?", ("new_low",)
         return "(reason IS NULL OR LOWER(reason) <> ?)", ("new_low",)
 
+    def _alert_scope(self, origin: str, destination: str, depart_date: str, *,
+                     return_date: str | None, carrier_signature: str | None,
+                     price_status: str | None, within_hours: int) -> tuple[str, tuple]:
+        """同一行程、同一狀態桶、窗內的警報（SQL 條件, 參數）。
+        條件只由字面量與 _status_bucket 的片段組成，不含外部輸入。"""
+        status_clause, status_params = self._status_bucket(price_status)
+        return (f"origin=? AND destination=? AND depart_date=?"
+                f" AND return_date IS ? AND carrier_signature IS ?"
+                f" AND {status_clause} AND sent_at >= datetime('now', ?)",
+                (origin, destination, depart_date, return_date,
+                 carrier_signature, *status_params, f"-{within_hours} hours"))
+
+    def verified_alert_floor(self, origin: str, destination: str, depart_date: str, *,
+                             return_date: str | None,
+                             carrier_signature: str | None) -> float | None:
+        """同一行程 30 天內用「已驗證」通知過的最低價（不分警報理由）；沒有就 None。
+
+        給 runner 在發「未驗證／衝突」警報前判斷是不是降級（runner._downgrade_without_news）：
+        已用 Google 實價通知過的行程，之後驗證落空（Bright Data 逾時、只查到別家航空公司、
+        沒設金鑰）只能以未驗證發出時，沒有比這個價格再便宜一截就不是新消息。不分理由：
+        已驗證 new_low 8,000 之後，未驗證 big_drop 8,500 是同一趟、還更貴，也不是新消息。
+        """
+        where, params = self._alert_scope(
+            origin, destination, depart_date, return_date=return_date,
+            carrier_signature=carrier_signature, price_status="verified",
+            within_hours=self.SUPPRESS_DAYS * 24)
+        row = self.conn.execute(
+            f"SELECT MIN(price) AS price FROM alerts WHERE {where}", params).fetchone()
+        return row["price"]
+
     def recently_alerted(self, origin: str, destination: str,
                          depart_date: str, price: float,
                          within_hours: int = SUPPRESS_DAYS * 24,
-                         improvement_pct: float = 10.0,
+                         improvement_pct: float = IMPROVEMENT_PCT,
                          *, return_date: str | None = None,
                          carrier_signature: str | None = None,
                          price_status: str | None = None,
@@ -316,23 +366,24 @@ class Store:
 
         允許重新通知:價格較基準改善 >= improvement_pct、狀態改變(例如升級為
         verified)、或 CONFLICT 的參考價出現同等幅度的變化。
+
+        降級（已用 verified 通知過，之後只能以 unverified／conflict 發）不在這裡擋：
+        runner 先驗證、到發送前才用 verified_alert_floor 判斷——實價可能已經大跌而快取
+        還沒跟上，在驗證前就擋會讓真正的新低價永遠發不出去。
         """
-        status_clause, status_params = self._status_bucket(price_status)
+        where, params = self._alert_scope(
+            origin, destination, depart_date, return_date=return_date,
+            carrier_signature=carrier_signature, price_status=price_status,
+            within_hours=within_hours)
         reason_clause, reason_params = self._reason_bucket(reason)
-        where = (f"origin=? AND destination=? AND depart_date=?"
-                 f" AND return_date IS ? AND carrier_signature IS ?"
-                 f" AND {status_clause} AND {reason_clause}"
-                 f" AND sent_at >= datetime('now', ?)")
-        params = (origin, destination, depart_date, return_date,
-                  carrier_signature, *status_params, *reason_params,
-                  f"-{within_hours} hours")
+        where, params = f"{where} AND {reason_clause}", (*params, *reason_params)
 
         cheapest = self.conn.execute(
             f"SELECT price FROM alerts WHERE {where}"
             " ORDER BY price ASC, sent_at DESC LIMIT 1", params).fetchone()
         if cheapest is None:
             return False
-        if price <= cheapest["price"] * (1 - improvement_pct / 100.0):
+        if meaningfully_cheaper(price, cheapest["price"], improvement_pct):
             return False                      # 比已通知的最低價再便宜一截 → 重新通知
 
         latest = self.conn.execute(
@@ -344,12 +395,18 @@ class Store:
             return False                      # 參考價相對「上一則」有意義變化 → 重新通知
         return True
 
-    def record_api_usage(self, provider: str, day: str, *, ok: bool) -> None:
+    def record_api_usage(self, provider: str, day: str, *, ok: bool, timeout: bool = False,
+                         slow_ok: bool = False, seconds: float = 0.0) -> None:
+        """記一次請求。timeout／slow_ok／seconds 給評估等待上限用（ADR 0004）。"""
         self.conn.execute(
-            """INSERT INTO api_usage (provider, day, requests, ok) VALUES (?, ?, 1, ?)
+            """INSERT INTO api_usage (provider, day, requests, ok, timeouts, slow_ok, seconds)
+               VALUES (?, ?, 1, ?, ?, ?, ?)
                ON CONFLICT(provider, day) DO UPDATE SET
-                 requests = requests + 1, ok = ok + excluded.ok""",
-            (provider, day, int(ok)))
+                 requests = requests + 1, ok = ok + excluded.ok,
+                 timeouts = timeouts + excluded.timeouts,
+                 slow_ok = slow_ok + excluded.slow_ok,
+                 seconds = seconds + excluded.seconds""",
+            (provider, day, int(ok), int(timeout), int(slow_ok), float(seconds)))
         self.conn.commit()
 
     def api_usage_since(self, provider: str, first_day: str) -> int:

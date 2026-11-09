@@ -150,11 +150,52 @@ def test_conflict_then_unverified_also_suppressed(tmp_path):
 
 
 def test_verified_stays_its_own_bucket(tmp_path):
-    """反向:已用 verified 通知過,之後降級成 unverified 不得再吵一次。"""
+    """已驗證的桶子自己去重；降級（之後只能以 unverified 發）**不在這一層擋**。
+
+    降級不重發由 runner 在驗證之後、發送之前用 verified_alert_floor 判斷
+    （runner._downgrade_without_news）——在驗證前擋，實價大跌而快取沒跟上時，真正的
+    新低價會永遠發不出去（PR #16 規格審查）。
+    """
     st = _store(tmp_path)
     _alert(st, price=5963.0, status="verified")
     assert _recent(st, price=5963.0, status="verified") is True
+    assert _recent(st, price=5963.0, status="unverified") is False   # 交給 runner 的最後一關
     st.close()
+
+
+def _floor(st, *, ret="2026-09-08", csig="GK"):
+    return st.verified_alert_floor(BASE["origin"], BASE["destination"], BASE["depart_date"],
+                                   return_date=ret, carrier_signature=csig)
+
+
+def test_verified_floor_is_the_cheapest_verified_alert(tmp_path):
+    st = _store(tmp_path)
+    assert _floor(st) is None
+    _alert(st, price=7000.0, status="unverified")                    # 未驗證的不算
+    assert _floor(st) is None
+    _alert(st, price=9000.0, status="verified")
+    _alert(st, price=8000.0, status="verified")
+    assert _floor(st) == 8000.0
+    st.close()
+
+
+def test_verified_floor_keeps_trip_identity(tmp_path):
+    """別家航空公司、別的回程日是另一趟；警報理由不分（同一趟就是同一趟）。"""
+    st = _store(tmp_path)
+    _alert(st, price=7304.0, status="verified", csig="IT")
+    assert _floor(st, csig="IT") == 7304.0
+    assert _floor(st, csig="GK") is None
+    assert _floor(st, csig="IT", ret="2026-09-12") is None
+    _alert(st, price=7000.0, status="verified", csig="IT", reason="new_low")
+    assert _floor(st, csig="IT") == 7000.0
+    st.close()
+
+
+def test_meaningfully_cheaper_matches_the_dedupe_rule():
+    """剛好便宜 10% 算新消息，跟 recently_alerted 同一條規則。"""
+    from farehunter.storage import meaningfully_cheaper
+    assert meaningfully_cheaper(7200.0, 8000.0) is True
+    assert meaningfully_cheaper(7201.0, 8000.0) is False
 
 
 def test_reference_price_material_change_reopens(tmp_path):
