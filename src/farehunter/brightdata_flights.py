@@ -47,9 +47,9 @@ CONNECT_TIMEOUT_S = 10
 #: 新上限救回來」的成功次數，用來確認放寬值不值得。
 READ_TIMEOUT_S = 120
 OLD_READ_TIMEOUT_S = 60
-#: 一輪 monitor 花在 Bright Data 請求上的總秒數上限（警報驗證＋巡檢，含失敗的）。等待放寬到
-#: 120 秒後，連續逾時的最壞情況（15 次 × 130 秒 ≈ 33 分鐘）會超過 job 的 30 分鐘上限：整輪被砍、
-#: 這小時的資料不 commit。到了就不再送；只算請求本身，抓 Aviasales 的時間不算。
+#: 一輪 monitor 花在 Bright Data 查詢上的總秒數上限（警報驗證＋巡檢，含失敗的；請求、解析、
+#: 寫入都算，抓 Aviasales 的時間不算）。等待放寬到 120 秒後，連續逾時的最壞情況（15 次 × 130 秒
+#: ≈ 33 分鐘）會超過 job 的 30 分鐘上限：整輪被砍、這小時的資料不 commit。到了就不再送新的請求。
 RUN_BUDGET_S = 600
 MONTHLY_FREE = 5000          # 每月 1 日（UTC）重置
 USE_FRACTION = 0.95          # 留 5% 餘裕給月底的誤差
@@ -231,15 +231,16 @@ class Verifier:
         self.clock = clock
         # no_direct：頁面正常但沒有可寫入的直飛價（那天沒直飛、或航空公司名稱對不上）
         # timeouts：等不到回應的次數（含在 errors 裡）；ok_over_60s：成功、但花了超過 60 秒
-        # （舊的等待上限會丟掉的那種）；slowest_s：拿到頁面的請求裡最慢的一次
+        # （舊的等待上限可能會丟掉的那種）；slowest_s：拿到頁面的請求裡最慢的一次。
+        # 逾時、慢的成功與總耗時也逐日累計在 prices.db 的 api_usage（timeouts、slow_ok、seconds）
         self.stats = {"allowance": self.left, "requests": 0, "ok": 0, "recorded": 0,
                       "no_direct": 0, "alerts_checked": 0, "swept": 0, "errors": 0,
                       "timeouts": 0, "ok_over_60s": 0, "slowest_s": 0}
-        self.spent = 0.0          # 這輪 check() 花掉的秒數（含失敗、解析與寫入），對照 RUN_BUDGET_S
+        self.spent_s = 0.0        # 這輪 check() 花掉的秒數（含失敗、解析與寫入），對照 RUN_BUDGET_S
 
     def _can_send(self) -> bool:
         """還有額度，而且這輪花在請求上的時間還沒到 RUN_BUDGET_S。"""
-        return self.left > 0 and self.spent < RUN_BUDGET_S
+        return self.left > 0 and self.spent_s < RUN_BUDGET_S
 
     def check(self, origin: str, dest: str, depart: str, ret: str,
               want_carriers: str | None = None) -> Offer | None:
@@ -251,7 +252,7 @@ class Verifier:
             return None
         self.left -= 1
         self.stats["requests"] += 1
-        ok = False
+        ok = slow = timed_out = False
         # 同一個時間戳寫進 api_checks 與 observations：落空判定（api_misses_by_date）靠
         # 「observed_at ≥ checked_at 的同行程觀測」認出這一趟有結果
         stamp = self.now.isoformat(timespec="seconds")
@@ -268,7 +269,8 @@ class Verifier:
                 # 頁面拿到了卻一筆都解析不到：多半是 Google 改版，要看得見
                 raise BrightDataError("page fetched but no itineraries parsed")
             ok = True
-            self.stats["ok_over_60s"] += took > OLD_READ_TIMEOUT_S
+            slow = took > OLD_READ_TIMEOUT_S
+            self.stats["ok_over_60s"] += slow
             offers, matched = select(origin, dest, depart, ret, itineraries, want_carriers)
             if not offers:
                 _log_no_direct(origin, dest, depart, ret, itineraries)
@@ -278,8 +280,9 @@ class Verifier:
             self.stats["no_direct"] += not offers
             return matched
         except BrightDataError as exc:
+            timed_out = isinstance(exc, BrightDataTimeout)
             self.stats["errors"] += 1
-            self.stats["timeouts"] += isinstance(exc, BrightDataTimeout)
+            self.stats["timeouts"] += timed_out
             log.warning("Bright Data %s→%s %s/%s: %s", origin, dest, depart, ret, exc)
             return None
         except Exception:
@@ -288,9 +291,11 @@ class Verifier:
             log.exception("Bright Data %s→%s %s/%s 意外失敗", origin, dest, depart, ret)
             return None
         finally:
-            self.spent += self.clock() - started
+            elapsed = self.clock() - started
+            self.spent_s += elapsed
             self.stats["ok"] += ok
-            self.store.record_api_usage(PROVIDER, self.now.date().isoformat(), ok=ok)
+            self.store.record_api_usage(PROVIDER, self.now.date().isoformat(), ok=ok,
+                                        timeout=timed_out, slow_ok=slow, seconds=elapsed)
 
     def _ago(self, **delta) -> str:
         """now 往前推 delta（timedelta 的參數）的時間字串，給 storage 比較用。"""
@@ -322,7 +327,10 @@ class Verifier:
 
     def verify_alert(self, origin: str, dest: str, depart: str, ret: str,
                      want_carriers: str | None) -> Offer | None:
-        """警報發出前的驗證（ADR 0004 的第一優先）；跟 check 相同，只是另外計數。"""
+        """警報發出前的驗證（ADR 0004 的第一優先）；跟 check 相同，只是另外計數
+        （額度或時間用完、沒有真的送出請求時不算）。"""
+        if not self._can_send():
+            return None
         self.stats["alerts_checked"] += 1
         return self.check(origin, dest, depart, ret, want_carriers)
 

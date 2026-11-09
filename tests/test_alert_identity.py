@@ -150,10 +150,10 @@ def test_conflict_then_unverified_also_suppressed(tmp_path):
 
 
 def test_verified_stays_its_own_bucket(tmp_path):
-    """反向:已用 verified 通知過,之後降級成 unverified 不得再吵一次。
+    """已驗證的桶子自己去重；降級（之後只能以 unverified 發）**不在這一層擋**。
 
-    這一層只管各自的桶子；降級由 runner 在**驗證之後、發送之前**用 verified_alert_floor
-    擋（runner._downgrade_without_news）——在驗證前擋，實價大跌而快取沒跟上時，真正的
+    降級不重發由 runner 在驗證之後、發送之前用 verified_alert_floor 判斷
+    （runner._downgrade_without_news）——在驗證前擋，實價大跌而快取沒跟上時，真正的
     新低價會永遠發不出去（PR #16 規格審查）。
     """
     st = _store(tmp_path)
@@ -163,9 +163,9 @@ def test_verified_stays_its_own_bucket(tmp_path):
     st.close()
 
 
-def _floor(st, *, ret="2026-09-08", csig="GK", reason="absolute"):
+def _floor(st, *, ret="2026-09-08", csig="GK"):
     return st.verified_alert_floor(BASE["origin"], BASE["destination"], BASE["depart_date"],
-                                   return_date=ret, carrier_signature=csig, reason=reason)
+                                   return_date=ret, carrier_signature=csig)
 
 
 def test_verified_floor_is_the_cheapest_verified_alert(tmp_path):
@@ -180,13 +180,14 @@ def test_verified_floor_is_the_cheapest_verified_alert(tmp_path):
 
 
 def test_verified_floor_keeps_trip_identity(tmp_path):
-    """別家航空公司、別的回程日是另一趟；new_low 自成一桶。"""
+    """別家航空公司、別的回程日是另一趟；警報理由不分（同一趟就是同一趟）。"""
     st = _store(tmp_path)
     _alert(st, price=7304.0, status="verified", csig="IT")
     assert _floor(st, csig="IT") == 7304.0
     assert _floor(st, csig="GK") is None
     assert _floor(st, csig="IT", ret="2026-09-12") is None
-    assert _floor(st, csig="IT", reason="new_low") is None
+    _alert(st, price=7000.0, status="verified", csig="IT", reason="new_low")
+    assert _floor(st, csig="IT") == 7000.0
     st.close()
 
 
