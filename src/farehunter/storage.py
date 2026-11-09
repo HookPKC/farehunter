@@ -79,6 +79,15 @@ CREATE TABLE IF NOT EXISTS api_checks (
 """ + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
 
 
+#: 警報去重的「新消息」門檻：比已通知的最低價再便宜這麼多才重發
+IMPROVEMENT_PCT = 10.0
+
+
+def meaningfully_cheaper(price: float, base: float, pct: float = IMPROVEMENT_PCT) -> bool:
+    """price 比 base 便宜 pct% 以上（含剛好 pct%）。"""
+    return price <= base * (1 - pct / 100.0)
+
+
 class Store:
     def __init__(self, path: str = "prices.db"):
         self.conn = sqlite3.connect(path)
@@ -281,10 +290,44 @@ class Store:
             return "LOWER(reason) = ?", ("new_low",)
         return "(reason IS NULL OR LOWER(reason) <> ?)", ("new_low",)
 
+    def _alert_scope(self, origin: str, destination: str, depart_date: str, *,
+                     return_date: str | None, carrier_signature: str | None,
+                     price_status: str | None, reason: str | None,
+                     within_hours: int) -> tuple[str, tuple]:
+        """同一行程、同一狀態桶、同一理由桶、窗內的警報（SQL 條件, 參數）。
+        條件只由字面量與 _status_bucket／_reason_bucket 的片段組成，不含外部輸入。"""
+        status_clause, status_params = self._status_bucket(price_status)
+        reason_clause, reason_params = self._reason_bucket(reason)
+        return (f"origin=? AND destination=? AND depart_date=?"
+                f" AND return_date IS ? AND carrier_signature IS ?"
+                f" AND {status_clause} AND {reason_clause}"
+                f" AND sent_at >= datetime('now', ?)",
+                (origin, destination, depart_date, return_date,
+                 carrier_signature, *status_params, *reason_params,
+                 f"-{within_hours} hours"))
+
+    def verified_alert_floor(self, origin: str, destination: str, depart_date: str, *,
+                             return_date: str | None, carrier_signature: str | None,
+                             reason: str | None = None,
+                             within_hours: int = SUPPRESS_DAYS * 24) -> float | None:
+        """同一行程在窗內用「已驗證」通知過的最低價；沒有就 None。
+
+        給 runner 在發「未驗證／衝突」警報前判斷是不是降級（runner._downgrade_without_news）：
+        已用 Google 實價通知過的行程，之後驗證落空（Bright Data 逾時、只查到別家航空公司、
+        沒設金鑰）只能以未驗證發出時，沒有比這個價格再便宜一截就不是新消息。
+        """
+        where, params = self._alert_scope(
+            origin, destination, depart_date, return_date=return_date,
+            carrier_signature=carrier_signature, price_status="verified",
+            reason=reason, within_hours=within_hours)
+        row = self.conn.execute(
+            f"SELECT MIN(price) AS price FROM alerts WHERE {where}", params).fetchone()
+        return row["price"]
+
     def recently_alerted(self, origin: str, destination: str,
                          depart_date: str, price: float,
                          within_hours: int = SUPPRESS_DAYS * 24,
-                         improvement_pct: float = 10.0,
+                         improvement_pct: float = IMPROVEMENT_PCT,
                          *, return_date: str | None = None,
                          carrier_signature: str | None = None,
                          price_status: str | None = None,
@@ -314,44 +357,24 @@ class Store:
         比對自然不會匹配帶有明確行程的新 alert——即舊資料不會錯誤抑制新的明確
         行程(規格要求)。不猜測回填舊列。
 
-        允許重新通知:價格較基準改善 >= improvement_pct、狀態升級為 verified、或
-        CONFLICT 的參考價出現同等幅度的變化。降級（verified 之後的 unverified／conflict）
-        還得比已驗證的最低價便宜 improvement_pct 以上才算新消息。
+        允許重新通知:價格較基準改善 >= improvement_pct、狀態改變(例如升級為
+        verified)、或 CONFLICT 的參考價出現同等幅度的變化。
+
+        降級（已用 verified 通知過，之後只能以 unverified／conflict 發）不在這裡擋：
+        runner 先驗證、到發送前才用 verified_alert_floor 判斷——實價可能已經大跌而快取
+        還沒跟上，在驗證前就擋會讓真正的新低價永遠發不出去。
         """
-        reason_clause, reason_params = self._reason_bucket(reason)
-
-        def scope(status):
-            status_clause, status_params = self._status_bucket(status)
-            return (f"origin=? AND destination=? AND depart_date=?"
-                    f" AND return_date IS ? AND carrier_signature IS ?"
-                    f" AND {status_clause} AND {reason_clause}"
-                    f" AND sent_at >= datetime('now', ?)",
-                    (origin, destination, depart_date, return_date,
-                     carrier_signature, *status_params, *reason_params,
-                     f"-{within_hours} hours"))
-
-        where, params = scope(price_status)
-
-        if price_status is not None and price_status.lower() != "verified":
-            # **降級不重發**：同一行程已經用「已驗證」（Google 實價）通知過，之後同輪驗證
-            # 不到（Bright Data 逾時、只查到別家航空公司）而回到 UNVERIFIED／CONFLICT，
-            # 不是新消息——除非比已驗證的最低價再便宜一截。升級（unverified → verified）
-            # 照樣可以重發，見下面各自的桶子。2026-10-31～11-09 的 17 則警報有 3 則是這樣
-            # 重發的，其中一則還比已驗證的那則貴（KHH-FUK 8,881 → 9,369）。
-            v_where, v_params = scope("verified")
-            verified = self.conn.execute(
-                f"SELECT MIN(price) AS price FROM alerts WHERE {v_where}",
-                v_params).fetchone()
-            if verified["price"] is not None and \
-                    price > verified["price"] * (1 - improvement_pct / 100.0):
-                return True
+        where, params = self._alert_scope(
+            origin, destination, depart_date, return_date=return_date,
+            carrier_signature=carrier_signature, price_status=price_status,
+            reason=reason, within_hours=within_hours)
 
         cheapest = self.conn.execute(
             f"SELECT price FROM alerts WHERE {where}"
             " ORDER BY price ASC, sent_at DESC LIMIT 1", params).fetchone()
         if cheapest is None:
             return False
-        if price <= cheapest["price"] * (1 - improvement_pct / 100.0):
+        if meaningfully_cheaper(price, cheapest["price"], improvement_pct):
             return False                      # 比已通知的最低價再便宜一截 → 重新通知
 
         latest = self.conn.execute(

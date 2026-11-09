@@ -13,7 +13,7 @@ import yaml
 
 from .travelpayouts import (TravelpayoutsClient, parse_offers, TravelpayoutsError,
                             TRANSPORT_ERROR)
-from .storage import Store
+from .storage import Store, meaningfully_cheaper
 from .analyzer import evaluate
 from .notify import notify, channels_configured
 from . import health
@@ -106,6 +106,21 @@ def _already_alerted(store, offer, pstate, verdict, csig) -> bool:
         return_date=offer.return_date, carrier_signature=csig,
         price_status=pstate.state, reference_price=pstate.reference_price,
         reason=verdict.reason)
+
+def _downgrade_without_news(store, offer, pstate, verdict, csig) -> bool:
+    """這一趟已經用「已驗證」通知過，這次卻只能以未驗證／衝突發出（驗證落空：Bright Data
+    逾時、只查到別家航空公司、或沒設金鑰），而且沒有比已驗證的最低價再便宜一截——不是新消息。
+
+    去重原本是已驗證、未驗證各算一桶，所以這種降級會再發一次：2026-10-31～11-09 的 17 則有
+    3 則（KHH-FUK 甚至比已驗證的貴：8,881 → 9,369）。**放在驗證之後、發送之前**：實價可能
+    已經大跌而快取還沒跟上，在驗證前就擋，真正的新低價會永遠發不出去（PR #16 規格審查）。
+    """
+    if pstate.state == price_state.VERIFIED:
+        return False
+    floor = store.verified_alert_floor(
+        offer.origin, offer.destination, offer.depart_date,
+        return_date=offer.return_date, carrier_signature=csig, reason=verdict.reason)
+    return floor is not None and not meaningfully_cheaper(pstate.selected_price, floor)
 
 # ---- 防重複 guard（fail-open）----------------------------------------------
 # 目的：GitHub schedule、手動 Run、外部排程器（cron-job.org）任意組合觸發時，
@@ -333,6 +348,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                         if checked is None:
                             continue
                         pstate, eval_offer, verdict = checked
+                    if _downgrade_without_news(store, offer, pstate, verdict, csig):
+                        continue
                     sent = notify(eval_offer, verdict, pstate)
                     if not sent and channels_configured():
                         log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",

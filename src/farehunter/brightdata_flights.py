@@ -39,14 +39,21 @@ API_URL = "https://api.brightdata.com/request"
 #: 官方 brightdata-mcp 第一次啟動時建的 Web Unlocker zone，免費額度掛在這裡
 DEFAULT_ZONE = "mcp_unlocker"
 PROVIDER = "brightdata"
+#: 連上 api.brightdata.com 通常不到 1 秒；連不上就是對方或網路出事，等久也沒用，早點放棄
+#: 把時間留給後面的查詢（原本單一 timeout=60，連線、讀取各等 60 秒）。
 CONNECT_TIMEOUT_S = 10
 #: 實測每頁多半 2–15 秒，但 2026-11 有約 7% 等了 60 秒還沒回來（ReadTimeout），那次的額度
-#: 照樣算掉、警報驗證也因此落空。放寬到 120 秒；統計的 ok_over_60s 記下「舊上限會丟掉、
-#: 新上限救回來」的次數，用來確認放寬值不值得。
+#: 照樣記帳、警報驗證也因此落空。放寬到 120 秒；統計的 ok_over_60s 記下「舊上限會丟掉、
+#: 新上限救回來」的成功次數，用來確認放寬值不值得。
 READ_TIMEOUT_S = 120
+OLD_READ_TIMEOUT_S = 60
+#: 一輪 monitor 花在 Bright Data 請求上的總秒數上限（警報驗證＋巡檢，含失敗的）。等待放寬到
+#: 120 秒後，連續逾時的最壞情況（15 次 × 130 秒 ≈ 33 分鐘）會超過 job 的 30 分鐘上限：整輪被砍、
+#: 這小時的資料不 commit。到了就不再送；只算請求本身，抓 Aviasales 的時間不算。
+RUN_BUDGET_S = 600
 MONTHLY_FREE = 5000          # 每月 1 日（UTC）重置
 USE_FRACTION = 0.95          # 留 5% 餘裕給月底的誤差
-PER_RUN_MAX = 15             # 單輪上限：每次 2–15 秒，15 次最多約 4 分鐘
+PER_RUN_MAX = 15             # 單輪上限：每次多半 2–15 秒、最慢等 READ_TIMEOUT_S；整輪另有 RUN_BUDGET_S
 SWEEP_DEADLINE_S = 300       # 巡檢在單輪內最多花這麼久，到了就停
 RECHECK_HOURS = 24           # 同一行程 24 小時內已有 Google 實價就不再查
 STAY_NIGHTS = 5              # 快取沒資料的航線，巡檢固定查 5 晚來回
@@ -79,6 +86,10 @@ _AIRLINE = re.compile(r"flight with ([^.]+)\.")
 
 class BrightDataError(RuntimeError):
     pass
+
+
+class BrightDataTimeout(BrightDataError):
+    """等不到回應（連線或讀取逾時）。分開算，才看得出放寬等待上限有沒有用。"""
 
 
 @dataclass(frozen=True)
@@ -134,8 +145,9 @@ def fetch(origin: str, dest: str, depart: str, ret: str,
                    json={"zone": zone, "url": search_url(origin, dest, depart, ret),
                          "format": "raw"})
     except requests.RequestException as exc:
-        raise BrightDataError(f"transport: {type(exc).__name__}: {exc}"
-                              .replace(key, "***")[:200]) from exc
+        kind = BrightDataTimeout if isinstance(exc, requests.Timeout) else BrightDataError
+        raise kind(f"transport: {type(exc).__name__}: {exc}"
+                   .replace(key, "***")[:200]) from exc
     if r.status_code != 200:
         # 錯誤內容只取開頭、遮掉金鑰；絕不印 zone 管理 API 的回應（含 zone 密碼，見 ADR 0004）
         # 先遮再截：金鑰若剛好跨在截斷點上，先截會留下前半段
@@ -218,10 +230,16 @@ class Verifier:
         self.fetch = fetcher or fetch
         self.clock = clock
         # no_direct：頁面正常但沒有可寫入的直飛價（那天沒直飛、或航空公司名稱對不上）
-        # ok_over_60s：拿到頁面、但花了超過 60 秒（舊的逾時上限會丟掉的那種）；slowest_s：最慢一次
+        # timeouts：等不到回應的次數（含在 errors 裡）；ok_over_60s：成功、但花了超過 60 秒
+        # （舊的等待上限會丟掉的那種）；slowest_s：拿到頁面的請求裡最慢的一次
         self.stats = {"allowance": self.left, "requests": 0, "ok": 0, "recorded": 0,
                       "no_direct": 0, "alerts_checked": 0, "swept": 0, "errors": 0,
-                      "ok_over_60s": 0, "slowest_s": 0}
+                      "timeouts": 0, "ok_over_60s": 0, "slowest_s": 0}
+        self.spent = 0.0          # 這輪 check() 花掉的秒數（含失敗、解析與寫入），對照 RUN_BUDGET_S
+
+    def _can_send(self) -> bool:
+        """還有額度，而且這輪花在請求上的時間還沒到 RUN_BUDGET_S。"""
+        return self.left > 0 and self.spent < RUN_BUDGET_S
 
     def check(self, origin: str, dest: str, depart: str, ret: str,
               want_carriers: str | None = None) -> Offer | None:
@@ -229,7 +247,7 @@ class Verifier:
 
         任何失敗都只記 log：Bright Data 是加分項，壞了抓價與警報照常。
         """
-        if self.left <= 0:
+        if not self._can_send():
             return None
         self.left -= 1
         self.stats["requests"] += 1
@@ -237,12 +255,11 @@ class Verifier:
         # 同一個時間戳寫進 api_checks 與 observations：落空判定（api_misses_by_date）靠
         # 「observed_at ≥ checked_at 的同行程觀測」認出這一趟有結果
         stamp = self.now.isoformat(timespec="seconds")
+        started = self.clock()
         try:
-            started = self.clock()
             page = self.fetch(origin, dest, depart, ret)
             took = self.clock() - started
             self.stats["slowest_s"] = max(self.stats["slowest_s"], round(took))
-            self.stats["ok_over_60s"] += took > 60
             itineraries = parse(page)
             # 拿到頁面就記「查過」：就算沒有可寫入的直飛價，24 小時內巡檢也不再查這趟
             self.store.record_api_check(PROVIDER, origin, dest, depart, ret, stamp,
@@ -251,6 +268,7 @@ class Verifier:
                 # 頁面拿到了卻一筆都解析不到：多半是 Google 改版，要看得見
                 raise BrightDataError("page fetched but no itineraries parsed")
             ok = True
+            self.stats["ok_over_60s"] += took > OLD_READ_TIMEOUT_S
             offers, matched = select(origin, dest, depart, ret, itineraries, want_carriers)
             if not offers:
                 _log_no_direct(origin, dest, depart, ret, itineraries)
@@ -261,6 +279,7 @@ class Verifier:
             return matched
         except BrightDataError as exc:
             self.stats["errors"] += 1
+            self.stats["timeouts"] += isinstance(exc, BrightDataTimeout)
             log.warning("Bright Data %s→%s %s/%s: %s", origin, dest, depart, ret, exc)
             return None
         except Exception:
@@ -269,6 +288,7 @@ class Verifier:
             log.exception("Bright Data %s→%s %s/%s 意外失敗", origin, dest, depart, ret)
             return None
         finally:
+            self.spent += self.clock() - started
             self.stats["ok"] += ok
             self.store.record_api_usage(PROVIDER, self.now.date().isoformat(), ok=ok)
 
@@ -335,7 +355,7 @@ class Verifier:
         額度比航線數少時（11 月每輪約 7 次、8 條線），排在後面的航線才不會整個月輪不到。
         快取完全沒有資料的航線（KHH-NGO 這類）改查固定日期，讓它也有 Google 實價。
         """
-        if self.left <= 0:
+        if not self._can_send():
             return
         since = self._since()
         self.store.prune_api_checks(PROVIDER, self._ago(days=MISS_MEMORY_DAYS))
@@ -364,7 +384,7 @@ class Verifier:
                     or self.store.api_checked_since(PROVIDER, o, d, dep, ret, since))
 
         deadline = self.clock() + SWEEP_DEADLINE_S
-        while self.left > 0 and self.clock() < deadline and any(queues.values()):
+        while self._can_send() and self.clock() < deadline and any(queues.values()):
             for o, d in order:
                 q = queues[(o, d)]
                 while q:
@@ -375,7 +395,7 @@ class Verifier:
                     continue
                 self.check(o, d, dep, ret, carriers)
                 self.stats["swept"] += 1
-                if self.left <= 0 or self.clock() >= deadline:
+                if not self._can_send() or self.clock() >= deadline:
                     break
 
 
