@@ -39,7 +39,11 @@ API_URL = "https://api.brightdata.com/request"
 #: 官方 brightdata-mcp 第一次啟動時建的 Web Unlocker zone，免費額度掛在這裡
 DEFAULT_ZONE = "mcp_unlocker"
 PROVIDER = "brightdata"
-TIMEOUT_S = 60               # 實測每頁 2–15 秒
+CONNECT_TIMEOUT_S = 10
+#: 實測每頁多半 2–15 秒，但 2026-11 有約 7% 等了 60 秒還沒回來（ReadTimeout），那次的額度
+#: 照樣算掉、警報驗證也因此落空。放寬到 120 秒；統計的 ok_over_60s 記下「舊上限會丟掉、
+#: 新上限救回來」的次數，用來確認放寬值不值得。
+READ_TIMEOUT_S = 120
 MONTHLY_FREE = 5000          # 每月 1 日（UTC）重置
 USE_FRACTION = 0.95          # 留 5% 餘裕給月底的誤差
 PER_RUN_MAX = 15             # 單輪上限：每次 2–15 秒，15 次最多約 4 分鐘
@@ -125,7 +129,7 @@ def fetch(origin: str, dest: str, depart: str, ret: str,
     zone = os.environ.get("BRIGHTDATA_ZONE") or DEFAULT_ZONE
     s = session or requests
     try:
-        r = s.post(API_URL, timeout=TIMEOUT_S,
+        r = s.post(API_URL, timeout=(CONNECT_TIMEOUT_S, READ_TIMEOUT_S),
                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                    json={"zone": zone, "url": search_url(origin, dest, depart, ret),
                          "format": "raw"})
@@ -214,8 +218,10 @@ class Verifier:
         self.fetch = fetcher or fetch
         self.clock = clock
         # no_direct：頁面正常但沒有可寫入的直飛價（那天沒直飛、或航空公司名稱對不上）
+        # ok_over_60s：拿到頁面、但花了超過 60 秒（舊的逾時上限會丟掉的那種）；slowest_s：最慢一次
         self.stats = {"allowance": self.left, "requests": 0, "ok": 0, "recorded": 0,
-                      "no_direct": 0, "alerts_checked": 0, "swept": 0, "errors": 0}
+                      "no_direct": 0, "alerts_checked": 0, "swept": 0, "errors": 0,
+                      "ok_over_60s": 0, "slowest_s": 0}
 
     def check(self, origin: str, dest: str, depart: str, ret: str,
               want_carriers: str | None = None) -> Offer | None:
@@ -232,7 +238,12 @@ class Verifier:
         # 「observed_at ≥ checked_at 的同行程觀測」認出這一趟有結果
         stamp = self.now.isoformat(timespec="seconds")
         try:
-            itineraries = parse(self.fetch(origin, dest, depart, ret))
+            started = self.clock()
+            page = self.fetch(origin, dest, depart, ret)
+            took = self.clock() - started
+            self.stats["slowest_s"] = max(self.stats["slowest_s"], round(took))
+            self.stats["ok_over_60s"] += took > 60
+            itineraries = parse(page)
             # 拿到頁面就記「查過」：就算沒有可寫入的直飛價，24 小時內巡檢也不再查這趟
             self.store.record_api_check(PROVIDER, origin, dest, depart, ret, stamp,
                                         parsed=bool(itineraries))

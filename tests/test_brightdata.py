@@ -125,6 +125,7 @@ def test_fetch_sends_the_tested_request(monkeypatch):
     assert url == bd.API_URL and kw["headers"]["Authorization"] == "Bearer secret-key"
     assert kw["json"]["zone"] == "mcp_unlocker" and kw["json"]["format"] == "raw"
     assert "curr=TWD" in kw["json"]["url"] and "hl=en" in kw["json"]["url"]
+    assert kw["timeout"] == (bd.CONNECT_TIMEOUT_S, bd.READ_TIMEOUT_S) and bd.READ_TIMEOUT_S > 60
     monkeypatch.setenv("BRIGHTDATA_ZONE", "my_zone")
     bd.fetch("TPE", "NRT", DEP, RET, session=s)
     assert s.calls[1][1]["json"]["zone"] == "my_zone"
@@ -203,6 +204,30 @@ def test_a_page_without_itineraries_counts_as_an_error(tmp_path):
     v = bd.Verifier(st, NOW, allowance=1, fetcher=lambda *a: "<html>new layout</html>")
     assert v.check("TPE", "KIX", DEP, RET) is None
     assert v.stats["errors"] == 1 and v.stats["ok"] == 0
+
+
+def test_slow_pages_are_measured(tmp_path):
+    """2026-11 約 7% 的請求等了 60 秒還沒回來；放寬到 120 秒後要看得出救回多少。"""
+    st = _store(tmp_path)
+    t = [0.0]
+    durations = iter([75.0, 10.0])
+
+    def fetch(*a):
+        t[0] += next(durations, 0.0)
+        return _page(_label("7,000", "Jetstar"))
+
+    v = bd.Verifier(st, NOW, allowance=3, fetcher=fetch, clock=lambda: t[0])
+    v.check("TPE", "NRT", DEP, RET)
+    v.check("TPE", "NRT", DEP, RET)
+    assert v.stats["ok_over_60s"] == 1 and v.stats["slowest_s"] == 75
+
+    def timeout(*a):
+        t[0] += 120.0
+        raise bd.BrightDataError("transport: ReadTimeout")
+
+    v.fetch = timeout
+    v.check("TPE", "NRT", DEP, RET)
+    assert v.stats["ok_over_60s"] == 1 and v.stats["slowest_s"] == 75   # 失敗的不算
 
 
 def test_an_unexpected_error_is_also_soft(tmp_path):
@@ -627,6 +652,24 @@ def test_a_verified_alert_is_not_rechecked_every_hour(tmp_path, monkeypatch):
     assert len(calls) == 1 and sent == [] and alerts == [(7650.0, "verified")]
     _run(tmp_path, monkeypatch, fetch, now=NOW + timedelta(hours=25))
     assert len(calls) == 2                       # 超過 24 小時才重新驗證
+
+
+def test_a_verified_trip_is_not_renotified_when_a_later_check_fails(tmp_path, monkeypatch):
+    """實例：KHH-OKA 先發已驗證 7,315，隔天驗證逾時，又以未驗證 7,255 發給所有好友。
+    已驗證過的行程，降級不重發；也不必在警報這一步再花額度驗證。"""
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    calls = []
+
+    def fetch(o, d, dep, ret):
+        calls.append(dep)
+        if len(calls) > 1:
+            raise bd.BrightDataError("transport: ReadTimeout")
+        return _page(_label("7,650", "Jetstar"))
+
+    _run(tmp_path, monkeypatch, fetch)
+    summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, now=NOW + timedelta(hours=25))
+    assert sent == [] and alerts == [(7650.0, "verified")]
+    assert summary["brightdata"]["alerts_checked"] == 0
 
 
 def test_a_trip_google_says_is_not_cheap_is_not_rechecked_every_hour(tmp_path, monkeypatch):

@@ -154,6 +154,49 @@ def test_verified_stays_its_own_bucket(tmp_path):
     st = _store(tmp_path)
     _alert(st, price=5963.0, status="verified")
     assert _recent(st, price=5963.0, status="verified") is True
+    # 降級：之後同輪驗證不到（Bright Data 逾時、只查到別家）而回到 unverified／conflict。
+    # 2026-11 之前這兩行會是 False——說明寫了，測試卻只驗 verified → verified。
+    assert _recent(st, price=5963.0, status="unverified") is True
+    assert _recent(st, price=5963.0, status="conflict") is True
+    st.close()
+
+
+def test_downgrade_needs_a_real_price_drop_to_renotify(tmp_path):
+    """實例：KHH-FUK 先發已驗證 8,881，隔天驗證逾時、又以未驗證 9,369（更貴）發了一次。"""
+    st = _store(tmp_path)
+    _alert(st, price=8881.0, status="verified")
+    assert _recent(st, price=9369.0, status="unverified") is True    # 更貴
+    assert _recent(st, price=8500.0, status="unverified") is True    # 只便宜 4%
+    assert _recent(st, price=7900.0, status="unverified") is False   # 便宜 11% → 新消息
+    st.close()
+
+
+def test_downgrade_compares_with_the_cheapest_verified_alert(tmp_path):
+    """已驗證通知過兩次（9,000 → 8,000）：基準是最便宜的 8,000，跟同一桶的規則一樣。"""
+    st = _store(tmp_path)
+    _alert(st, price=9000.0, status="verified")
+    _alert(st, price=8000.0, status="verified")
+    assert _recent(st, price=7500.0, status="unverified") is True    # 對 8,000 只便宜 6%
+    st.close()
+
+
+def test_downgrade_boundary_matches_the_same_bucket_rule(tmp_path):
+    """剛好便宜 10% 算新消息，跟同一桶的規則（price <= 基準 × 0.9）一致。"""
+    st = _store(tmp_path)
+    _alert(st, price=8000.0, status="verified")
+    assert _recent(st, price=7200.0, status="unverified") is False
+    assert _recent(st, price=7201.0, status="unverified") is True
+    st.close()
+
+
+def test_downgrade_rule_keeps_trip_identity(tmp_path):
+    """別家航空公司、別的回程日是另一趟；new_low 自成一桶——都不受已驗證那則影響。"""
+    st = _store(tmp_path)
+    _alert(st, price=7304.0, status="verified", csig="IT")
+    assert _recent(st, price=8550.0, status="unverified", csig="GK") is False
+    assert _recent(st, price=7304.0, status="unverified", csig="IT", ret="2026-09-12") is False
+    assert _recent(st, price=7304.0, status="unverified", csig="IT", reason="new_low") is False
+    assert _recent(st, price=7304.0, status="unverified", csig="IT") is True
     st.close()
 
 

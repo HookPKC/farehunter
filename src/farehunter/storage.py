@@ -314,18 +314,37 @@ class Store:
         比對自然不會匹配帶有明確行程的新 alert——即舊資料不會錯誤抑制新的明確
         行程(規格要求)。不猜測回填舊列。
 
-        允許重新通知:價格較基準改善 >= improvement_pct、狀態改變(例如升級為
-        verified)、或 CONFLICT 的參考價出現同等幅度的變化。
+        允許重新通知:價格較基準改善 >= improvement_pct、狀態升級為 verified、或
+        CONFLICT 的參考價出現同等幅度的變化。降級（verified 之後的 unverified／conflict）
+        還得比已驗證的最低價便宜 improvement_pct 以上才算新消息。
         """
-        status_clause, status_params = self._status_bucket(price_status)
         reason_clause, reason_params = self._reason_bucket(reason)
-        where = (f"origin=? AND destination=? AND depart_date=?"
-                 f" AND return_date IS ? AND carrier_signature IS ?"
-                 f" AND {status_clause} AND {reason_clause}"
-                 f" AND sent_at >= datetime('now', ?)")
-        params = (origin, destination, depart_date, return_date,
-                  carrier_signature, *status_params, *reason_params,
-                  f"-{within_hours} hours")
+
+        def scope(status):
+            status_clause, status_params = self._status_bucket(status)
+            return (f"origin=? AND destination=? AND depart_date=?"
+                    f" AND return_date IS ? AND carrier_signature IS ?"
+                    f" AND {status_clause} AND {reason_clause}"
+                    f" AND sent_at >= datetime('now', ?)",
+                    (origin, destination, depart_date, return_date,
+                     carrier_signature, *status_params, *reason_params,
+                     f"-{within_hours} hours"))
+
+        where, params = scope(price_status)
+
+        if price_status is not None and price_status.lower() != "verified":
+            # **降級不重發**：同一行程已經用「已驗證」（Google 實價）通知過，之後同輪驗證
+            # 不到（Bright Data 逾時、只查到別家航空公司）而回到 UNVERIFIED／CONFLICT，
+            # 不是新消息——除非比已驗證的最低價再便宜一截。升級（unverified → verified）
+            # 照樣可以重發，見下面各自的桶子。2026-10-31～11-09 的 17 則警報有 3 則是這樣
+            # 重發的，其中一則還比已驗證的那則貴（KHH-FUK 8,881 → 9,369）。
+            v_where, v_params = scope("verified")
+            verified = self.conn.execute(
+                f"SELECT MIN(price) AS price FROM alerts WHERE {v_where}",
+                v_params).fetchone()
+            if verified["price"] is not None and \
+                    price > verified["price"] * (1 - improvement_pct / 100.0):
+                return True
 
         cheapest = self.conn.execute(
             f"SELECT price FROM alerts WHERE {where}"
