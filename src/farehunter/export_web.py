@@ -283,7 +283,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
         # cache regardless of being higher; (2) per month, take the cheapest date.
         monthly = [dict(r) for r in conn.execute(
             """WITH per_date AS (
-                 SELECT depart_date, return_date, price, carriers, source,
+                 SELECT depart_date, return_date, price, carriers, source, observed_at,
                         ROW_NUMBER() OVER (
                           PARTITION BY depart_date
                           ORDER BY (source='google'
@@ -295,12 +295,14 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
                best_date AS (SELECT * FROM per_date WHERE rk=1),
                per_month AS (
                  SELECT substr(depart_date, 1, 7) AS ym, depart_date, return_date,
-                        price, carriers, source,
+                        price, carriers, source, observed_at,
                         ROW_NUMBER() OVER (PARTITION BY substr(depart_date, 1, 7)
                                            ORDER BY price ASC) AS mrk
                  FROM best_date)
-               SELECT ym, depart_date, return_date, price, carriers, source
+               SELECT ym, depart_date, return_date, price, carriers, source, observed_at
                FROM per_month WHERE mrk=1 ORDER BY ym""", (o, d))]
+        # observed_at 給前端標「N 天前」：沒有上限的視窗會端出幾個月前的價格（2026-11-10
+        # 稽核：72 格裡 31 格超過 14 天），舊價不能看起來跟今天的一樣。
 
         routes.append({
             "origin": o, "destination": d,

@@ -234,6 +234,10 @@ h2 .sortbtn:active{transform:scale(.97)}
 .chip.lo{border-color:rgba(63,214,143,.45)}
 .chip.lo .p{color:var(--pos)}
 .chip.hi .p{color:var(--ink3)}
+/* 舊價格：超過 OLD_NOTE_DAYS 標「N 天前」，超過 OLD_FADE_DAYS 再淡化（2026-11-10 稽核：
+   392 格裡 197 格超過 14 天、最舊 127 天，看起來卻跟今天的價格一樣） */
+.chip.stale,.mcell.mstale{opacity:.5;border-style:dashed}
+.chip .ago,.mcell .mago{color:var(--ink3);font-size:10.5px}
 /* 全年每月最低 */
 .mrow{padding:0 var(--s5) var(--s3)}
 .mrow-cap{font-size:11px;color:var(--ink3);letter-spacing:.1em;text-transform:uppercase;
@@ -487,7 +491,7 @@ function monthlyStrip(r){
   if(m.length < 2) return "";
   const prices = m.map(x=>x.price);
   const lo = Math.min(...prices), hi = Math.max(...prices), span = (hi-lo)||1;
-  const real = m.filter(x=>x.source==="google");           // 實價（含確認航空）
+  const real = m.filter(x=>x.source==="google" && !isStale(x));  // 新鮮實價；舊價不當「全年最低」
   const loReal = real.length ? Math.min(...real.map(x=>x.price)) : null;
   const cells = m.map(x=>{
     const mm = x.ym.slice(5);                       // "09"
@@ -497,15 +501,16 @@ function monthlyStrip(r){
     const isLo = !est && x.price === loReal;          // 綠色高亮只給實價最低
     // 顏色深淺依價位在區間中的位置（越低越綠、越高越淡）
     const frac = (x.price - lo) / span;
-    const cls = isLo ? "mlo" : (!est && frac >= 0.66) ? "mhi" : "";
+    const old = isStale(x), ago = agoTag(x);
+    const cls = old ? "mstale" : isLo ? "mlo" : (!est && frac >= 0.66) ? "mhi" : "";
     const al = x.carriers ? alZh(x.carriers.split(",")[0])
              : (x.ref_carriers ? alZh(x.ref_carriers.split(",")[0]) : "");
     const href = gfLink(r.origin, r.destination, x.depart_date, x.return_date);
     return `<a class="mcell ${cls} ${est?"mest":""}" href="${href}" target="_blank" rel="noopener"
-      aria-label="${x.ym} ${est?"快取估算 約":"實價"} ${fmt(est?RND100(x.price):x.price)} 元${al?(" "+al):""}">
+      aria-label="${x.ym} ${est?"快取估算 約":"實價"} ${fmt(est?RND100(x.price):x.price)} 元${al?(" "+al):""}${ago?`，${ago}的價格`:""}">
       <span class="mm">${t}</span>
       <span class="mp">${est?"≈":""}${fmt(est?RND100(x.price):x.price)}</span>
-      ${al?`<span class="mal">${al}</span>`:""}</a>`;
+      ${al?`<span class="mal">${al}</span>`:""}${ago?`<span class="mago">${ago}</span>`:""}</a>`;
   }).join("");
   let cap;
   if(loReal != null){
@@ -515,7 +520,7 @@ function monthlyStrip(r){
     cap = `全年每月最低 <span class="mprog">實價累積中</span>`;
   }
   return `<div class="mrow">
-    <div class="mrow-cap">${cap}<span class="mnote">綠＝觀測實價最低；≈ 為快取估價、僅供比價參考</span></div>
+    <div class="mrow-cap">${cap}<span class="mnote">綠＝近兩週觀測實價最低；≈ 為快取估價；淡色虛框＝超過兩週的舊價</span></div>
     <div class="mscroll">${cells}</div>
   </div>`;
 }
@@ -617,7 +622,8 @@ function recommendStrip(r){
 // 模式只存在記憶體：重新整理即回到預設「推薦序」。刻意不使用 localStorage。
 let NAV_ROUTES = [];          // render() 存入已排好推薦序的 routes，切換時重用
 let NAV_MODE = "rec";         // "rec"=推薦序（預設）| "low"=低價序
-const navLo = r => r.latest.length ? Math.min(...r.latest.map(x=>x.price)) : null;
+// 低價序只看新鮮價格（舊價不算「目前最低」）
+const navLo = r => { const f = r.latest.filter(x=>!isStale(x)); return f.length ? Math.min(...f.map(x=>x.price)) : null; };
 function renderNav(){
   const rs = NAV_MODE === "low"
     ? NAV_ROUTES.map((r,i)=>[navLo(r) ?? Infinity, i, r])  // map 產生新陣列再排序，
@@ -644,6 +650,11 @@ const twTime = iso => new Date(iso).toLocaleString("zh-TW",
 const twDate = iso => new Date(iso).toLocaleDateString("zh-TW",
   {timeZone:"Asia/Taipei", month:"2-digit", day:"2-digit"});
 // 去回日相差幾天（跟 LINE 通知的「N 天來回」同一個算法）；沒有回程日回 null
+// 價格是幾天前觀測的（舊價要看得出來）；observed_at 缺漏時回 0、當作新的
+const OLD_NOTE_DAYS = 3, OLD_FADE_DAYS = 14;
+const ageDays = iso => { const t = Date.parse(iso || ""); return isFinite(t) ? (Date.now() - t) / 864e5 : 0; };
+const isStale = x => ageDays(x.observed_at) > OLD_FADE_DAYS;
+const agoTag = x => { const a = ageDays(x.observed_at); return a > OLD_NOTE_DAYS ? `${Math.floor(a)}天前` : ""; };
 const stayNights = (dep, ret) => ret ? Math.round((new Date(ret) - new Date(dep)) / 864e5) : null;
 const FRESH_NOTE_MIN = 90, FRESH_WARN_MIN = 180;
 let FRESH_GEN = null, FRESH_ENV = null, FRESH_TIMER = null;
@@ -834,22 +845,25 @@ function render(data){
       const all = [...new Set(r.latest.flatMap(x=>(x.carriers||"").split(",")))].filter(Boolean);
       const carriers = all.slice(0,4).map(alZh).join(" · ") +
         (all.length>4 ? ` +${all.length-4}` : "");
-      const ps = r.latest.map(x=>x.price).sort((a,b)=>a-b);
+      // 便宜／偏貴的顏色只拿新鮮價格比：舊價不能被標成「便宜」
+      const ps = r.latest.filter(x=>!isStale(x)).map(x=>x.price).sort((a,b)=>a-b);
       const q1 = ps[Math.floor(ps.length*.25)] ?? 0, q3 = ps[Math.floor(ps.length*.75)] ?? Infinity;
       const chips = r.latest.map(x=>{
         const dt = new Date(x.depart_date+"T00:00:00");
-        const cls = x.price<=q1 ? "lo" : x.price>=q3 ? "hi" : "";
+        const old = isStale(x), ago = agoTag(x);
+        const cls = old ? "stale" : x.price<=q1 ? "lo" : x.price>=q3 ? "hi" : "";
         const cest = isCacheSrc(x.source);
         const aln = x.source==="google" && !x.carriers
           ? (x.ref_carriers ? `≈ ${alFull(x.ref_carriers.split(",")[0])}` : "點入看航空")
           : alFull((x.carriers||"").split(",")[0]);
         const nights = stayNights(x.depart_date, x.return_date);
         return `<a class="chip ${cls} ${cest?'cest':''}" target="_blank" rel="noopener"
-          aria-label="${x.depart_date} 週${WD[dt.getDay()]}${nights?` ${nights}天來回`:""} ${cest?'快取估價 約':''}${fmt(cest?RND100(x.price):x.price)} 元 ${aln}"
+          aria-label="${x.depart_date} 週${WD[dt.getDay()]}${nights?` ${nights}天來回`:""} ${cest?'快取估價 約':''}${fmt(cest?RND100(x.price):x.price)} 元 ${aln}${ago?`，${ago}的價格`:""}"
           href="${gfLink(r.origin,r.destination,x.depart_date,x.return_date)}">
           <div class="d">${x.depart_date.slice(5).replace("-","/")} 週${WD[dt.getDay()]}${nights?` · ${nights}天`:""}</div>
           <div class="p">${cest?'≈':''}${fmt(cest?RND100(x.price):x.price)}</div>
           <div class="al">${aln}${cest?' · 快取估':''}</div>
+          ${ago?`<div class="ago">${ago}</div>`:""}
           ${x.full_price && (x.full_price !== x.price || x.full_carriers !== x.carriers)
             ? `<div class="fs">${alZh((x.full_carriers||"").split(",")[0])} ${fmt(x.full_price)}</div>` : ""}</a>`;
       }).join("");

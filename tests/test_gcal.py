@@ -89,6 +89,8 @@ def test_monthly_low_picks_cheapest_per_month(tmp_path):
     assert len([m for m in monthly]) == len({m["ym"] for m in monthly})
     cheapest = min(monthly, key=lambda m: m["price"])
     assert cheapest["source"] == "google"
+    # 每格都帶觀測時間：前端靠它標「N 天前」、淡化超過兩週的舊價（2026-11-10 稽核）
+    assert all(m.get("observed_at") for m in monthly)
 
 
 def test_monthly_real_price_beats_cheaper_cache_same_date(tmp_path):
