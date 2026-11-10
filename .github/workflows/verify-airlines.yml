@@ -64,6 +64,7 @@ jobs:
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           # 廣播給官方帳號的所有好友；額度快用完時只發給 LINE_USER_ID（notify.send_line）
           LINE_BROADCAST: "1"
+          LINE_RECIPIENTS: "5"       # 讀不到 LINE 好友統計時，一次廣播算幾則（朋友人數變了就改這裡）
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: PYTHONPATH=src python -m farehunter.cheap_day_notify prices.db docs/data.json

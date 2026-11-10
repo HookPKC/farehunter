@@ -331,7 +331,7 @@ def _run(tmp_path, monkeypatch, sent, threshold=8000):
     monkeypatch.setattr(runner_mod, "parse_offers",
                         lambda *a, **k: [_offer(7761.0)])
     monkeypatch.setattr(runner_mod, "notify",
-                        lambda o, v, st=None: sent.append((o, v, st)) or ["line"])
+                        lambda o, v, st=None, **k: sent.append((o, v, st)) or ["line"])
     monkeypatch.setattr(runner_mod, "channels_configured", lambda: True)
     return runner_mod.run(str(_cfg(tmp_path, threshold)),
                           str(tmp_path / "prices.db"),

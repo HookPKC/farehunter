@@ -34,6 +34,7 @@ from datetime import date as _date, datetime, timedelta, timezone
 
 from .cheap_days import DEFAULT_DATA_PATH
 from .notify import (WEEKDAYS, send_line, send_telegram, channels_configured,
+                     LineBudget, quiet_hours,
                      _tw_stamp)
 from .storage import Store
 
@@ -207,6 +208,7 @@ def run(db_path: str = "prices.db", data_path: str | None = None,
         return summary
 
     store = Store(db_path)
+    budget = LineBudget(store, now)     # 便宜日推播也算進 LINE 配速
     try:
         for it in cands:
             if not should_notify(store, it, now=now):
@@ -219,8 +221,8 @@ def run(db_path: str = "prices.db", data_path: str | None = None,
                 print(text); print("-" * 40)
                 summary["sent"] += 1
                 continue
-            sent = [c for c, ok in (("telegram", send_telegram(text)),
-                                    ("line", send_line(text))) if ok]
+            sent = [c for c, ok in (("telegram", send_telegram(text, quiet=quiet_hours(now))),
+                                    ("line", send_line(text, budget=budget))) if ok]
             if not sent:
                 # 沒設任何管道時 notify.notify 的行為是印出來，這裡沿用：
                 # 本機執行看得到內容，而不是靜默什麼都沒發生。

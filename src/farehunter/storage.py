@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS api_usage (
     PRIMARY KEY (provider, day)
 );
 
+-- LINE 發送紀錄（notify.LineBudget 配速用）：每成功送出一則記一筆。mode＝broadcast
+-- （給官方帳號所有好友）或 owner（只給擁有者）。配速只需要「今天廣播過幾次」，
+-- 每月約 60 筆，不必清理。
+CREATE TABLE IF NOT EXISTS line_sends (
+    sent_at TEXT NOT NULL,
+    mode    TEXT NOT NULL
+);
+
 -- 巡檢最近查過哪些行程（Bright Data 巡檢用，ADR 0004）。查到頁面卻沒有可寫入的直飛價
 -- （那天沒有直飛、航空公司對不上）時 observations 裡不會留下任何東西，沒有這張表的話
 -- 下一輪又會查同一趟、每小時白花一次額度。24 小時內不重查；紀錄留 7 天，讓冷門線記得
@@ -414,6 +422,18 @@ class Store:
         row = self.conn.execute(
             "SELECT COALESCE(SUM(requests), 0) FROM api_usage WHERE provider=? AND day>=?",
             (provider, first_day)).fetchone()
+        return int(row[0])
+
+    def record_line_send(self, sent_at: str, mode: str) -> None:
+        self.conn.execute("INSERT INTO line_sends (sent_at, mode) VALUES (?, ?)",
+                          (sent_at, mode))
+        self.conn.commit()
+
+    def line_sends_since(self, mode: str, since: str) -> int:
+        """since（含）之後送出的 mode 則數。用 julianday 比，不靠字串格式。"""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM line_sends WHERE mode=? "
+            "AND julianday(sent_at) >= julianday(?)", (mode, since)).fetchone()
         return int(row[0])
 
     def has_google_since(self, origin: str, destination: str, depart_date: str,

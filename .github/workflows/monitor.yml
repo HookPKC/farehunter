@@ -69,6 +69,7 @@ jobs:
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           # 廣播給官方帳號的所有好友；額度快用完時只發給 LINE_USER_ID（notify.send_line）
           LINE_BROADCAST: "1"
+          LINE_RECIPIENTS: "5"       # 讀不到 LINE 好友統計時，一次廣播算幾則（朋友人數變了就改這裡）
           # Bright Data（ADR 0004）：每月 5,000 次免費的 Google 實價。沒設就整段跳過；
           # BRIGHTDATA_ZONE 沒設時用 mcp_unlocker
           BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}

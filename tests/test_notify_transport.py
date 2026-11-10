@@ -300,3 +300,115 @@ def test_workflows_broadcast_alerts_but_not_the_test_message():
     for name in ("monitor.yml", "verify-airlines.yml"):
         assert 'LINE_BROADCAST: "1"' in (wf / name).read_text(encoding="utf-8")
     assert "LINE_BROADCAST" not in (wf / "test-notify.yml").read_text(encoding="utf-8")
+
+
+# ---- LINE 配速與半夜靜音（2026-11-10）--------------------------------------------
+DAY = datetime(2026, 11, 10, 3, 0, tzinfo=timezone.utc)     # 台灣 11/10 11:00，本月含今天還剩 21 天
+
+
+class _PacedApi(_LineApi):
+    """額外回應好友統計；insight=None 代表 LINE 不提供（好友太少時就是這樣）。"""
+    def __init__(self, insight=None, **kw):
+        super().__init__(**kw)
+        self.insight = insight
+
+    def get(self, url, **kw):
+        if url == N.LINE_INSIGHT_API:
+            return _JsonResp(self.insight or {"status": "unready"})
+        return super().get(url, **kw)
+
+
+def _budget(tmp_path, now=DAY, earlier=()):
+    st = Store(str(tmp_path / "prices.db"))
+    for at, mode in earlier:
+        st.record_line_send(at, mode)
+    return st, N.LineBudget(st, now)
+
+
+def _mode(api):
+    (url, body), = api.posts
+    return "broadcast" if url.endswith("/broadcast") else "owner"
+
+
+def test_the_first_broadcast_of_the_day_goes_out_while_above_the_reserve(tmp_path, monkeypatch):
+    """月底剩 40 則：照進度早就不夠每天一則，但今天第一則還是發給朋友。"""
+    _broadcast_env(monkeypatch)
+    st, b = _budget(tmp_path)
+    api = _PacedApi(limit=200, used=160)
+    assert N.send_line("便宜機票", session=api, budget=b) is True
+    assert _mode(api) == "broadcast"
+    assert st.line_sends_since("broadcast", "2026-11-10T00:00:00+00:00") == 1
+
+
+def test_a_second_broadcast_needs_room_for_one_a_day_until_month_end(tmp_path, monkeypatch):
+    """今天已廣播過：剩 100 則、還有 21 天，廣播完得留 30＋5×20＝130 → 只發給擁有者。"""
+    _broadcast_env(monkeypatch)
+    st, b = _budget(tmp_path, earlier=[("2026-11-10T01:00:00+00:00", "broadcast")])
+    api = _PacedApi(limit=200, used=100)
+    assert N.send_line("便宜機票", session=api, budget=b) is True
+    assert _mode(api) == "owner"
+    assert st.line_sends_since("owner", "2026-11-10T00:00:00+00:00") == 1
+    roomy = _PacedApi(limit=200, used=60)                      # 剩 140：135 ≥ 130 → 可以
+    assert N.send_line("便宜機票", session=roomy, budget=b) is True
+    assert _mode(roomy) == "broadcast"
+
+
+def test_the_day_is_counted_in_taiwan_time(tmp_path, monkeypatch):
+    """台灣 23:30 的廣播是前一天的；台灣 00:30 那則又是當天第一則。"""
+    _broadcast_env(monkeypatch)
+    now = datetime(2026, 11, 10, 16, 30, tzinfo=timezone.utc)   # 台灣 11/11 00:30
+    st, b = _budget(tmp_path, now=now, earlier=[("2026-11-10T15:30:00+00:00", "broadcast")])
+    assert b.broadcasts_today() == 0 and b.days_left() == 20
+    api = _PacedApi(limit=200, used=150)
+    assert N.send_line("便宜機票", session=api, budget=b) is True
+    assert _mode(api) == "broadcast"
+
+
+def test_recipients_come_from_line_statistics_with_a_fallback(tmp_path, monkeypatch):
+    """12 位好友時一次廣播用掉 12 則；同樣的剩餘額度，5 人可以、12 人就不行。"""
+    _broadcast_env(monkeypatch)
+    st, b = _budget(tmp_path, earlier=[("2026-11-10T01:00:00+00:00", "broadcast")])
+    # 剩 140：5 人時 135 ≥ 130 可以；12 人時 128 < 30＋12×20 → 不行
+    many = _PacedApi(limit=200, used=60, insight={"status": "ready", "targetedReaches": 12})
+    assert N.send_line("便宜機票", session=many, budget=b) is True
+    assert _mode(many) == "owner"
+    monkeypatch.setenv("LINE_RECIPIENTS", "12")                # 讀不到統計時用設定值
+    assert N._line_recipients(_PacedApi(), {}, "t", DAY) == 12
+    monkeypatch.delenv("LINE_RECIPIENTS")
+    assert N._line_recipients(_PacedApi(), {}, "t", DAY) == N.DEFAULT_RECIPIENTS
+
+
+def test_a_failed_send_is_not_counted(tmp_path, monkeypatch):
+    _broadcast_env(monkeypatch)
+    st, b = _budget(tmp_path)
+
+    class _Down(_PacedApi):
+        def post(self, url, **kw):
+            return type("R", (), {"status_code": 500, "text": "boom"})()
+
+    assert N.send_line("便宜機票", session=_Down(), budget=b) is False
+    assert b.broadcasts_today() == 0
+
+
+def test_night_messages_are_delivered_silently(tmp_path, monkeypatch):
+    """台灣 23:00–07:00 靜音送達（訊息照常到、手機不響）；白天照常。LINE 與 Telegram 都一樣。"""
+    _env(monkeypatch, telegram=True, line=True)
+    night = datetime(2026, 11, 10, 16, 0, tzinfo=timezone.utc)   # 台灣 00:00
+    assert N.quiet_hours(night) and not N.quiet_hours(DAY)
+    assert N.quiet_hours(datetime(2026, 11, 10, 22, 59, tzinfo=timezone.utc))      # 06:59
+    assert not N.quiet_hours(datetime(2026, 11, 10, 23, 0, tzinfo=timezone.utc))   # 07:00
+    assert N.quiet_hours(datetime(2026, 11, 10, 15, 0, tzinfo=timezone.utc))       # 23:00
+    st = Store(str(tmp_path / "prices.db"))
+    for now, quiet in ((night, True), (DAY, False)):
+        posts = []
+
+        def post(url, **kw):
+            posts.append((url, kw["json"]))
+            return _Resp()
+
+        monkeypatch.setattr(N.requests, "post", post)
+        N.notify(_offer(), Verdict(True, "absolute", "x"), line_budget=N.LineBudget(st, now))
+        line = [b for u, b in posts if "api.line.me" in u]
+        tg = [b for u, b in posts if "telegram" in u]
+        assert line[0]["notificationDisabled"] is quiet
+        assert tg[0]["disable_notification"] is quiet

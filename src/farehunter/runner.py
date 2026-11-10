@@ -15,7 +15,7 @@ from .travelpayouts import (TravelpayoutsClient, parse_offers, TravelpayoutsErro
                             TRANSPORT_ERROR)
 from .storage import Store, meaningfully_cheaper
 from .analyzer import evaluate
-from .notify import notify, channels_configured
+from .notify import notify, channels_configured, LineBudget
 from . import health
 from . import price_state
 from . import brightdata_flights as brightdata
@@ -243,6 +243,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
     defaults = cfg.get("defaults", {})
     client = TravelpayoutsClient()
     store = Store(db_path)
+    line_budget = LineBudget(store, now)      # LINE 額度配速（見 notify.LineBudget）
     # empty / zero_record_routes 是零結果可觀測性的核心計數（見 health.py 的
     # 存在理由）：empty 數「API 成功但解析後零筆」的月份次數，
     # zero_record_routes 列出整輪一筆都沒寫進 DB 的航線。兩者都不是錯誤——
@@ -353,7 +354,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                         pstate, eval_offer, verdict = checked
                     if _downgrade_without_news(store, offer, pstate, csig):
                         continue
-                    sent = notify(eval_offer, verdict, pstate)
+                    sent = notify(eval_offer, verdict, pstate, line_budget=line_budget)
                     if not sent and channels_configured():
                         log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",
                                   origin, dest, offer.depart_date)
