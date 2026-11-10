@@ -175,7 +175,7 @@ def _seed(conn, rows):
     conn.execute("""CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT,
                     origin TEXT, destination TEXT, depart_date TEXT,
                     return_date TEXT, price REAL, currency TEXT,
-                    observed_at TEXT, fare_class TEXT, source TEXT)""")
+                    observed_at TEXT, fare_class TEXT, source TEXT, carriers TEXT)""")
     conn.executemany("INSERT INTO observations (origin,destination,depart_date,"
                      "return_date,price,currency,observed_at,fare_class,source) "
                      "VALUES (?,?,?,?,?,?,?,?,?)",
@@ -199,7 +199,7 @@ def test_latest_prices_by_date_takes_the_newest_not_the_cheapest():
         ("KHH", "FUK", "2026-11-27", 16173.0, "2026-07-20T10:00:00+00:00", "2026-12-01"),
         ("KHH", "FUK", "2026-11-27", 54597.0, "2026-08-17T02:00:00+00:00", "2026-12-02"),
     ])
-    prices, seen, ret, src = latest_prices_by_date(conn, "KHH", "FUK")
+    prices, seen, ret, src, _ = latest_prices_by_date(conn, "KHH", "FUK")
     assert prices["2026-11-27"] == 54597.0, "取到了史上最低，那個價格已經不存在"
     assert seen["2026-11-27"] == "2026-08-17T02:00:00+00:00"
     assert ret["2026-11-27"] == "2026-12-02", "回程日要跟最新那筆一致，供比價連結用"
@@ -291,4 +291,26 @@ def test_source_is_carried_so_the_ui_can_label_cache_estimates():
     out = build_cheap_days(conn, [("TPE", "NRT")], now=NOW)
     assert len(out) == 1
     assert out[0]["source"] == "google", "來源要帶出來，前端才能標示可信度"
+    conn.close()
+
+
+def test_a_fresh_google_price_wins_over_a_newer_cache_row():
+    """Bright Data 的實價用這一輪開始的時間，同一輪稍後寫入的快取價永遠比它新；
+    24 小時內有實價就用實價（2026-11-10 稽核：看板 12 個便宜日全是快取估價）。"""
+    import sqlite3
+    from farehunter.cheap_days import latest_prices_by_date
+    conn = sqlite3.connect(":memory:")
+    _seed(conn, [
+        ("TPE", "NRT", "2026-12-01", 7866.0, "2026-11-10T12:17:40+00:00", "2026-12-17"),
+        ("TPE", "NRT", "2026-12-01", 8803.0, "2026-11-10T12:17:33+00:00", "2026-12-17", "google"),
+        ("TPE", "NRT", "2026-12-01", 9100.0, "2026-11-10T12:17:33+00:00", "2026-12-17", "google"),
+        ("TPE", "NRT", "2026-12-02", 7000.0, "2026-11-10T12:17:40+00:00", "2026-12-08"),
+        ("TPE", "NRT", "2026-12-02", 9999.0, "2026-11-08T12:17:33+00:00", "2026-12-08", "google"),
+    ])
+    conn.execute("UPDATE observations SET carriers='TR' WHERE source='google' AND price=8803")
+    prices, seen, ret, src, cars = latest_prices_by_date(
+        conn, "TPE", "NRT", since="2026-11-09T13:00:00+00:00")
+    assert (prices["2026-12-01"], src["2026-12-01"], cars["2026-12-01"]) == (8803.0, "google", "TR")
+    assert (prices["2026-12-02"], src["2026-12-02"]) == (7000.0, "aviasales")   # 實價超過 24 小時
+    assert "2026-12-02" not in cars
     conn.close()

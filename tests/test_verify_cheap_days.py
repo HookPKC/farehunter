@@ -249,3 +249,14 @@ def test_too_old_treats_unparseable_as_old():
     # 無時區的字串視為 UTC，不應誤判
     assert not _too_old("2026-09-01T00:00:00", 14, NOW)
     assert _too_old("2026-08-01T00:00:00", 14, NOW)
+
+
+def test_cooldown_matches_the_board_freshness(tmp_path):
+    """看板只採計 24 小時內的實價：30 小時前的實價（Bright Data 巡檢常見）不算已驗證，
+    該重查；10 小時前的看板會直接用，不必再花額度（2026-11-10 稽核：11/01 起每天 0 次）。"""
+    st = _store(tmp_path)
+    _real(st, "TPE", "NRT", "2026-11-20", "2026-11-25", 9500, "TR", 30)
+    assert [c["depart_date"] for c in _pick(st, tmp_path, _entry())] == ["2026-11-20"]
+    _real(st, "TPE", "NRT", "2026-11-20", "2026-11-25", 9500, "TR", 10)
+    assert _pick(st, tmp_path, _entry()) == []
+    st.close()
