@@ -25,7 +25,7 @@ from pathlib import Path
 from .scrapedo_flights import (search_flights, parse_cheapest_direct,
                                VERIFICATIONS_PER_DAY, ScrapeDoError)
 from .serpapi_flights import cheap_days_candidates, _is_cooled
-from .cheap_days import DROP_PCT
+from .cheap_days import DROP_PCT, FRESH_HOURS
 from .storage import Store
 from . import health
 
@@ -101,8 +101,12 @@ def pick_candidates(store: Store, limit: int = VERIFICATIONS_PER_DAY,
                         "（export_web 是否停擺？）", o, d, c["depart_date"],
                         max_age_days)
             continue
-        if _is_cooled(store.conn, o, d, c["depart_date"], now_ref=now_ref):
-            continue                  # 72h 內已有實價（可能是 fsc 剛驗過）
+        # 冷卻跟看板的新鮮度一致（24 小時）：看板只採計 24 小時內的實價，超過的就又是
+        # 快取估價了。原本用 72 小時，Bright Data（10/31 起每小時寫 Google 實價）一兩天前
+        # 查過的日期全被當成「已驗證」，於是 11/01 起每天驗證 0 次（2026-11-10 稽核）。
+        if _is_cooled(store.conn, o, d, c["depart_date"], cooldown_hours=FRESH_HOURS,
+                      now_ref=now_ref):
+            continue                  # 24h 內已有實價（看板會直接用它）
         claimed_routes.add((o, d))
         out.append({"origin": o, "destination": d,
                     "depart_date": c["depart_date"],
