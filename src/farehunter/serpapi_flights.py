@@ -50,20 +50,30 @@ def search_google_flights(origin: str, destination: str,
     if not key:
         raise RuntimeError("Missing SERPAPI_KEY environment variable.")
     s = session or requests
-    resp = s.get(BASE_URL, params={
-        "engine": "google_flights",
-        "departure_id": origin,
-        "arrival_id": destination,
-        "outbound_date": outbound,
-        "return_date": ret,
-        "currency": currency,
-        "stops": 1,                     # SerpAPI: 1 = 僅直飛
-        "hl": "zh-TW",
-        "api_key": key,
-    }, timeout=90)
+    # 連線層例外與非 JSON 一律轉成 SerpApiError：fsc_snapshot 只接這個、跳過這一次。
+    # 原本 ReadTimeout 原樣拋出，整輪中止，前面已花額度查到的結果不會被 commit
+    # （跟 2026-10-18 Travelpayouts 那次同一類）。訊息先遮掉金鑰再截斷。
+    try:
+        resp = s.get(BASE_URL, params={
+            "engine": "google_flights",
+            "departure_id": origin,
+            "arrival_id": destination,
+            "outbound_date": outbound,
+            "return_date": ret,
+            "currency": currency,
+            "stops": 1,                     # SerpAPI: 1 = 僅直飛
+            "hl": "zh-TW",
+            "api_key": key,
+        }, timeout=90)
+    except requests.RequestException as exc:
+        raise SerpApiError(f"transport: {type(exc).__name__}: {exc}"
+                           .replace(key, "***")[:300]) from exc
     if resp.status_code != 200:
-        raise SerpApiError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-    payload = resp.json()
+        raise SerpApiError(f"HTTP {resp.status_code}: {resp.text.replace(key, '***')[:300]}")
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise SerpApiError(f"HTTP 200 but non-JSON: {resp.text[:200]}") from exc
     if payload.get("error"):
         raise SerpApiError(payload["error"])
     return payload

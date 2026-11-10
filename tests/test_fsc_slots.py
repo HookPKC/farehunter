@@ -957,3 +957,44 @@ def test_no_notable_cheap_day_yields_the_slot(tmp_path):
     kinds = [pl.get("slot_kind") for pl in plans]
     assert "cheap_day" not in kinds
     assert "cta" in kinds, f"cheap_day 讓位後 cta 應接上：{kinds}"
+
+
+# ---- 連線層例外不得中止整輪（2026-11-10 稽核）-----------------------------------
+def test_serpapi_transport_errors_become_serpapi_errors_without_the_key():
+    import pytest
+    import requests as _rq
+    from farehunter import serpapi_flights as _sf
+
+    class _S:
+        def __init__(self, exc=None, text="not json"):
+            self.exc, self.text = exc, text
+
+        def get(self, url, params=None, timeout=None):
+            if self.exc:
+                raise self.exc(f"GET {url}?api_key={params['api_key']} timed out")
+            return type("R", (), {"status_code": 200, "text": self.text,
+                                  "json": lambda s: (_ for _ in ()).throw(ValueError("bad"))})()
+
+    for exc in (_rq.ReadTimeout, _rq.ConnectionError):
+        with pytest.raises(_sf.SerpApiError) as info:
+            _sf.search_google_flights("TPE", "NRT", "2026-12-01", "2026-12-05",
+                                      api_key="serp-secret", session=_S(exc))
+        assert "transport" in str(info.value) and "serp-secret" not in str(info.value)
+    with pytest.raises(_sf.SerpApiError, match="non-JSON"):
+        _sf.search_google_flights("TPE", "NRT", "2026-12-01", "2026-12-05",
+                                  api_key="serp-secret", session=_S())
+
+
+def test_scrapedo_transport_errors_become_scrapedo_errors_without_the_key():
+    import pytest
+    import requests as _rq
+    from farehunter import scrapedo_flights as _sd
+
+    class _S:
+        def get(self, url, params=None, timeout=None):
+            raise _rq.ReadTimeout(f"GET {url}?token={params['token']} timed out")
+
+    with pytest.raises(_sd.ScrapeDoError) as info:
+        _sd.search_flights("TPE", "NRT", "2026-12-01", "2026-12-05",
+                           api_key="sd-secret", session=_S())
+    assert "transport" in str(info.value) and "sd-secret" not in str(info.value)

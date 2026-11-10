@@ -35,16 +35,22 @@ def search_flights(origin: str, destination: str, outbound: str, ret: str,
     if not key:
         raise RuntimeError("Missing SCRAPEDO_KEY environment variable.")
     s = session or requests
-    resp = s.get(BASE_URL, params={
-        "token": key,
-        "departure_id": origin,
-        "arrival_id": destination,
-        "outbound_date": outbound,
-        "return_date": ret,
-        "currency": currency,
-        "sort_by": 2,               # price ascending
-        "hl": "zh-TW",
-    }, timeout=90)
+    # 連線層例外轉成 ScrapeDoError：verify_airlines 只接這個、跳過這一次，不讓整輪
+    # （連同已查到的結果與 commit）中止。訊息先遮掉金鑰再截斷。
+    try:
+        resp = s.get(BASE_URL, params={
+            "token": key,
+            "departure_id": origin,
+            "arrival_id": destination,
+            "outbound_date": outbound,
+            "return_date": ret,
+            "currency": currency,
+            "sort_by": 2,               # price ascending
+            "hl": "zh-TW",
+        }, timeout=90)
+    except requests.RequestException as exc:
+        raise ScrapeDoError(f"transport: {type(exc).__name__}: {exc}"
+                            .replace(key, "***")[:300]) from exc
     try:
         payload = resp.json()
     except ValueError:
