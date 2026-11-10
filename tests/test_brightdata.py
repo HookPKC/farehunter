@@ -675,7 +675,7 @@ def _run(tmp_path, monkeypatch, fetch, offers=None, threshold=8000, now=NOW, sea
     monkeypatch.setattr(runner_mod, "parse_offers", lambda *a, **k: list(offers))
     sent = []
     monkeypatch.setattr(runner_mod, "notify",
-                        lambda o, v, st=None: sent.append((o, v, st)) or ["line"])
+                        lambda o, v, st=None, **k: sent.append((o, v, st)) or ["line"])
     monkeypatch.setattr(runner_mod, "channels_configured", lambda: True)
     monkeypatch.setattr(bd, "fetch", fetch)
     monkeypatch.setenv("FAREHUNTER_FORCE", "1")
@@ -904,3 +904,16 @@ def test_runner_sweeps_cheapest_trips_after_fetching(tmp_path, monkeypatch):
     con = sqlite3.connect(tmp_path / "prices.db")
     assert con.execute("SELECT SUM(requests) FROM api_usage").fetchone()[0] == 3
     con.close()
+
+
+def test_the_runner_hands_the_line_budget_to_notify(tmp_path, monkeypatch):
+    """LINE 配速要靠 runner 把 LineBudget 交給 notify；漏傳就等於沒有配速。"""
+    got = []
+    _run(tmp_path, monkeypatch, lambda *a: None)
+    monkeypatch.setattr(runner_mod, "notify",
+                        lambda o, v, st=None, **k: got.append(k) or ["line"])
+    cheaper = [Offer("KHH", "NRT", DEP, RET, 5000.0, "TWD", "GK", 0, "180")]
+    cfg = tmp_path / "config.yaml"
+    monkeypatch.setattr(runner_mod, "parse_offers", lambda *a, **k: list(cheaper))
+    runner_mod.run(str(cfg), str(tmp_path / "prices.db"), now=NOW)
+    assert got and isinstance(got[0].get("line_budget"), runner_mod.LineBudget)

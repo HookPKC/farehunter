@@ -7,8 +7,10 @@ Both are optional — a channel is active only when its env vars are set:
 """
 from __future__ import annotations
 
+import calendar
 import os
 import logging
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -22,6 +24,16 @@ log = logging.getLogger(__name__)
 #: 每則通知最多卡約 1 分鐘，一輪有好幾則警報就拖住整輪。兩邊正常都在 1–2 秒內回應；
 #: 送不出去的會留到下一輪重試（見 _log_transport_error），不必在這裡久等。
 SEND_TIMEOUT = (5, 20)
+
+#: 台灣時間這段期間送出的通知改成靜音送達：訊息照常到，手機不響（LINE
+#: notificationDisabled、Telegram disable_notification）。近 30 天有 12% 的警報落在半夜。
+TW = timezone(timedelta(hours=8))
+QUIET_START_HOUR, QUIET_END_HOUR = 23, 7
+
+
+def quiet_hours(now: datetime) -> bool:
+    h = now.astimezone(TW).hour
+    return h >= QUIET_START_HOUR or h < QUIET_END_HOUR
 
 
 WEEKDAYS = "一二三四五六日"
@@ -141,7 +153,8 @@ def _log_transport_error(channel: str, exc: Exception, token: str) -> None:
     log.error("%s send failed (%s): %s", channel, type(exc).__name__, msg)
 
 
-def send_telegram(text: str, session: requests.Session | None = None) -> bool:
+def send_telegram(text: str, session: requests.Session | None = None, *,
+                  quiet: bool = False) -> bool:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
@@ -150,7 +163,7 @@ def send_telegram(text: str, session: requests.Session | None = None) -> bool:
     try:
         resp = s.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
+            json={"chat_id": chat_id, "text": text, "disable_notification": quiet},
             timeout=SEND_TIMEOUT,
         )
     except requests.RequestException as exc:
@@ -166,6 +179,71 @@ LINE_API = "https://api.line.me/v2/bot/message"
 #: 廣播時，本月剩不到這麼多則就改成只 push 給 LINE_USER_ID。LINE 官方帳號每位收件人算
 #: 一則，廣播給 5 個人就用掉 5 則；免費方案每月約 200 則，用完連擁有者都收不到。
 LINE_OWNER_RESERVE = 30
+#: 讀不到好友統計時，一次廣播當作用掉幾則（擁有者＋4 位朋友）
+DEFAULT_RECIPIENTS = 5
+LINE_INSIGHT_API = "https://api.line.me/v2/bot/insight/followers"
+
+
+class LineBudget:
+    """LINE 額度配速（使用者說明見 docs/RUNBOOK_HOOK.md §3e）：讓免費額度攤到整個月，而不是前 20 天用完、
+    月底朋友完全收不到。
+
+    規則（send_line 廣播前檢查）：
+      - 台灣日期今天第一則：照常廣播，只要廣播完還留得下 LINE_OWNER_RESERVE。
+      - 今天第二則以後：廣播完還得留夠「之後每天一則廣播」的額度＋保留額度，否則只發給
+        擁有者。前面沒用完的額度自然留給後面忙的日子。
+    只需要「今天廣播過幾次」（prices.db 的 line_sends）與 LINE 回報的本月剩餘則數。
+    """
+
+    def __init__(self, store, now: datetime):
+        self.store, self.now = store, now
+
+    def _tw(self) -> datetime:
+        return self.now.astimezone(TW)
+
+    def broadcasts_today(self) -> int:
+        start = self._tw().replace(hour=0, minute=0, second=0, microsecond=0)
+        return self.store.line_sends_since(
+            "broadcast", start.astimezone(timezone.utc).isoformat(timespec="seconds"))
+
+    def days_left(self) -> int:
+        """本月（台灣日期）含今天還剩幾天。"""
+        t = self._tw()
+        return calendar.monthrange(t.year, t.month)[1] - t.day + 1
+
+    def allows_broadcast(self, left: int, recipients: int) -> bool:
+        after = left - recipients
+        if self.broadcasts_today() == 0:
+            return after >= LINE_OWNER_RESERVE
+        return after >= LINE_OWNER_RESERVE + recipients * (self.days_left() - 1)
+
+    def record(self, mode: str) -> None:
+        self.store.record_line_send(self.now.isoformat(timespec="seconds"), mode)
+
+
+def _line_recipients(s, headers: dict, token: str, now: datetime) -> int:
+    """一次廣播會用掉幾則＝能收到廣播的好友數。讀 LINE 前一天的好友統計；
+    讀不到（好友太少時 LINE 不提供、未就緒、連線失敗）就用 LINE_RECIPIENTS 或預設 5。"""
+    fallback = DEFAULT_RECIPIENTS
+    try:
+        fallback = max(1, int(os.environ.get("LINE_RECIPIENTS") or DEFAULT_RECIPIENTS))
+    except ValueError:
+        pass
+    day = (now.astimezone(TW) - timedelta(days=1)).strftime("%Y%m%d")
+    try:
+        r = s.get(LINE_INSIGHT_API, params={"date": day}, headers=headers,
+                  timeout=SEND_TIMEOUT)
+        if r.status_code != 200:
+            return fallback
+        data = r.json()
+        if data.get("status") != "ready":
+            return fallback
+        n = data.get("targetedReaches")
+        if isinstance(n, int) and not isinstance(n, bool) and n > 0:
+            return n
+    except (requests.RequestException, ValueError, TypeError, AttributeError) as exc:
+        _log_transport_error("LINE insight", exc, token)
+    return fallback
 
 
 def _line_quota_left(s, headers: dict, token: str) -> int | None:
@@ -184,10 +262,12 @@ def _line_quota_left(s, headers: dict, token: str) -> int | None:
         return None
 
 
-def send_line(text: str, session: requests.Session | None = None) -> bool:
+def send_line(text: str, session: requests.Session | None = None, *,
+              budget: LineBudget | None = None) -> bool:
     """LINE_BROADCAST=1：廣播給官方帳號的所有好友；本月額度剩不到 LINE_OWNER_RESERVE
-    則時改成只 push 給 LINE_USER_ID，至少擁有者不會漏掉通知。其餘情況照舊 push 給
-    LINE_USER_ID 一個人。額度查不到時照樣廣播。"""
+    則時改成只 push 給 LINE_USER_ID，至少擁有者不會漏掉通知。有 budget 時再加上配速
+    （見 LineBudget），超出今天份額的只發給擁有者。其餘情況照舊 push 給 LINE_USER_ID
+    一個人。額度查不到時照樣廣播。台灣時間半夜靜音送達（quiet_hours）。"""
     token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
     user_id = os.environ.get("LINE_USER_ID")
     broadcast = os.environ.get("LINE_BROADCAST") == "1"
@@ -202,8 +282,17 @@ def send_line(text: str, session: requests.Session | None = None) -> bool:
             log.warning("LINE 本月只剩 %d 則（保留 %d 則給擁有者）：這則只發給擁有者",
                         left, LINE_OWNER_RESERVE)
             broadcast = False
+        elif left is not None and budget is not None:
+            n = _line_recipients(s, headers, token, budget.now)
+            if not budget.allows_broadcast(left, n):
+                log.info("LINE 配速：本月剩 %d 則、今天已廣播 %d 次、還有 %d 天"
+                         "（每次廣播 %d 則）：這則只發給擁有者",
+                         left, budget.broadcasts_today(), budget.days_left(), n)
+                broadcast = False
+    quiet = quiet_hours(budget.now if budget else datetime.now(timezone.utc))
     url, body = ((f"{LINE_API}/broadcast", {"messages": messages}) if broadcast else
                  (f"{LINE_API}/push", {"to": user_id, "messages": messages}))
+    body["notificationDisabled"] = quiet
     try:
         resp = s.post(url, headers=headers, json=body, timeout=SEND_TIMEOUT)
     except requests.RequestException as exc:
@@ -212,6 +301,8 @@ def send_line(text: str, session: requests.Session | None = None) -> bool:
     if resp.status_code != 200:
         log.error("LINE send failed %s: %s", resp.status_code, resp.text[:300])
         return False
+    if budget is not None:
+        budget.record("broadcast" if broadcast else "owner")
     return True
 
 
@@ -220,13 +311,15 @@ def channels_configured() -> bool:
                 or os.environ.get("TELEGRAM_BOT_TOKEN"))
 
 
-def notify(offer: Offer, verdict: Verdict, state=None) -> list[str]:
+def notify(offer: Offer, verdict: Verdict, state=None, *,
+           line_budget: LineBudget | None = None) -> list[str]:
     """Send to all configured channels; return the list that succeeded."""
     text = format_alert(offer, verdict, state)
     sent = []
-    if send_telegram(text):
+    quiet = quiet_hours(line_budget.now if line_budget else datetime.now(timezone.utc))
+    if send_telegram(text, quiet=quiet):
         sent.append("telegram")
-    if send_line(text):
+    if send_line(text, budget=line_budget):
         sent.append("line")
     if not sent:
         log.info("No notification channel configured; alert printed only:\n%s", text)

@@ -80,6 +80,10 @@ cp .env.example .env    # 填入金鑰後 export，或直接設定環境變數
 2. 取得 Channel access token → `LINE_CHANNEL_ACCESS_TOKEN`
 3. 加你的官方帳號為好友，從 webhook 或 channel 設定頁取得你的 User ID → `LINE_USER_ID`
 
+4. （選用）`LINE_BROADCAST=1`：改成廣播給官方帳號的所有好友。免費額度有限，程式會配速：
+   每天第一則一定廣播，同一天之後的只有額度夠用到月底時才廣播，否則只發給 `LINE_USER_ID`；
+   台灣時間 23:00–07:00 靜音送達。詳見 `docs/RUNBOOK_HOOK.md` §3e。
+
 兩個通知渠道都沒設定時，警報會直接印在終端機。
 
 ## 執行
