@@ -327,6 +327,17 @@ h2 .sortbtn:active{transform:scale(.97)}
 }
 
 /* ============ Footer / misc ============ */
+/* 用量面板：預設收合，給管理者看各服務本月用了多少 */
+.usage{margin-top:var(--s6);border:1px solid var(--line1);border-radius:var(--r-m);background:var(--bg1);
+  padding:var(--s3) var(--s4);font-size:var(--fs-s)}
+.usage>summary{cursor:pointer;color:var(--ink2)}
+.urow{margin-top:var(--s3)}
+.urow .uh{display:flex;justify-content:space-between;gap:var(--s3);color:var(--ink2)}
+.urow .un{font-family:var(--mono);white-space:nowrap}
+.ubar{height:6px;border-radius:3px;background:var(--bg3);margin-top:4px;overflow:hidden}
+.ubar>i{display:block;height:100%;background:var(--pos)}
+.ubar>i.warn{background:var(--accent,#f5b942)}
+.urow .ud{color:var(--ink3);font-size:var(--fs-xs);margin-top:3px}
 footer{margin-top:var(--s7);font-size:var(--fs-xs);color:var(--ink3);
   line-height:1.7;font-family:var(--mono);border-top:1px solid var(--line1);
   padding-top:var(--s4)}
@@ -380,6 +391,11 @@ footer{margin-top:var(--s7);font-size:var(--fs-xs);color:var(--ink3);
   <div class="skel" style="height:220px;margin-bottom:16px"></div>
   <div class="skel" style="height:220px"></div>
 </div>
+
+<details class="usage" id="usage" hidden>
+  <summary>本月用量（管理用）</summary>
+  <div id="usage-body"></div>
+</details>
 
 <footer id="foot"></footer>
 
@@ -676,6 +692,36 @@ function renderFreshness(){
 // 航線的主價：current surface 新鮮度閘門（data.json 的 r.current，由 export 端算好）。
 // 舊版 JSON 沒有 r.current 時退回原本的 latest.reduce；但**不得**在 r.current 明確表示
 // no_recent_price／不合格時偷偷改用舊價當主價。卡片與總覽的「目前最低」共用這一套。
+// 用量面板：各服務本月用了多少、還剩多少。資料由 export 端算好；缺的項目不顯示、不猜數字。
+function renderUsage(u, env){
+  const box = $("usage");
+  if(!u || env === "sample"){ box.hidden = true; return; }
+  const row = (name, used, limit, numTxt, note) => {
+    const pct = limit ? Math.min(100, Math.round(used / limit * 100)) : 0;
+    return `<div class="urow"><div class="uh"><span>${name}</span><span class="un">${numTxt}</span></div>
+      <div class="ubar" role="img" aria-label="${name} 已用 ${pct}%"><i class="${pct >= 90 ? "warn" : ""}" style="width:${pct}%"></i></div>
+      ${note ? `<div class="ud">${note}</div>` : ""}</div>`;
+  };
+  const rows = [];
+  const b = u.brightdata, s = u.serpapi, d = u.scrapedo, l = u.line;
+  if(b) rows.push(row("Bright Data（Google 實價）", b.used, b.limit, `${fmt(b.used)} / ${fmt(b.limit)} 次`,
+    `成功 ${fmt(b.ok)} 次${b.timeouts ? `、逾時 ${b.timeouts} 次` : ""}；程式配速用到約 ${fmt(b.target)} 次，每月 1 日重置`));
+  if(s) rows.push(row("SerpAPI（每日快照與驗證）", s.limit - s.left, s.limit, `剩 ${fmt(s.left)} / ${fmt(s.limit)} 次`,
+    s.next_reset ? `預計 ${s.next_reset.slice(5).replace("-","/")} 前後重置` : ""));
+  if(d) rows.push(row("Scrape.do（便宜日驗證）", d.credits_used, d.credits_limit, `${fmt(d.credits_used)} / ${fmt(d.credits_limit)} 點`,
+    `本月成功 ${d.ok} 次（每次 10 點）；便宜日已有 Google 實價時不需要再查`));
+  if(l){
+    const sent = `本月廣播 ${l.broadcasts} 次、只發給管理者 ${l.owner_only} 次；今天${l.broadcasts_today ? `已廣播 ${l.broadcasts_today} 次` : "還沒廣播"}`;
+    if(typeof l.quota_left === "number")
+      rows.push(row("LINE 通知", 200 - l.quota_left, 200, `約剩 ${l.quota_left} 則`, `${sent}（剩餘則數為 ${twTime(l.quota_left_at)} 發送當時的數字）`));
+    else
+      rows.push(`<div class="urow"><div class="uh"><span>LINE 通知</span><span class="un">—</span></div><div class="ud">${sent}；本月還沒有發送紀錄可以回報剩餘則數</div></div>`);
+  }
+  if(!rows.length){ box.hidden = true; return; }
+  $("usage-body").innerHTML = rows.join("");
+  box.hidden = false;
+}
+
 function currentOf(r){
   const CU = r.current || null;
   let curOffer;
@@ -901,6 +947,8 @@ function render(data){
       </article>`;
     }).join("");
   }
+
+  renderUsage(data.usage, data.env);
 
   $("foot").textContent =
     "價格皆為近期觀測值或快取估價（≈／約），非即時保證價；實際票價與承運以 Google Flights／航空公司為準。 © FareHunter · 作者 Hook Li" +

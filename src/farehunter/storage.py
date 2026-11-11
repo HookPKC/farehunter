@@ -69,9 +69,11 @@ CREATE TABLE IF NOT EXISTS api_usage (
 -- LINE 發送紀錄（notify.LineBudget 配速用）：每成功送出一則記一筆。mode＝broadcast
 -- （給官方帳號所有好友）或 owner（只給擁有者）。配速只需要「今天廣播過幾次」，
 -- 每月約 60 筆，不必清理。
+-- quota_left＝這則送出後 LINE 回報的本月剩餘則數（查不到時 NULL），給看板的用量面板顯示。
 CREATE TABLE IF NOT EXISTS line_sends (
-    sent_at TEXT NOT NULL,
-    mode    TEXT NOT NULL
+    sent_at    TEXT NOT NULL,
+    mode       TEXT NOT NULL,
+    quota_left INTEGER
 );
 
 -- 巡檢最近查過哪些行程（Bright Data 巡檢用，ADR 0004）。查到頁面卻沒有可寫入的直飛價
@@ -152,6 +154,9 @@ class Store:
             if col not in ucols:
                 self.conn.execute(
                     f"ALTER TABLE api_usage ADD COLUMN {col} {kind} NOT NULL DEFAULT 0")
+        # migration: line_sends.quota_left（2026-11-11，用量面板）。舊列沒有這個資訊。
+        if "quota_left" not in [r[1] for r in self.conn.execute("PRAGMA table_info(line_sends)")]:
+            self.conn.execute("ALTER TABLE line_sends ADD COLUMN quota_left INTEGER")
         self.conn.commit()
         # 一開檔就核對封存檔（ADR 0002）。所有 writer（monitor／FSC／Verify／
         # cheap_day_notify）都在打任何付費 API 之前建 Store，封存檔不完整時在
@@ -424,9 +429,10 @@ class Store:
             (provider, first_day)).fetchone()
         return int(row[0])
 
-    def record_line_send(self, sent_at: str, mode: str) -> None:
-        self.conn.execute("INSERT INTO line_sends (sent_at, mode) VALUES (?, ?)",
-                          (sent_at, mode))
+    def record_line_send(self, sent_at: str, mode: str,
+                         quota_left: int | None = None) -> None:
+        self.conn.execute("INSERT INTO line_sends (sent_at, mode, quota_left) VALUES (?, ?, ?)",
+                          (sent_at, mode, quota_left))
         self.conn.commit()
 
     def line_sends_since(self, mode: str, since: str) -> int:

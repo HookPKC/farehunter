@@ -412,3 +412,17 @@ def test_night_messages_are_delivered_silently(tmp_path, monkeypatch):
         tg = [b for u, b in posts if "telegram" in u]
         assert line[0]["notificationDisabled"] is quiet
         assert tg[0]["disable_notification"] is quiet
+
+
+def test_the_send_record_keeps_the_remaining_quota(tmp_path, monkeypatch):
+    """用量面板要顯示「約剩幾則」：送出後記下 LINE 回報的剩餘則數（廣播扣好友數、只發給擁有者扣 1）。"""
+    _broadcast_env(monkeypatch)
+    st, b = _budget(tmp_path)
+    assert N.send_line("x", session=_PacedApi(limit=200, used=100), budget=b) is True    # 廣播：100 − 5
+    assert N.send_line("x", session=_PacedApi(limit=200, used=105), budget=b) is True    # 今天第二則 → 只給擁有者
+    rows = [tuple(r) for r in st.conn.execute("SELECT mode, quota_left FROM line_sends ORDER BY rowid")]
+    assert rows == [("broadcast", 95), ("owner", 94)]
+    (tmp_path / "u").mkdir()
+    st2, b2 = _budget(tmp_path / "u")
+    assert N.send_line("x", session=_PacedApi(unlimited=True), budget=b2) is True         # 查不到額度 → 不猜
+    assert [tuple(r) for r in st2.conn.execute("SELECT mode, quota_left FROM line_sends")] == [("broadcast", None)]
