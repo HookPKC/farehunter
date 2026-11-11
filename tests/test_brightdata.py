@@ -737,10 +737,12 @@ def test_bright_data_failure_still_sends_the_alert(tmp_path, monkeypatch):
 
 
 def _counting(page):
+    """calls 只記警報那一趟（DEP／RET）被查了幾次；巡檢另外補查的固定日期不算。"""
     calls = []
 
     def fetch(o, d, dep, ret):
-        calls.append((o, d, dep, ret))
+        if (dep, ret) == (DEP, RET):
+            calls.append((o, d, dep, ret))
         return page
 
     return fetch, calls
@@ -899,10 +901,12 @@ def test_runner_sweeps_cheapest_trips_after_fetching(tmp_path, monkeypatch):
                     (NOW.date() + timedelta(days=n + 5)).isoformat(),
                     9000.0 + n, "TWD", "GK", 0, "180") for n in (30, 31, 32)]
     summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, offers=offers)
-    assert asked == [o.depart_date for o in offers]          # 便宜的先查，沒有警報要驗證
-    assert summary["brightdata"]["swept"] == 3 and summary["brightdata"]["recorded"] == 3
+    # 便宜的先查，沒有警報要驗證；快取只有 3 天，其餘用固定日期補到 ROUTE_MIN_TRIPS
+    assert asked[:3] == [o.depart_date for o in offers]
+    assert summary["brightdata"]["swept"] == bd.ROUTE_MIN_TRIPS == len(asked)
+    assert summary["brightdata"]["recorded"] == bd.ROUTE_MIN_TRIPS
     con = sqlite3.connect(tmp_path / "prices.db")
-    assert con.execute("SELECT SUM(requests) FROM api_usage").fetchone()[0] == 3
+    assert con.execute("SELECT SUM(requests) FROM api_usage").fetchone()[0] == bd.ROUTE_MIN_TRIPS
     con.close()
 
 
@@ -917,3 +921,24 @@ def test_the_runner_hands_the_line_budget_to_notify(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, "parse_offers", lambda *a, **k: list(cheaper))
     runner_mod.run(str(cfg), str(tmp_path / "prices.db"), now=NOW)
     assert got and isinstance(got[0].get("line_budget"), runner_mod.LineBudget)
+
+
+def test_a_thin_route_is_topped_up_with_fixed_dates(tmp_path):
+    """冷門線的快取只有幾天：補固定日期到 ROUTE_MIN_TRIPS，快取裡的日期先查；
+    快取日期夠多的航線不補（2026-11-11：五條高雄冷門線每天只被查 2–8 次）。"""
+    st = _store(tmp_path)
+    asked = []
+
+    def fetch(o, d, dep, ret):
+        asked.append((o, d, dep))
+        return _page(_label("9,000", "Tigerair Taiwan"))
+
+    thin = [_offer("KHH", "OKA", _day(30 + i), 6000 + i, carriers="IT") for i in range(2)]
+    rich = [_offer("KHH", "NRT", _day(30 + i), 8000 + i) for i in range(bd.ROUTE_MIN_TRIPS + 3)]
+    v = bd.Verifier(st, NOW, allowance=100, fetcher=fetch)
+    v.sweep(thin + rich, [("KHH", "OKA"), ("KHH", "NRT")])
+    oka = [dep for o, d, dep in asked if d == "OKA"]
+    nrt = [dep for o, d, dep in asked if d == "NRT"]
+    assert oka[:2] == [_day(30), _day(31)] and len(oka) == bd.ROUTE_MIN_TRIPS
+    assert len(set(oka)) == len(oka)                         # 補的日期不重複
+    assert sorted(nrt) == sorted(o.depart_date for o in rich)  # 夠多的航線只查快取裡的
