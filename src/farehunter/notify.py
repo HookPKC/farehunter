@@ -217,8 +217,8 @@ class LineBudget:
             return after >= LINE_OWNER_RESERVE
         return after >= LINE_OWNER_RESERVE + recipients * (self.days_left() - 1)
 
-    def record(self, mode: str) -> None:
-        self.store.record_line_send(self.now.isoformat(timespec="seconds"), mode)
+    def record(self, mode: str, quota_left: int | None = None) -> None:
+        self.store.record_line_send(self.now.isoformat(timespec="seconds"), mode, quota_left)
 
 
 def _line_recipients(s, headers: dict, token: str, now: datetime) -> int:
@@ -276,6 +276,7 @@ def send_line(text: str, session: requests.Session | None = None, *,
     s = session or requests
     headers = {"Authorization": f"Bearer {token}"}
     messages = [{"type": "text", "text": text[:5000]}]
+    left, n = None, DEFAULT_RECIPIENTS      # 本月剩餘則數（查不到是 None）、一次廣播用掉幾則
     if broadcast and user_id:
         left = _line_quota_left(s, headers, token)
         if left is not None and left < LINE_OWNER_RESERVE:
@@ -302,7 +303,9 @@ def send_line(text: str, session: requests.Session | None = None, *,
         log.error("LINE send failed %s: %s", resp.status_code, resp.text[:300])
         return False
     if budget is not None:
-        budget.record("broadcast" if broadcast else "owner")
+        # 記下送出後大約還剩幾則，給看板的用量面板（廣播時 n 是讀到或預設的好友數）
+        after = None if left is None else max(0, left - (n if broadcast else 1))
+        budget.record("broadcast" if broadcast else "owner", after)
     return True
 
 

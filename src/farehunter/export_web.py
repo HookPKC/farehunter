@@ -188,6 +188,68 @@ def _health_route_list(config_path: str, observed: list[tuple[str, str]]
     return observed
 
 
+def build_usage(conn, now: datetime, quota_path: Path) -> dict:
+    """各服務本月用了多少、還剩多少（看板的用量面板）。零 API：只讀 prices.db 與
+    FSC 快照寫的 quota.json。任何一項讀不到就是 None，不猜數字。
+
+    月份：Bright Data／Scrape.do 用 UTC 月（帳本與重置都是 UTC）；LINE 用台灣月份。
+    """
+    try:
+        from farehunter import brightdata_flights as bd
+    except ImportError:                 # pragma: no cover
+        from . import brightdata_flights as bd
+    month_utc = now.strftime("%Y-%m-01")
+    out: dict = {"month": now.strftime("%Y-%m")}
+
+    def _try(fn):
+        try:
+            return fn()
+        except Exception as exc:        # noqa: BLE001 — 用量面板不得讓整份 export 失敗
+            log.warning("用量面板某一項讀不到（%s）", exc)
+            return None
+
+    def _brightdata():
+        r = conn.execute(
+            "SELECT COALESCE(SUM(requests),0), COALESCE(SUM(ok),0), COALESCE(SUM(timeouts),0)"
+            " FROM api_usage WHERE provider='brightdata' AND day >= ?", (month_utc,)).fetchone()
+        return {"used": r[0], "ok": r[1], "timeouts": r[2], "limit": bd.MONTHLY_FREE,
+                "target": int(bd.MONTHLY_FREE * bd.USE_FRACTION)}
+
+    def _scrapedo():
+        n = conn.execute(
+            "SELECT COUNT(*) FROM observations WHERE provider='scrapedo' AND observed_at >= ?",
+            (month_utc,)).fetchone()[0]
+        return {"ok": n, "credits_used": n * 10, "credits_limit": 1000}
+
+    def _serpapi():
+        q = json.loads(quota_path.read_text(encoding="utf-8"))
+        return {"left": q["total_searches_left"], "limit": q["searches_per_month"],
+                "next_reset": q.get("next_reset_estimate"), "checked_at": q.get("checked_at")}
+
+    def _line():
+        tw = timezone(timedelta(hours=8))
+        t = now.astimezone(tw)
+        month_start = t.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        day_start = t.replace(hour=0, minute=0, second=0, microsecond=0)
+        iso = lambda d: d.astimezone(timezone.utc).isoformat(timespec="seconds")
+        cnt = lambda mode, since: conn.execute(
+            "SELECT COUNT(*) FROM line_sends WHERE mode=? AND julianday(sent_at) >= julianday(?)",
+            (mode, iso(since))).fetchone()[0]
+        # export 直接開檔、不經 Store 的 migration：舊檔還沒有 quota_left 欄時就不讀它
+        has_left = "quota_left" in [r[1] for r in conn.execute("PRAGMA table_info(line_sends)")]
+        last = conn.execute(
+            "SELECT quota_left, sent_at FROM line_sends WHERE quota_left IS NOT NULL"
+            " AND julianday(sent_at) >= julianday(?) ORDER BY julianday(sent_at) DESC LIMIT 1",
+            (iso(month_start),)).fetchone() if has_left else None
+        return {"broadcasts": cnt("broadcast", month_start), "owner_only": cnt("owner", month_start),
+                "broadcasts_today": cnt("broadcast", day_start),
+                "quota_left": last[0] if last else None, "quota_left_at": last[1] if last else None}
+
+    out["brightdata"], out["scrapedo"] = _try(_brightdata), _try(_scrapedo)
+    out["serpapi"], out["line"] = _try(_serpapi), _try(_line)
+    return out
+
+
 def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
            now: datetime | None = None,
            config_path: str = "config.yaml") -> dict:
@@ -360,6 +422,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
     except Exception as exc:  # noqa: BLE001 — 看板功能不得讓整份 export 失敗
         log.warning("cheap_days 計算失敗（%s），本次以空清單輸出", exc)
         cheap = []
+    usage = build_usage(conn, _now, Path(out_path).parent / "quota.json")
     conn.close()
 
     payload = {
@@ -371,6 +434,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
         "routes": routes,
         "alerts": alerts,
         "cheap_days": cheap,
+        "usage": usage,
     }
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)

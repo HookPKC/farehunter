@@ -130,3 +130,51 @@ def test_export_populates_cheap_days_end_to_end(tmp_path):
     assert cheap[0]["observed_at"] and cheap[0]["return_date"]
     # 寫進檔案的內容也要有（前端讀的是檔案，不是回傳值）
     assert json.loads(out.read_text(encoding="utf-8"))["cheap_days"] == cheap
+
+
+def test_usage_block_reports_each_service_without_guessing(tmp_path):
+    """看板的用量面板：各服務本月用量由 export 算好；讀不到的項目是 None，不塞假數字。"""
+    import json
+    from datetime import datetime, timezone
+    from farehunter.storage import Store
+    from farehunter.export_web import export
+    now = datetime(2026, 11, 15, 6, 0, tzinfo=timezone.utc)
+    db = tmp_path / "p.db"
+    st = Store(str(db))
+    st.record_api_usage("brightdata", "2026-10-31", ok=True)              # 上個月的不算
+    st.record_api_usage("brightdata", "2026-11-02", ok=True)
+    st.record_api_usage("brightdata", "2026-11-03", ok=False, timeout=True)
+    st.record_line_send("2026-11-14T15:30:00+00:00", "broadcast", 120)    # 台灣 11/14 23:30
+    st.record_line_send("2026-11-14T17:00:00+00:00", "broadcast", 115)    # 台灣 11/15 01:00（今天）
+    st.record_line_send("2026-11-15T02:00:00+00:00", "owner", 114)
+    st.close()
+    u = export(str(db), str(tmp_path / "data.json"), now=now)["usage"]
+    assert u["brightdata"] == {"used": 2, "ok": 1, "timeouts": 1, "limit": 5000, "target": 4750}
+    assert u["line"] == {"broadcasts": 2, "owner_only": 1, "broadcasts_today": 1,
+                         "quota_left": 114, "quota_left_at": "2026-11-15T02:00:00+00:00"}
+    assert u["scrapedo"]["credits_used"] == 0 and u["serpapi"] is None     # 沒有 quota.json
+    (tmp_path / "quota.json").write_text(json.dumps(
+        {"total_searches_left": 205, "searches_per_month": 250, "next_reset_estimate": "2026-12-03"}))
+    u = export(str(db), str(tmp_path / "data.json"), now=now)["usage"]
+    assert (u["serpapi"]["left"], u["serpapi"]["limit"]) == (205, 250)
+
+
+def test_usage_survives_a_database_older_than_the_send_log(tmp_path):
+    """export 直接開檔、不經 Store 的 migration：還沒有 quota_left 欄的舊檔也要匯得出來。"""
+    import sqlite3
+    from datetime import datetime, timezone
+    from farehunter.storage import Store
+    from farehunter.export_web import export
+    db = tmp_path / "p.db"
+    Store(str(db)).close()
+    con = sqlite3.connect(db)
+    con.execute("DROP TABLE line_sends")
+    con.execute("CREATE TABLE line_sends (sent_at TEXT NOT NULL, mode TEXT NOT NULL)")
+    con.execute("INSERT INTO line_sends VALUES ('2026-11-15T01:00:00+00:00', 'broadcast')")
+    con.commit(); con.close()
+    u = export(str(db), str(tmp_path / "data.json"),
+               now=datetime(2026, 11, 15, 6, 0, tzinfo=timezone.utc))["usage"]
+    assert u["line"]["broadcasts"] == 1 and u["line"]["quota_left"] is None
+    st = Store(str(db))                                                   # 開檔時補上欄位
+    st.record_line_send("2026-11-15T02:00:00+00:00", "owner", 99)
+    st.close()
