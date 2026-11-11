@@ -60,6 +60,11 @@ STAY_NIGHTS = 5              # 快取沒資料的航線，巡檢固定查 5 晚�
 ANCHOR_STEP_DAYS = 8         # 固定日期的間隔；不是 7 的倍數，同一張清單裡星期幾各不相同
 HIT_MEMORY_DAYS = 30         # 冷門線：最近 30 天有 Google 直飛實價的星期幾優先查
 MISS_MEMORY_DAYS = 7         # 冷門線：7 天內查了卻沒有直飛的星期幾先跳過（api_checks 也留這麼久）
+#: 每條航線每天至少排這麼多趟進巡檢；快取日期不夠的用固定日期補。2026-11-11：近 24 小時
+#: 164 次查詢裡 KHH-NRT 佔 68 次，五條高雄冷門線各只有 2–8 次、未來 180 天有新價格的日期
+#: 只有 2–7 天——巡檢只查快取裡有的日期，而冷門線的快取本來就只有幾天。同一趟 24 小時
+#: 內不重查，所以這也是冷門線每天最多用掉的次數（5 條 × 12 ≈ 60），其餘仍歸大航線。
+ROUTE_MIN_TRIPS = 12
 MIN_LEAD_DAYS = 2            # 太近的出發日不查（快取價多半已失效，也難以成行）
 
 #: Google Flights 英文介面顯示的航空公司名稱 → IATA 代碼。只收我們航線上會出現的；
@@ -361,7 +366,8 @@ class Verifier:
         「查過」＝任何供應商寫過 Google 實價，或 Bright Data 拿過這趟的頁面（沒有直飛價時
         不會留下觀測，見 api_checks）。航線輪流取（每條先拿最便宜的），起點每小時換一條：
         額度比航線數少時（11 月每輪約 7 次、8 條線），排在後面的航線才不會整個月輪不到。
-        快取完全沒有資料的航線（KHH-NGO 這類）改查固定日期，讓它也有 Google 實價。
+        快取日期不到 ROUTE_MIN_TRIPS 趟的航線（高雄的冷門線）用固定日期補滿，排在快取
+        日期之後，讓它每天也有一批 Google 實價。
         """
         if not self._can_send():
             return
@@ -378,10 +384,13 @@ class Verifier:
             seen.add(key)
             queues[(c.origin, c.destination)].append((c.depart_date, c.return_date, c.carriers))
         for (o, d), q in queues.items():
-            if not q:
+            need = ROUTE_MIN_TRIPS - len(q)
+            if need > 0:
                 known = self.weekday_outcomes(o, d)
+                have = {(dep, ret) for dep, ret, _ in q}
                 q.extend((dep, ret, None) for dep, ret in
-                         anchor_trips(self.now, prefer=known.prefer, avoid=known.avoid))
+                         anchor_trips(self.now, need, prefer=known.prefer, avoid=known.avoid)
+                         if (dep, ret) not in have)
         order = list(queues)
         if order:
             k = int(self.now.timestamp() // 3600) % len(order)
