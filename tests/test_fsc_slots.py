@@ -854,7 +854,8 @@ def test_production_default_matches_legacy_now_semantics(tmp_path):
         "SELECT date('now','start of month','+1 month'),"
         " date('now','+21 days'), date('now','+90 days')").fetchone()
     inside = max(lo1, lo2)
-    _obs(store, "KHH", "NRT", inside, hi, 8000, _iso(1))
+    ret = conn.execute("SELECT date(?, '+5 days')", (inside,)).fetchone()[0]   # 看板只列 2–10 晚
+    _obs(store, "KHH", "NRT", inside, ret, 8000, _iso(1))
     rows = _auth_latest(conn, "KHH", "NRT")          # 不傳 as_of → 真實 UTC
     assert [r["depart_date"] for r in rows] == [inside]
 

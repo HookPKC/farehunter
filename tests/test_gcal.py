@@ -56,9 +56,10 @@ def test_ref_carriers_falls_back_to_route_common(tmp_path):
     db = tmp_path / "t.db"
     store = Store(str(db))
     # 快取只有較遠日期（>3 天差），但航線常見航空是 IT
-    store.record(Offer("KHH", "CTS", d_far, (nm.replace(day=28)).isoformat(), 12000,
+    # 回程日一律住 3 晚：看板只列 2–10 晚的行程（models.MIN/MAX_STAY_NIGHTS）
+    store.record(Offer("KHH", "CTS", d_far, (nm.replace(day=27) + dt.timedelta(days=3)).isoformat(), 12000,
                        "TWD", "IT", 0, "250", source="aviasales"))
-    store.record(Offer("KHH", "CTS", d_tgt, (nm.replace(day=20)).isoformat(), 10765,
+    store.record(Offer("KHH", "CTS", d_tgt, (nm.replace(day=25)).isoformat(), 10765,
                        "TWD", "", 0, "", source="google"))
     store.close()
     payload = export(str(db), str(tmp_path / "d.json"))

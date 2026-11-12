@@ -12,10 +12,10 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 try:                                    # works both as script and as package module
-    from farehunter.models import NEAR_TERM_DAYS
+    from farehunter.models import NEAR_TERM_DAYS, STAY_SQL
 except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from farehunter.models import NEAR_TERM_DAYS
+    from farehunter.models import NEAR_TERM_DAYS, STAY_SQL
 
 try:
     from farehunter.current_price import resolve_current_price
@@ -55,6 +55,7 @@ _AUTHORITATIVE_LATEST_SQL = """WITH ranked AS (
                                    observed_at DESC, id DESC) AS rk
                  FROM observations
                  WHERE origin=? AND destination=? AND fare_class='any' AND stops=0
+                   AND {stay}
                    AND depart_date >= date(?,'start of month','+1 month')
                    AND depart_date >= date(?,'+21 days')
                    AND depart_date <= date(?,'+{near_term_days} days'))
@@ -70,6 +71,7 @@ _AUTHORITATIVE_LATEST_SQL = """WITH ranked AS (
 # 的快取價,所以這裡純粹依 observed_at 取最新,再由 current_price 純函式判定
 # 狀態與 eligibility。兩份查詢共用同一組視窗條件,確保比較基礎一致。
 _CURRENT_WINDOW = """WHERE origin=? AND destination=? AND fare_class='any' AND stops=0
+                   AND {stay}
                    AND depart_date >= date('now','start of month','+1 month')
                    AND depart_date >= date('now','+21 days')
                    AND depart_date <= date('now','+{near_term_days} days')"""
@@ -100,14 +102,14 @@ _LATEST_GOOGLE_SQL = """WITH ranked AS (
 def latest_any(conn, o: str, d: str, near_term_days: int = NEAR_TERM_DAYS) -> list[dict]:
     """每個 depart_date 一筆最新觀測,不給任何來源優先權。"""
     sql = _LATEST_ANY_SQL.format(
-        window=_CURRENT_WINDOW.format(near_term_days=near_term_days))
+        window=_CURRENT_WINDOW.format(near_term_days=near_term_days, stay=STAY_SQL))
     return [dict(r) for r in conn.execute(sql, (o, d))]
 
 
 def latest_google(conn, o: str, d: str, near_term_days: int = NEAR_TERM_DAYS) -> list[dict]:
     """每個 depart_date 一筆最新 google 觀測(供衝突參考)。"""
     sql = _LATEST_GOOGLE_SQL.format(
-        window=_CURRENT_WINDOW.format(near_term_days=near_term_days))
+        window=_CURRENT_WINDOW.format(near_term_days=near_term_days, stay=STAY_SQL))
     return [dict(r) for r in conn.execute(sql, (o, d))]
 
 
@@ -148,7 +150,7 @@ def authoritative_latest(conn, o: str, d: str,
     production 行為與原本的 date('now') / datetime('now') 完全相同。
     """
     date_s, ts_s = _as_of_pair(as_of_date, as_of_ts)
-    sql = _AUTHORITATIVE_LATEST_SQL.format(near_term_days=int(near_term_days))
+    sql = _AUTHORITATIVE_LATEST_SQL.format(near_term_days=int(near_term_days), stay=STAY_SQL)
     return [dict(r) for r in conn.execute(sql, (ts_s, o, d, date_s, date_s, date_s))]
 
 
@@ -222,6 +224,8 @@ def build_usage(conn, now: datetime, quota_path: Path) -> dict:
         return {"ok": n, "credits_used": n * 10, "credits_limit": 1000}
 
     def _serpapi():
+        if not quota_path.exists():
+            return None                 # FSC 快照還沒跑過（或測試環境）：正常，不必警告
         q = json.loads(quota_path.read_text(encoding="utf-8"))
         return {"left": q["total_searches_left"], "limit": q["searches_per_month"],
                 "next_reset": q.get("next_reset_estimate"), "checked_at": q.get("checked_at")}
@@ -353,6 +357,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
                                    observed_at DESC, rowid DESC) AS rk
                  FROM observations
                  WHERE origin=? AND destination=? AND fare_class='any' AND stops=0
+                   AND """ + STAY_SQL + """
                    AND depart_date BETWEEN date('now') AND date('now','+330 days')),
                best_date AS (SELECT * FROM per_date WHERE rk=1),
                per_month AS (

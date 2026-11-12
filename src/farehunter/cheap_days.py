@@ -41,6 +41,8 @@ from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta, timezone
 from statistics import median
 
+from .models import STAY_SQL
+
 #: 與前後各幾天比較。刻意窄——開太寬會把淡旺季混在一起，
 #: 那正是 big_drop 原本拿全航線中位數當基準的錯誤。
 WINDOW_DAYS = 10
@@ -171,13 +173,16 @@ SELECT o.depart_date, o.price, o.observed_at, o.return_date, o.source, o.carrier
                MAX(observed_at) AS mx
           FROM observations
          WHERE origin=? AND destination=? AND fare_class='any'
-           AND observed_at >= ?
+           AND observed_at >= ? AND {stay}
          GROUP BY depart_date) t
     ON t.depart_date = o.depart_date
    AND o.observed_at = COALESCE(t.g, t.mx)
    AND (t.g IS NULL OR o.source = 'google')
- WHERE o.origin=? AND o.destination=? AND o.fare_class='any'
-"""
+ WHERE o.origin=? AND o.destination=? AND o.fare_class='any' AND {stay_o}
+""".format(stay=STAY_SQL,
+           stay_o=STAY_SQL.replace("return_date", "o.return_date")
+                          .replace("depart_date", "o.depart_date"))
+# ↑ 便宜日也只列住 MIN–MAX_STAY_NIGHTS 晚的行程（models.STAY_SQL）：比較的兩邊都是可用的行程
 
 
 def latest_prices_by_date(conn, origin: str, destination: str, *, since: str = ""

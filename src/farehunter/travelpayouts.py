@@ -17,7 +17,7 @@ from typing import Optional
 
 import requests
 
-from .models import Offer
+from .models import Offer, stay_ok
 
 # Full-service carriers (vs LCC) relevant to TW/JP/Asia routes
 FULL_SERVICE = {"CI","BR","JX","JL","NH","CX","OZ","KE","TG","SQ","MF","VN","PR",
@@ -100,7 +100,10 @@ class TravelpayoutsClient:
 def parse_offers(payload: dict, origin: str, destination: str,
                  currency: str = "TWD", max_stops: int | None = None) -> list[Offer]:
     """Flatten a prices_for_dates response; keep the cheapest fare per
-    departure date.
+    departure date — preferring trips whose stay is within the notify range
+    (models.MIN_STAY_NIGHTS–MAX_STAY_NIGHTS): a cheaper 30-night trip must not hide
+    a usable 5-night one. Out-of-range trips are kept only when nothing else exists
+    for that date, so the price history has no holes.
 
     Route identity (origin/destination) is stamped from the caller's config,
     NOT from the response: the API returns city codes (e.g. TYO) while config
@@ -131,7 +134,9 @@ def parse_offers(payload: dict, origin: str, destination: str,
             for fc in classes:
                 key = (depart_date, fc)
                 prev = best.get(key)
-                if prev is None or offer.price < prev.price:
+                rank = (not stay_ok(depart_date, return_date), offer.price)
+                if prev is None or rank < (not stay_ok(prev.depart_date, prev.return_date),
+                                           prev.price):
                     from dataclasses import replace
                     best[key] = replace(offer, fare_class=fc)
         except (KeyError, ValueError, TypeError) as exc:
