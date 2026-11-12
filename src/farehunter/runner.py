@@ -19,6 +19,7 @@ from .notify import notify, channels_configured, LineBudget
 from . import health
 from . import price_state
 from . import brightdata_flights as brightdata
+from .models import stay_ok
 
 log = logging.getLogger(__name__)
 
@@ -325,7 +326,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     store.record(offer)
                     summary["recorded"] += 1
                     route_recorded += 1
-                    if offer.stops == 0 and offer.return_date:
+                    in_range = stay_ok(offer.depart_date, offer.return_date)
+                    if offer.stops == 0 and offer.return_date and in_range:
                         sweep_candidates.append(offer)
 
                     # ---- evaluate 之前先解析價格狀態（零 API、只讀既有 DB）----
@@ -339,6 +341,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     verdict = judge(eval_offer)
                     if not pstate.eligible_for_alert:
                         continue          # candidate 過舊：不發主動通知
+                    if not in_range:
+                        continue          # 停留天數不在通知範圍（models.MIN/MAX_STAY_NIGHTS）
                     csig = price_state.carrier_signature(offer.carriers)
                     if not verdict.is_deal or _already_alerted(store, offer, pstate, verdict, csig):
                         continue

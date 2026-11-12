@@ -22,7 +22,7 @@ from .normalize import from_observation, is_valid
 from .ranking import rank, BALANCED
 from .reliability import ReliabilityStore
 from .decision import RouteContext
-from .models import NEAR_TERM_DAYS
+from .models import NEAR_TERM_DAYS, STAY_SQL
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ WITH ranked AS (
                     observed_at DESC, id DESC) AS rk
   FROM observations
   WHERE fare_class='any' AND stops=0
+    AND {stay}
     AND depart_date >= date('now','start of month','+1 month')
     AND depart_date >= date('now','+21 days')
     AND depart_date <= date('now','+{near} days'))
@@ -52,7 +53,7 @@ ORDER BY origin, destination, depart_date
 def _select_sql(conn) -> str:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(observations)")}
     prov = "provider," if "provider" in cols else "NULL AS provider,"
-    return _SELECT_TMPL.format(prov=prov, near=NEAR_TERM_DAYS)
+    return _SELECT_TMPL.format(prov=prov, near=NEAR_TERM_DAYS, stay=STAY_SQL)
 
 
 def _route_context(conn, origin, destination, reliability_of, now=None) -> RouteContext:

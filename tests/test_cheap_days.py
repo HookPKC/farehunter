@@ -301,9 +301,9 @@ def test_a_fresh_google_price_wins_over_a_newer_cache_row():
     from farehunter.cheap_days import latest_prices_by_date
     conn = sqlite3.connect(":memory:")
     _seed(conn, [
-        ("TPE", "NRT", "2026-12-01", 7866.0, "2026-11-10T12:17:40+00:00", "2026-12-17"),
-        ("TPE", "NRT", "2026-12-01", 8803.0, "2026-11-10T12:17:33+00:00", "2026-12-17", "google"),
-        ("TPE", "NRT", "2026-12-01", 9100.0, "2026-11-10T12:17:33+00:00", "2026-12-17", "google"),
+        ("TPE", "NRT", "2026-12-01", 7866.0, "2026-11-10T12:17:40+00:00", "2026-12-06"),
+        ("TPE", "NRT", "2026-12-01", 8803.0, "2026-11-10T12:17:33+00:00", "2026-12-06", "google"),
+        ("TPE", "NRT", "2026-12-01", 9100.0, "2026-11-10T12:17:33+00:00", "2026-12-06", "google"),
         ("TPE", "NRT", "2026-12-02", 7000.0, "2026-11-10T12:17:40+00:00", "2026-12-08"),
         ("TPE", "NRT", "2026-12-02", 9999.0, "2026-11-08T12:17:33+00:00", "2026-12-08", "google"),
     ])
@@ -313,4 +313,19 @@ def test_a_fresh_google_price_wins_over_a_newer_cache_row():
     assert (prices["2026-12-01"], src["2026-12-01"], cars["2026-12-01"]) == (8803.0, "google", "TR")
     assert (prices["2026-12-02"], src["2026-12-02"]) == (7000.0, "aviasales")   # 實價超過 24 小時
     assert "2026-12-02" not in cars
+    conn.close()
+
+
+def test_trips_outside_the_stay_range_are_not_listed():
+    """便宜日只比 2–10 晚的行程：30 晚的低價不能把某一天變成「特別便宜」。"""
+    import sqlite3
+    from farehunter.cheap_days import latest_prices_by_date
+    conn = sqlite3.connect(":memory:")
+    _seed(conn, [
+        ("KHH", "OKA", "2026-12-01", 5000.0, "2026-11-10T12:00:00+00:00", "2026-12-31"),   # 30 晚
+        ("KHH", "OKA", "2026-12-02", 7000.0, "2026-11-10T12:00:00+00:00", "2026-12-07"),
+        ("KHH", "OKA", "2026-12-03", 5200.0, "2026-11-10T12:00:00+00:00", "2026-12-04"),   # 1 晚
+    ])
+    prices, *_ = latest_prices_by_date(conn, "KHH", "OKA", since="2026-11-09T13:00:00+00:00")
+    assert prices == {"2026-12-02": 7000.0}
     conn.close()
