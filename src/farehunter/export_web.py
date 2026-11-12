@@ -321,21 +321,28 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
                FROM observations
                WHERE origin=? AND destination=? AND depart_date >= date('now')
                  AND fare_class='full'
+                 AND observed_at >= datetime('now', '-7 days') AND """ + STAY_SQL + """
                GROUP BY depart_date""", (o, d))}
+        # ↑ 只用 7 天內、住 2–10 晚的：原本沒有時間上限，幾個月前的傳統航空價也會掛在格子上
         for item in latest:
             f = full.get(item["depart_date"])
             if f:
                 item["full_price"] = f["price"]
                 item["full_carriers"] = f["carriers"]
 
-        # freshest full-service snapshot (last 7 days), independent of calendar match
+        # 傳統航空目前最低：每一趟（去回日）取 7 天內最新的一筆，再挑最便宜的。原本是
+        # 「7 天內出現過的最低價」，同一趟後來漲價了也照樣端出舊的低價。只看 2–10 晚。
         fsc_latest = conn.execute(
-            """SELECT depart_date, return_date, price, carriers, observed_at
-               FROM observations
-               WHERE origin=? AND destination=? AND fare_class='full'
-                 AND depart_date >= date('now')
-                 AND observed_at >= datetime('now', '-7 days')
-               ORDER BY price ASC LIMIT 1""", (o, d)).fetchone()
+            """WITH latest AS (
+                 SELECT depart_date, return_date, price, carriers, observed_at,
+                        ROW_NUMBER() OVER (PARTITION BY depart_date, return_date
+                                           ORDER BY observed_at DESC, rowid DESC) AS rk
+                 FROM observations
+                 WHERE origin=? AND destination=? AND fare_class='full'
+                   AND depart_date >= date('now')
+                   AND observed_at >= datetime('now', '-7 days') AND """ + STAY_SQL + """)
+               SELECT depart_date, return_date, price, carriers, observed_at
+               FROM latest WHERE rk=1 ORDER BY price ASC LIMIT 1""", (o, d)).fetchone()
 
         # trend: daily minimum across all departure dates
         history = [dict(r) for r in conn.execute(

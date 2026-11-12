@@ -23,7 +23,7 @@ import math
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import NamedTuple
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
@@ -32,6 +32,7 @@ import requests
 
 from .models import Offer
 from .price_state import carrier_signature
+from .travelpayouts import FULL_SERVICE
 
 log = logging.getLogger(__name__)
 
@@ -181,6 +182,12 @@ def select(origin: str, dest: str, depart: str, ret: str, itineraries: list[Itin
     寫入：直飛最低價（代碼對得上的）；若 want_carriers 的直飛最低價是另一筆，也寫入——
     同航程比對要求航空公司相同（price_state.same_itinerary），只寫全場最低會讓
     其他航空公司的快取價永遠驗證不到。
+
+    另外寫一筆**傳統航空**（非廉航，travelpayouts.FULL_SERVICE）的直飛最低價，
+    fare_class='full'（跟 Aviasales、SerpAPI 的 full 列同一個語意）。頁面本來就列出所有
+    航空公司，不多花額度；2026-11-12 使用者要另一組傳統航空的低價通知，而快取裡的
+    傳統航空價格 30 天只有 2–12 趟，定不出門檻——先靠這裡累積。full 列跟 'any' 列
+    完全分開（統計、看板主價、便宜日都只讀 'any'）。
     """
     want = carrier_signature(want_carriers)
 
@@ -200,7 +207,16 @@ def select(origin: str, dest: str, depart: str, ret: str, itineraries: list[Itin
         chosen.append(match)
     offers = [offer(it) for it in chosen]
     matched = next((o for o in offers if want and carrier_signature(o.carriers) == want), None)
+    full = next((it for it in direct if _full_service(it.carriers)), None)
+    if full is not None:
+        offers.append(replace(offer(full), fare_class="full"))
     return offers, matched
+
+
+def _full_service(carriers: str | None) -> bool:
+    """每一家都是傳統航空（聯營、共掛班號時要全部都是，跟 SerpAPI 的 parse_full_service 一致）。"""
+    codes = [c for c in (carriers or "").split(",") if c]
+    return bool(codes) and all(c in FULL_SERVICE for c in codes)
 
 
 def month_start(now: datetime) -> datetime:
