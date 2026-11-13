@@ -18,10 +18,7 @@ import urllib.parse
 import requests
 
 BASE = "https://api.chocodata.com/api/v1"
-CANDIDATES = [
-    "google/flights", "google_flights/search", "google-flights/search",
-    "googleflights/search", "google/flights_search", "google_flights/flights",
-]
+CANDIDATES = ["google/flights"]  # 第一輪 6 個都 404（不扣點）；只留一個拿 available 清單
 KEY = os.environ.get("CHOCODATA_API_KEY", "").strip()
 
 
@@ -86,6 +83,14 @@ def report(path, status, body, hdr, full=False):
     if body is None:
         return
     text = red(json.dumps(body, ensure_ascii=False))
+    avail = body.get("available") if isinstance(body, dict) else None
+    if isinstance(avail, list):   # unknown_target：列出全部可用端點裡跟機票／旅遊有關的
+        words = ("google", "flight", "air", "travel", "trip", "kayak", "skyscanner", "expedia",
+                 "kiwi", "momondo", "booking", "priceline", "hopper", "fare", "agoda")
+        rel = [a for a in avail if any(w in str(a).lower() for w in words)]
+        print(f"  {body.get('error')}：可用端點共 {len(avail)} 個；相關的 {len(rel)} 個：")
+        print("   ", ", ".join(map(str, rel)))
+        return
     if status != 200 or not full:
         print("  回應（前 1500 字）：", text[:1500])
         return
