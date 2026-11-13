@@ -74,6 +74,8 @@ jobs:
           # BRIGHTDATA_ZONE 沒設時用 mcp_unlocker
           BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
           BRIGHTDATA_ZONE: ${{ secrets.BRIGHTDATA_ZONE }}
+          # ChocoData（ADR 0005）：一次性約 950 頁，只補冷門線的 Google 實價，用完自動停。沒設就跳過
+          CHOCODATA_API_KEY: ${{ secrets.CHOCODATA_API_KEY }}
           FAREHUNTER_FORCE: ${{ inputs.force && '1' || '' }}
         run: python run.py
 

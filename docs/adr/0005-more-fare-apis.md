@@ -1,6 +1,6 @@
 # ADR 0005：第三方「更多機票 API」比較表的對照——ChocoData 經通用擷取可補 Google 實價
 
-- 狀態：**評估完成**（2026-11-13）；ChocoData 沒有專用機票端點，但通用擷取 `universal.get` 抓 Google Flights **4/4 與 Bright Data 一致**（見文末）——**可用，接入另案提案**
+- 狀態：**評估完成**（2026-11-13）；ChocoData 沒有專用機票端點，但通用擷取 `universal.get` 抓 Google Flights **4/4 與 Bright Data 一致**——**已接入，短期補冷門線**（見文末「接入」）
 - 輸入：使用者提供的外部調研比較表「FareHunter 更多機票 API」（2026-11-13，Muse 頁面，
   AI 產生、未經驗證）。本 ADR 只記對照結論，不轉載全文。
 - 相關：ADR 0001（SerpAPI deals）、ADR 0003（13 種免費來源實測、fli 觀察期）、
@@ -139,3 +139,23 @@ Bright Data。
 結論：ChocoData 等於一個**小號的 Bright Data**（同一個網址、同一個解析器、同一種 google 價格
 語意），每月約多 1,000 頁，可以專門分給冷門線巡檢。接入方式（配速、帳本 provider、只跑冷門線）
 另案提案，不在本 ADR 決定。探測腳本與 workflow 已刪除（git 歷史 #27/#28/#30/#31）。
+
+## 2026-11-13 接入：一次性額度，短期補冷門線
+
+後台 Billing 的方案卡寫「1,000 requests (one-time)」、「Forever free on signup」：免費點數是
+**註冊時一次性**的（同頁「Credits granted this month 5,000」應是註冊當月的紀錄；12/1 看餘額有沒有
+回到 5,000 即可確認）。所以不做長期整合，只用這批點數把冷門線的 Google 實價補一段時間，給 NGO／CTS
+門檻重算與傳統航空門檻用。
+
+- 實作：`src/farehunter/chocodata_flights.py`（`ColdSweeper`）；`runner.py` 在 Bright Data 巡檢
+  **之後**呼叫（不重查它這輪剛查過的行程；Aviasales 全滅的輪次不跑，帳本不會被 commit）；
+  `monitor.yml` 加 secret `CHOCODATA_API_KEY`。
+- 只查 `COLD_ROUTES`＝KHH-CTS、KHH-NGO、KHH-FUK、KHH-OKA。候選＝本輪快取最便宜的直飛來回，
+  再用 `anchor_trips` 補到 12 趟；固定日期往後錯開 4 天，跟 Bright Data 的日子交錯（不錯開時，
+  用正式資料模擬一天只有 14 趟沒被「24 小時內查過」擋掉，錯開後 36 趟）。
+- 額度：每輪 2 頁、每天 30 頁、累計 950 頁（`api_usage` provider='chocodata'），約 32 天用完；
+  ChocoData 回點數不足（402 或錯誤碼含 credit／insufficient／quota／balance）本輪立刻停。
+- 寫入：沿用 Bright Data 的 `parse()`／`select()`，provider 改成 'chocodata'、source 仍是
+  'google'；含傳統航空那筆（fare_class='full'）。排名的可靠度與新鮮度都依 source 查表，不受影響。
+- 金鑰在網址查詢參數：連線錯誤只留例外類型（`from None`），HTTP 錯誤訊息遮掉金鑰的原文與三種
+  網址編碼；預期外的例外只記類型。測試鎖住這幾點。
