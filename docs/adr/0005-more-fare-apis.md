@@ -1,6 +1,6 @@
-# ADR 0005：第三方「更多機票 API」比較表的對照——ChocoData 實測沒有機票端點
+# ADR 0005：第三方「更多機票 API」比較表的對照——ChocoData 經通用擷取可補 Google 實價
 
-- 狀態：**評估完成**（2026-11-13）；ChocoData **實測後不採用**（沒有 Google Flights 端點，見文末）
+- 狀態：**評估完成**（2026-11-13）；ChocoData 沒有專用機票端點，但通用擷取 `universal.get` 抓 Google Flights **4/4 與 Bright Data 一致**（見文末）——**可用，接入另案提案**
 - 輸入：使用者提供的外部調研比較表「FareHunter 更多機票 API」（2026-11-13，Muse 頁面，
   AI 產生、未經驗證）。本 ADR 只記對照結論，不轉載全文。
 - 相關：ADR 0001（SerpAPI deals）、ADR 0003（13 種免費來源實測、fli 觀察期）、
@@ -110,6 +110,32 @@ Bright Data。
   形狀，不是出發地＋目的地的航班搜尋）。
 - 404 與 400 的回應 header 都是 `Spb-Cost: 0`：打錯路徑、缺參數不扣點；三輪探測共花 0 點。
 
-結論：比較表「ChocoData 有 Google Flights 端點、每月 1,000 次」的說法不成立（至少 2026-11-13
-的端點清單沒有）。不再追。若要補冷門線 Google 實價，下一個候選是 google-flights2（RapidAPI，
-每月免費 150 次、CalendarGrid），一樣先用不扣點的方式確認端點與參數再實測。
+當時的結論「不採用」只看了專用端點，**漏查通用擷取端點**，見下一節。
+
+## 2026-11-13 補查：通用擷取 `universal.get` 可以抓 Google Flights
+
+使用者問「完全沒有機會嗎」，補查（run 43386107658，0 點）：把 497 個端點全部列出，對疑似通用
+擷取與旅遊 search 端點各打一次不帶參數的請求。`agoda／expedia／kayak／priceline.search` 必填都是
+`location`（住宿）；**`universal.get` 唯一必填 `url`**——給網址抓頁面。
+
+用它抓 Bright Data 同一個網址（`brightdata_flights.search_url()`），用同一個 `parse()` 解析
+（run 43386372844、43386513149、43386517867、43386521548）：
+
+| 行程 | ChocoData 直飛最低 | Bright Data（同一趟） | 差 |
+|---|---|---|---|
+| KHH-NGO 2026-12-07～12-12 | 8,310 IT | 8,310 IT（06:17Z） | 0 |
+| KHH-CTS 2027-01-11～01-16 | 28,212 SL | 28,189 SL（06:17Z） | +0.08% |
+| KHH-NGO 2027-01-13～01-18 | 16,710 IT | 16,710 IT（04:17Z） | 0 |
+| KHH-CTS 2027-01-02～01-07 | 27,311 IT | 27,311 IT（04:17Z） | 0 |
+
+- **4/4 在 ±2% 內**（ADR 0003 標準），航空公司也一致；ChocoData 抓的時間是 07:31–07:33Z，
+  比 Bright Data 晚 1–3 小時，所以 CTS 那筆 +23 元合理。
+- 回應 JSON：`url`、`content_type: html`、`html`（約 2.05 MB，已是 JS 渲染後的頁面，含
+  10–14 個 `round trip total` aria-label）。不用加 `render_js` 之類的參數。
+- **每次 `Spb-Cost: 5`**，約 2–8 秒；`X-Concurrency-Limit: 10`。四次共 20 點。
+- 「每月 5,000 credits＝1,000 次」的**次數換算成立**；「每月重置還是一次性」API 回應看不出來，
+  要看 ChocoData 後台（剩餘點數與重置日）。
+
+結論：ChocoData 等於一個**小號的 Bright Data**（同一個網址、同一個解析器、同一種 google 價格
+語意），每月約多 1,000 頁，可以專門分給冷門線巡檢。接入方式（配速、帳本 provider、只跑冷門線）
+另案提案，不在本 ADR 決定。探測腳本與 workflow 已刪除（git 歷史 #27/#28/#30/#31）。

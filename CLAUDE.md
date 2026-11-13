@@ -26,4 +26,4 @@ Single-context：根目錄一份 `CONTEXT.md` + `docs/adr/`。See `docs/agents/d
 - `docs/adr/0002-prices-db-archive.md` — prices.db 依出發日封存到 `archive/`（防 GitHub 100 MiB 單檔上限）
 - `docs/adr/0003-fli-google-calendar.md` — 13 種免費機票來源實測比較；fli（Google 日曆）觀察期與第二階段標準
 - `docs/adr/0004-brightdata-google-prices.md` — Bright Data 免費額度補 Google 實價（警報前驗證＋每小時巡檢、配速、帳本）
-- `docs/adr/0005-more-fare-apis.md` — 外部「更多機票 API」比較表的對照；ChocoData 實測沒有機票端點，下一個候選 google-flights2
+- `docs/adr/0005-more-fare-apis.md` — 外部「更多機票 API」比較表的對照；ChocoData 經通用擷取 universal.get 抓 Google Flights 與 Bright Data 4/4 一致（接入另案）
