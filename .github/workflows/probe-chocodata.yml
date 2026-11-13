@@ -1,0 +1,44 @@
+name: Probe ChocoData
+
+# 一次性探測（ADR 0005）：ChocoData 的 Google Flights 端點格式、扣點、有沒有航空公司。
+# 只能手動觸發；唯讀、不 commit、不碰 prices.db、不觸發 Deploy Pages。
+# 金鑰在網址查詢參數裡，程式不印網址與連線錯誤原文，輸出一律遮罩（scripts/probe_chocodata.py）。
+# 探測結束、結論寫回 ADR 0005 後就刪掉這支。
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "discover（找路徑）或 search（真的查一次）"
+        default: discover
+        type: choice
+        options: [discover, search]
+      path:
+        description: "search 模式：端點路徑，例如 google/flights"
+        default: ""
+      params:
+        description: "search 模式：查詢參數 JSON"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests
+      - name: Probe
+        env:
+          CHOCODATA_API_KEY: ${{ secrets.CHOCODATA_API_KEY }}
+          MODE: ${{ inputs.mode }}
+          CHOCO_PATH: ${{ inputs.path }}
+          CHOCO_PARAMS: ${{ inputs.params }}
+        run: python scripts/probe_chocodata.py
