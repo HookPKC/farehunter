@@ -6,6 +6,7 @@
 
 用法（Actions → Probe ChocoData → Run workflow）：
 - mode=discover：每個候選路徑只打一次、不帶航班參數，看哪個不是 404，錯誤訊息通常會列出必填參數。
+- mode=flights：用 universal.get 抓一頁 Google Flights（Bright Data 同一個網址），用同一個解析器讀價格。
 - mode=search：指定 path 與 params（JSON），打一次真的查詢，印出回傳結構與價格／航空公司欄位。
 """
 from __future__ import annotations
@@ -123,6 +124,54 @@ def report(path, status, body, hdr, full=False):
     print("   ", red(json.dumps(first, ensure_ascii=False))[:3000])
 
 
+def flights() -> int:
+    """universal.get 抓一頁 Google Flights，用 Bright Data 同一套網址與解析器（ADR 0004）。"""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+    from farehunter.brightdata_flights import parse, search_url
+    o, d, dep, ret = (os.environ.get(k, "").strip() for k in ("ORIGIN", "DEST", "DEPART", "RET"))
+    try:
+        extra = json.loads(os.environ.get("CHOCO_PARAMS") or "{}")
+    except ValueError:
+        print("params 不是合法 JSON")
+        return 1
+    url = search_url(o, d, dep, ret)
+    print(f"行程 {o}-{d} {dep}~{ret}；額外參數 {json.dumps(extra, ensure_ascii=False)}")
+    status, body, hdr = call("universal/get", {"url": url, **extra})
+    print(f"HTTP {status}；額度相關 header：{red(json.dumps(hdr, ensure_ascii=False))}")
+    if not isinstance(body, dict):
+        return 1
+    if status != 200:
+        print("回應：", red(json.dumps(body, ensure_ascii=False))[:1500])
+        return 1
+    strings = []
+
+    def walk(o_, trail=""):
+        if isinstance(o_, dict):
+            for k, v in o_.items():
+                walk(v, f"{trail}.{k}" if trail else k)
+        elif isinstance(o_, list):
+            for i, v in enumerate(o_[:5]):
+                walk(v, f"{trail}[{i}]")
+        elif isinstance(o_, str):
+            strings.append((len(o_), trail, o_))
+    walk(body)
+    strings.sort(reverse=True)
+    print("回應結構：\n" + red(shape(body, max_depth=2)))
+    if not strings:
+        return 1
+    n, where, page = strings[0]
+    print(f"最長字串欄位 {where}：{n:,} 字元；含 aria-label {page.count('aria-label')} 個；"
+          f"含 'round trip total' {page.count('round trip total')} 個")
+    its = parse(page)
+    print(f"解析出 {len(its)} 個行程")
+    nonstop = sorted((i for i in its if i.nonstop), key=lambda i: i.price)
+    for i in nonstop[:5]:
+        print(f"  直飛 NT${i.price:,.0f}  {i.carriers}")
+    if not its:
+        print("  頁面開頭（遮罩後前 800 字）：", red(page[:800]))
+    return 0 if its else 1
+
+
 def main() -> int:
     if not KEY:
         print("沒有 CHOCODATA_API_KEY（secret 名稱要一模一樣）")
@@ -159,6 +208,8 @@ def main() -> int:
                 print("  → 這個端點不帶參數就執行了（可能扣點），停止後續檢查")
                 break
         return 0
+    if mode == "flights":
+        return flights()
     path = os.environ.get("CHOCO_PATH", "").strip().strip("/")
     try:
         params = json.loads(os.environ.get("CHOCO_PARAMS") or "{}")

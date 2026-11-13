@@ -12,12 +12,15 @@ on:
         description: "discover（找路徑）或 search（真的查一次）"
         default: discover
         type: choice
-        options: [discover, search]
+        options: [discover, search, flights]
       path:
         description: "search 模式：端點路徑，例如 google/flights"
         default: ""
       params:
-        description: "search 模式：查詢參數 JSON"
+        description: "search／flights 模式：查詢參數 JSON（flights 為額外參數，如 render_js）"
+        default: ""
+      trip:
+        description: "flights 模式：ORIGIN DEST DEPART RET，空白分隔"
         default: ""
 
 permissions:
@@ -34,11 +37,15 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: pip install -q requests
+      - run: pip install -q -r requirements.txt
       - name: Probe
         env:
           CHOCODATA_API_KEY: ${{ secrets.CHOCODATA_API_KEY }}
           MODE: ${{ inputs.mode }}
           CHOCO_PATH: ${{ inputs.path }}
           CHOCO_PARAMS: ${{ inputs.params }}
-        run: python scripts/probe_chocodata.py
+          TRIP: ${{ inputs.trip }}
+        run: |
+          read -r ORIGIN DEST DEPART RET <<< "$TRIP"
+          export ORIGIN DEST DEPART RET
+          python scripts/probe_chocodata.py
