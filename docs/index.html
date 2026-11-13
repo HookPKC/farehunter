@@ -135,6 +135,19 @@ h2 .count{font-family:var(--mono);color:var(--ink2);letter-spacing:0}
   font-family:var(--mono);font-size:var(--fs-s);border-bottom:1px solid var(--line1);
   color:var(--ink2);text-decoration:none;transition:background var(--t-fast)}
 .cheap-row:last-child{border-bottom:0}
+.chip .hol{font-size:var(--fs-xs);color:var(--ink2);margin-top:2px}
+.mcell .mhol{display:block;font-size:10px;color:var(--ink3)}
+.hol-list{border:1px solid var(--line1);border-radius:var(--r-m);overflow:hidden;margin-bottom:var(--s5)}
+.hol-block{padding:var(--s3) var(--s4);border-bottom:1px solid var(--line1)}
+.hol-block:last-child{border-bottom:0}
+.hol-head{color:var(--ink1);margin-bottom:var(--s2)}
+.hol-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--s3);padding:2px 0;color:var(--ink2);text-decoration:none}
+.hol-row:hover{background:var(--bg2)}
+.hol-row.stale{opacity:.55}
+.hol-row .rt{color:var(--ink1);font-weight:700;min-width:88px}
+.hol-row .pr{font-weight:700;font-variant-numeric:tabular-nums}
+.hol-row .lv,.hol-row .age{color:var(--ink3);font-size:var(--fs-xs)}
+.hol-none{color:var(--ink3);font-size:var(--fs-xs)}
 .cheap-row:hover{background:var(--bg2)}
 /* ★ 用 --pos（好消息），不用琥珀——token 註解明訂 amber 只保留給票價數字 */
 .cheap-row .star{width:1em;color:var(--pos);flex:none}
@@ -383,6 +396,14 @@ footer{margin-top:var(--s7);font-size:var(--fs-xs);color:var(--ink3);
   <div class="skel" style="height:40px;border-radius:0"></div>
 </div>
 
+<h2 id="h-hol">接下來的連假 <span class="count" id="hol-count"></span></h2>
+<details class="howto-more"><summary>怎麼算的？</summary>
+<p class="howto">週末加國定假日、補假，連續 3 天以上不用上班就算連假（人事行政總處辦公日曆表）。
+  每條航線列出至少跟連假重疊一半天數的直飛來回裡最便宜的一趟，「請假 N 天」是出發到回程之間的上班日數。
+  標 ≈ 的是快取估價，點進去以 Google 的實際報價為準。</p>
+</details>
+<div class="hol-list" id="hol-list" aria-labelledby="h-hol"></div>
+
 <h2 id="h-routes">監控航線 <span class="count" id="route-count"></span>
   <button id="navsort" class="sortbtn" type="button" hidden
     aria-label="切換下方導覽膠囊排序方式">排序：推薦序</button></h2>
@@ -526,7 +547,10 @@ function monthlyStrip(r){
       aria-label="${x.ym} ${est?"快取估算 約":"實價"} ${fmt(est?RND100(x.price):x.price)} 元${al?(" "+al):""}${ago?`，${ago}的價格`:""}">
       <span class="mm">${t}</span>
       <span class="mp">${est?"≈":""}${fmt(est?RND100(x.price):x.price)}</span>
-      ${al?`<span class="mal">${al}</span>`:""}${ago?`<span class="mago">${ago}</span>`:""}</a>`;
+      ${al?`<span class="mal">${al}</span>`:""}${ago?`<span class="mago">${ago}</span>`:""}${(()=>{
+        const n = leaveDays(HOL, x.depart_date, x.return_date), b = holidayOf(HOL, x.depart_date, x.return_date);
+        return (b || n != null) ? `<span class="mhol">${b?"🎌":""}${n!=null?`請假${n}天`:""}</span>` : "";
+      })()}</a>`;
   }).join("");
   let cap;
   if(loReal != null){
@@ -627,7 +651,7 @@ function recommendStrip(r){
       <div class="pick-top"><span class="pick-tag${top ? "" : " sub"}">${tag}</span>
         <span class="conf ${ccls}">${clab}</span></div>
       <div class="pick-why">${reason}</div>
-      <div class="pick-sub">${dd} 出發 · ${al}${pprice} <span class="pick-go">前往 Google Flights 比價 →</span></div>
+      <div class="pick-sub">${dd} 出發 · ${al}${pprice}${holNote(b.depart_date, b.return_date)?` · ${holNote(b.depart_date, b.return_date)}`:""} <span class="pick-go">前往 Google Flights 比價 →</span></div>
     </a>
     <div class="sec-tags">${sec}</div>
     ${detailBlock(fr)}
@@ -672,6 +696,55 @@ const ageDays = iso => { const t = Date.parse(iso || ""); return isFinite(t) ? (
 const isStale = x => ageDays(x.observed_at) > OLD_FADE_DAYS;
 const agoTag = x => { const a = ageDays(x.observed_at); return a > OLD_NOTE_DAYS ? `${Math.floor(a)}天前` : ""; };
 const stayNights = (dep, ret) => ret ? Math.round((new Date(ret) - new Date(dep)) / 864e5) : null;
+// ==== HOLIDAYS-JS BEGIN（tests/test_holidays.py 會抽出這段用 node 跟 Python 版逐筆比對）====
+// 連假日曆（data.holidays，來源：人事行政總處辦公日曆表）。週六日放假，除非是補班日；
+// 請假天數＝出發到回程（含頭尾）的上班日數；資料沒涵蓋的年份回 null，不猜。
+function holCal(h){
+  if(!h || !Array.isArray(h.years) || !h.years.length) return null;
+  return {years:new Set(h.years), off:new Set(h.off||[]), work:new Set(h.workdays||[]),
+          blocks:Array.isArray(h.upcoming) ? h.upcoming : []};
+}
+function isoAdd(ds, n){ const d = new Date(ds+"T00:00:00Z"); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
+function holIsOff(c, ds){
+  if(!c.years.has(+ds.slice(0,4))) return null;
+  if(c.work.has(ds)) return false;
+  if(c.off.has(ds)) return true;
+  const w = new Date(ds+"T00:00:00Z").getUTCDay();
+  return w === 0 || w === 6;
+}
+function leaveDays(c, dep, ret){
+  if(!c || !dep || !ret) return null;
+  dep = dep.slice(0,10); ret = ret.slice(0,10);
+  if(ret < dep || !c.years.has(+dep.slice(0,4)) || !c.years.has(+ret.slice(0,4))) return null;
+  let n = 0;
+  for(let d = dep; d <= ret; d = isoAdd(d,1)) n += holIsOff(c,d) ? 0 : 1;
+  return n;
+}
+function overlapDays(dep, ret, b){
+  const a = dep.slice(0,10) > b.start ? dep.slice(0,10) : b.start;
+  const z = (ret||dep).slice(0,10) < b.end ? (ret||dep).slice(0,10) : b.end;
+  return z < a ? 0 : Math.round((Date.parse(z) - Date.parse(a)) / 864e5) + 1;
+}
+// 這趟「利用」的連假：至少重疊連假一半天數（跟 export_web.build_holidays 同一條規則）
+function holidayOf(c, dep, ret){
+  if(!c || !dep) return null;
+  let best = null, ov = 0;
+  for(const b of c.blocks){
+    const o = overlapDays(dep, ret, b);
+    if(o >= Math.ceil(b.days/2) && o > ov){ best = b; ov = o; }
+  }
+  return best;
+}
+// ==== HOLIDAYS-JS END ====
+let HOL = null;
+// 格子上的小字：「🎌春節・請假 1 天」；沒有資料時回空字串
+function holNote(dep, ret){
+  const n = leaveDays(HOL, dep, ret), b = holidayOf(HOL, dep, ret);
+  const parts = [];
+  if(b) parts.push(`🎌${b.name}`);
+  if(n != null) parts.push(n === 0 ? "不用請假" : `請假 ${n} 天`);
+  return parts.join("・");
+}
 const FRESH_NOTE_MIN = 90, FRESH_WARN_MIN = 180;
 let FRESH_GEN = null, FRESH_ENV = null, FRESH_TIMER = null;
 function renderFreshness(){
@@ -737,6 +810,7 @@ function currentOf(r){
   return {curOffer, cur, curEst};
 }
 function render(data){
+  HOL = holCal(data.holidays);
   // 首頁顯示層排序（僅影響本頁卡片與導覽膠囊順序；資料檔/引擎/通知不動）：
   // KHH 東京→大阪→名古屋 置頂；其餘 KHH 維持原相對順序；KHH-CTS 置底於 KHH 群；TPE 全部最後。
   const ROUTE_PRIORITY = ["KHH-NRT","KHH-HND","KHH-KIX","KHH-ITM","KHH-NGO"];
@@ -783,7 +857,7 @@ function render(data){
     return `<a class="alert-row" href="#${a.origin}-${a.destination}">
         <span class="rt">${a.origin}→${a.destination}</span>
         <span class="pr">${priceDisp(a.price, src)}</span>
-        <span class="dt">${a.depart_date.slice(5).replace("-","/")} 出發${nights ? ` · ${nights} 天來回` : ""}</span>
+        <span class="dt">${a.depart_date.slice(5).replace("-","/")} 出發${nights ? ` · ${nights} 天來回` : ""}${holNote(a.depart_date, a.return_date) ? ` · ${holNote(a.depart_date, a.return_date)}` : ""}</span>
         <span class="why">${REASONS[a.reason]||a.reason} · ${tag} · ${twDate(a.sent_at.replace(" ", "T") + "Z")}</span></a>`;
   };
   $("alert-count").textContent = alerts.length ? `· ${alerts.length}` : "";
@@ -824,6 +898,26 @@ function render(data){
     : `<div class="empty"><b>目前沒有明顯比周圍便宜的日期。</b><br>
        需要該出發日與前後 10 天有同時期的觀測才能比較；薄航線的資料較稀疏，
        累積幾輪後才會出現。</div>`;
+
+  // 接下來的連假：舊版 data.json 沒有 holidays 時整塊隱藏
+  const hol = (data.holidays && Array.isArray(data.holidays.upcoming)) ? data.holidays.upcoming : [];
+  $("h-hol").hidden = $("hol-list").hidden = !hol.length;
+  $("h-hol").nextElementSibling.hidden = !hol.length;
+  $("hol-count").textContent = hol.length ? `· ${hol.length}` : "";
+  const md = ds => `${+ds.slice(5,7)}/${+ds.slice(8,10)}${weekday(ds)}`;
+  $("hol-list").innerHTML = hol.map(b=>{
+    const rows = (b.routes||[]).slice(0,3).map(x=>{
+      const ago = agoTag(x), n = x.leave_days;
+      return `<a class="hol-row${isStale(x)?" stale":""}" href="${gfLink(x.origin,x.destination,x.depart_date,x.return_date)}"
+          target="_blank" rel="noopener">
+        <span class="rt">${x.origin}→${x.destination}</span>
+        <span class="pr">${priceDisp(x.price, x.source)}</span>
+        <span class="dd">${x.depart_date.slice(5).replace("-","/")}–${x.return_date.slice(5).replace("-","/")}</span>
+        <span class="lv">${n==null?"":n===0?"不用請假":`請假 ${n} 天`}</span>${ago?`<span class="age">${ago}</span>`:""}</a>`;
+    }).join("");
+    return `<div class="hol-block"><div class="hol-head"><b>🎌 ${b.name}</b> ${md(b.start)}–${md(b.end)} · ${b.days} 天</div>
+      ${rows || `<div class="hol-none">這段期間還沒有直飛來回的價格</div>`}</div>`;
+  }).join("");
 
   $("route-count").textContent = `· ${data.routes.length}`;
   if(!data.routes.length){
@@ -904,12 +998,13 @@ function render(data){
           : alFull((x.carriers||"").split(",")[0]);
         const nights = stayNights(x.depart_date, x.return_date);
         return `<a class="chip ${cls} ${cest?'cest':''}" target="_blank" rel="noopener"
-          aria-label="${x.depart_date} 週${WD[dt.getDay()]}${nights?` ${nights}天來回`:""} ${cest?'快取估價 約':''}${fmt(cest?RND100(x.price):x.price)} 元 ${aln}${ago?`，${ago}的價格`:""}"
+          aria-label="${x.depart_date} 週${WD[dt.getDay()]}${nights?` ${nights}天來回`:""} ${cest?'快取估價 約':''}${fmt(cest?RND100(x.price):x.price)} 元 ${aln}${ago?`，${ago}的價格`:""}${holNote(x.depart_date, x.return_date)?`，${holNote(x.depart_date, x.return_date)}`:""}"
           href="${gfLink(r.origin,r.destination,x.depart_date,x.return_date)}">
           <div class="d">${x.depart_date.slice(5).replace("-","/")} 週${WD[dt.getDay()]}${nights?` · ${nights}天`:""}</div>
           <div class="p">${cest?'≈':''}${fmt(cest?RND100(x.price):x.price)}</div>
           <div class="al">${aln}${cest?' · 快取估':''}</div>
           ${ago?`<div class="ago">${ago}</div>`:""}
+          ${holNote(x.depart_date, x.return_date) ? `<div class="hol">${holNote(x.depart_date, x.return_date)}</div>` : ""}
           ${x.full_price && (x.full_price !== x.price || x.full_carriers !== x.carriers)
             ? `<div class="fs">${alZh((x.full_carriers||"").split(",")[0])} ${fmt(x.full_price)}</div>` : ""}</a>`;
       }).join("");
