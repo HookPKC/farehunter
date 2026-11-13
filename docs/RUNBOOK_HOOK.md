@@ -156,6 +156,22 @@ FAIL 時看 `shadow_within_by_provider`／`calendar_vs_ref_by_provider`，分得
   `BRIGHTDATA_API_KEY`。下一輪起就完全不碰 Bright Data。
 - **安全**：Bright Data 後台或 API 給的 zone 密碼、金鑰，都不要貼進對話、文件或 commit。
 
+## 3d-2. ChocoData（冷門線的 Google 實價，2026-11-13 起）
+
+**先記住：ChocoData 壞了或用完都不影響抓價、警報、看板。** 它只在每小時那一輪替四條冷門線
+（KHH-CTS、KHH-NGO、KHH-FUK、KHH-OKA）多抓 1–2 頁 Google Flights，抓的是跟 Bright Data
+同一個頁面、同一種價格。
+
+- **額度是一次性的**：免費方案註冊時送 5,000 點、每頁扣 5，約 1,000 頁，**不會每月重置**。
+  程式每天最多 30 頁、累計 950 頁就停，大約一個月用完。用完後 log 那行的 `allowance` 會是 0，
+  這是正常的。
+- **看用量**：monitor 的 log 有一行「ChocoData 本輪：{…}」，欄位意思跟 Bright Data 那行相同；
+  `exhausted: true` 表示 ChocoData 回「點數不足」，本輪已停。後台（chocodata.com → Billing）
+  的 Credit balance 是實際剩餘點數。
+- **12/1 順便看一眼後台**：如果點數回到 5,000（其實每月重置），請 AI 把 `TOTAL_MAX` 調高即可。
+- **想停用**：刪掉 repo secret `CHOCODATA_API_KEY`，下一輪起就完全不碰 ChocoData。
+- **安全**：ChocoData 的金鑰是放在網址裡送出的，程式已經不印網址；金鑰一樣不要貼進對話、文件或 commit。
+
 ## 3e. LINE 通知發給誰、什麼時候響（2026-11-10 起）
 
 **先記住：你永遠收得到每一則。** 朋友收到幾則，由 LINE 免費額度決定。

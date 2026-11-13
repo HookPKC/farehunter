@@ -19,6 +19,7 @@ from .notify import notify, channels_configured, LineBudget
 from . import health
 from . import price_state
 from . import brightdata_flights as brightdata
+from . import chocodata_flights as chocodata
 from .models import stay_ok
 
 log = logging.getLogger(__name__)
@@ -405,6 +406,17 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 log.exception("Bright Data 巡檢意外失敗，本輪略過")
             summary["brightdata"] = verifier.stats
             log.info("Bright Data 本輪：%s", verifier.stats)
+
+        # ChocoData（ADR 0005）：一次性免費額度，只補冷門線。放在 Bright Data 巡檢之後，
+        # 才不會重查它這輪剛查過的行程；Aviasales 全滅的輪次不 commit，帳本會消失，所以不跑。
+        if chocodata.configured() and not all_searches_failed(summary):
+            sweeper = chocodata.ColdSweeper(store, now)
+            try:
+                sweeper.sweep(sweep_candidates)
+            except Exception:
+                log.exception("ChocoData 巡檢意外失敗，本輪略過")
+            summary["chocodata"] = sweeper.stats
+            log.info("ChocoData 本輪：%s", sweeper.stats)
 
         if summary["zero_record_routes"]:
             # 只看 Aviasales：Bright Data 寫入的 Google 實價不算在內（冷門線常只有它）
