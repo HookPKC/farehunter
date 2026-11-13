@@ -942,3 +942,44 @@ def test_a_thin_route_is_topped_up_with_fixed_dates(tmp_path):
     assert oka[:2] == [_day(30), _day(31)] and len(oka) == bd.ROUTE_MIN_TRIPS
     assert len(set(oka)) == len(oka)                         # 補的日期不重複
     assert sorted(nrt) == sorted(o.depart_date for o in rich)  # 夠多的航線只查快取裡的
+
+
+# ---- 傳統航空（非廉航）的直飛最低價（2026-11-12）-----------------------------------
+def _its(*rows):
+    return bd.parse(_page(*[_label(p, a) for p, a in rows]))
+
+
+def test_the_cheapest_full_service_nonstop_is_recorded_as_its_own_class():
+    """頁面本來就列出所有航空公司：順便記下傳統航空的直飛最低價（fare_class='full'），
+    給之後「不要廉航」的那組通知用；廉航的 'any' 列照舊。"""
+    offers, matched = bd.select("KHH", "NRT", DEP, RET, _its(
+        ("8,000", "Tigerair Taiwan"), ("12,729", "China Airlines"), ("13,400", "EVA Air")), "IT")
+    assert [(o.price, o.carriers, o.fare_class) for o in offers] == [
+        (8000.0, "IT", "any"), (12729.0, "CI", "full")]
+    assert (matched.carriers, matched.fare_class) == ("IT", "any")
+
+
+def test_no_full_service_row_when_only_low_cost_carriers_fly():
+    offers, _ = bd.select("KHH", "NRT", DEP, RET, _its(("8,000", "Tigerair Taiwan"), ("8,500", "Jetstar")))
+    assert [o.fare_class for o in offers] == ["any"]
+
+
+def test_a_full_service_carrier_that_is_also_the_cheapest_gets_both_rows():
+    """跟 Aviasales 的寫法一致：全場最低剛好是傳統航空時，'any' 與 'full' 各一筆。
+    想驗證的那家也是它時，回傳的仍是 'any' 那筆。"""
+    offers, matched = bd.select("KHH", "OKA", DEP, RET, _its(
+        ("10,011", "Starlux Airlines"), ("10,500", "China Airlines")), "JX")
+    assert [(o.price, o.carriers, o.fare_class) for o in offers] == [
+        (10011.0, "JX", "any"), (10011.0, "JX", "full")]
+    assert matched.fare_class == "any"
+
+
+def test_full_rows_stay_out_of_the_any_class_readers(tmp_path):
+    """full 列只給傳統航空用：路線統計、便宜日、看板主價讀的都是 'any'。"""
+    st = _store(tmp_path)
+    v = bd.Verifier(st, NOW, allowance=1, fetcher=lambda *a: _page(
+        _label("8,000", "Tigerair Taiwan"), _label("12,729", "China Airlines")))
+    v.check("KHH", "NRT", DEP, RET, "IT")
+    rows = st.conn.execute("SELECT fare_class, carriers, price FROM observations ORDER BY id").fetchall()
+    assert [tuple(r) for r in rows] == [("any", "IT", 8000.0), ("full", "CI", 12729.0)]
+    assert st.route_stats("KHH", "NRT")["n"] == 1 and v.stats["recorded"] == 2

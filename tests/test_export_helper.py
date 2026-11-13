@@ -184,3 +184,28 @@ def test_usage_survives_a_database_older_than_the_send_log(tmp_path):
     st = Store(str(db))                                                   # 開檔時補上欄位
     st.record_line_send("2026-11-15T02:00:00+00:00", "owner", 99)
     st.close()
+
+
+def test_full_service_low_uses_the_latest_price_of_each_trip(tmp_path):
+    """看板的「傳統航空最低」：每一趟取最新一筆再挑最便宜；舊的低價、超過 7 天的、
+    住超過 10 晚的都不算。"""
+    from farehunter.export_web import export
+    store = Store(str(tmp_path / "p.db"))
+    d1, d2, d3 = _win_dep(30), _win_dep(45), _win_dep(60)
+
+    def full(dep, ret, price, days_ago):
+        store.conn.execute(
+            "INSERT INTO observations (origin,destination,depart_date,return_date,price,currency,"
+            "carriers,stops,duration,observed_at,fare_class,source,provider) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("KHH", "NRT", dep, ret, price, "TWD", "CI", 0, 180, _iso(days_ago), "full", "google", "test"))
+    _obs(store, "KHH", "NRT", d1, _ret(d1), 8000, _iso(1))            # 廉航的 'any' 價
+    full(d1, _ret(d1), 11000, 3); full(d1, _ret(d1), 13000, 1)        # 同一趟：後來漲到 13,000
+    full(d2, _ret(d2), 12500, 2)
+    full(d3, _ret(d3), 9000, 20)                                      # 超過 7 天
+    far = (date.fromisoformat(d2) + timedelta(days=30)).isoformat()
+    full(d2, far, 9500, 1)                                            # 住 30 晚
+    store.conn.commit(); store.close()
+    route = export(str(tmp_path / "p.db"), str(tmp_path / "d.json"))["routes"][0]
+    assert (route["fsc_latest"]["price"], route["fsc_latest"]["depart_date"]) == (12500, d2)
+    chip = next(c for c in route["latest"] if c["depart_date"] == d1)
+    assert chip["full_price"] == 13000
