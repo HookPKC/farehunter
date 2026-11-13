@@ -28,6 +28,10 @@ except ImportError:                     # pragma: no cover
     from . import health
 
 try:
+    from farehunter import holidays as tw_holidays
+except ImportError:  # pragma: no cover
+    from . import holidays as tw_holidays
+try:
     from farehunter import cheap_days
 except ImportError:                     # pragma: no cover
     from . import cheap_days
@@ -188,6 +192,80 @@ def _health_route_list(config_path: str, observed: list[tuple[str, str]]
     except Exception:                   # noqa: BLE001 — fail-open
         pass
     return observed
+
+
+#: 連假清單往前看多遠（跟 monthly 一樣的出發日範圍）
+HOLIDAY_HORIZON_DAYS = 330
+#: 連假最低價優先採用這麼多天內的觀測（跟看板淡化舊價的 OLD_FADE_DAYS 同一條線）
+HOLIDAY_FRESH_DAYS = 14
+
+
+def _older_than(observed_at: str | None, now: datetime, days: int) -> bool:
+    """觀測時間早於 now − days；時間讀不到時當作舊的。"""
+    try:
+        t = datetime.fromisoformat((observed_at or "").replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return now - t > timedelta(days=days)
+
+
+def build_holidays(conn, route_pairs, now: datetime, cal=None) -> dict:
+    """看板的連假日曆：放假／補班日（前端算每格要請幾天假）＋接下來的連假與各航線那段期間的最低價。
+
+    最低價的取法跟 monthly 相同：每個出發日取權威價（14 天內的 Google 實價優先，其餘取最新），
+    只看直飛、住 2–10 晚；**至少重疊連假一半天數**（3 天連假要 2 天、7 天春節要 4 天）的行程裡取最便宜
+    ——只碰到連假最後一天的行程不算「利用連假」。
+    日曆檔讀不到時回空結構，前端就不顯示任何連假標籤。
+    """
+    cal = cal or tw_holidays.default()
+    today = now.astimezone(timezone(timedelta(hours=8))).date()
+    horizon = today + timedelta(days=HOLIDAY_HORIZON_DAYS)
+    blocks = cal.blocks()
+    upcoming = [b for b in blocks if b.end >= today and b.start <= horizon]
+    out = {"years": sorted(cal.years),
+           "off": sorted(d.isoformat() for d in cal.off),
+           "workdays": sorted(d.isoformat() for d in cal.workdays),
+           "upcoming": []}
+    if not upcoming:
+        return out
+    per_route = {}
+    for o, d in route_pairs:
+        per_route[(o, d)] = [dict(r) for r in conn.execute(
+            """WITH per_date AS (
+                 SELECT depart_date, return_date, price, carriers, source, observed_at,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY depart_date
+                          ORDER BY (source='google'
+                                    AND observed_at >= datetime('now','-14 days')) DESC,
+                                   observed_at DESC, rowid DESC) AS rk
+                 FROM observations
+                 WHERE origin=? AND destination=? AND fare_class='any' AND stops=0
+                   AND """ + STAY_SQL + """
+                   AND return_date IS NOT NULL AND return_date != ''
+                   AND depart_date BETWEEN ? AND ?)
+               SELECT depart_date, return_date, price, carriers, source, observed_at
+               FROM per_date WHERE rk=1""",
+            (o, d, today.isoformat(), horizon.isoformat()))]
+    for b in upcoming:
+        routes = []
+        for (o, d), rows in per_route.items():
+            need = (b.days + 1) // 2
+            hits = [r for r in rows if tw_holidays.overlap_days(
+                r["depart_date"], r["return_date"], b) >= need]
+            if not hits:
+                continue
+            # 新鮮（FRESH_DAYS 內觀測）的優先：幾十天前的快取價就算比較便宜，也不該排在今天的價格前面；
+            # 整段連假都只有舊價時才用舊價（前端照樣標「N 天前」、淡化）
+            best = min(hits, key=lambda r: (_older_than(r["observed_at"], now, HOLIDAY_FRESH_DAYS),
+                                            r["price"]))
+            routes.append({"origin": o, "destination": d, **best,
+                           "leave_days": cal.leave_days(best["depart_date"], best["return_date"])})
+        # 只有舊價的航線排後面，理由同上
+        routes.sort(key=lambda r: (_older_than(r["observed_at"], now, HOLIDAY_FRESH_DAYS), r["price"]))
+        out["upcoming"].append({**b.as_dict(), "routes": routes})
+    return out
 
 
 def build_usage(conn, now: datetime, quota_path: Path) -> dict:
@@ -435,6 +513,12 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
         log.warning("cheap_days 計算失敗（%s），本次以空清單輸出", exc)
         cheap = []
     usage = build_usage(conn, _now, Path(out_path).parent / "quota.json")
+    try:
+        holiday_block = build_holidays(
+            conn, [(rr["origin"], rr["destination"]) for rr in route_rows], _now)
+    except Exception as exc:  # noqa: BLE001 — 看板功能不得讓整份 export 失敗
+        log.warning("連假日曆計算失敗（%s），本次不輸出", exc)
+        holiday_block = None
     conn.close()
 
     payload = {
@@ -447,6 +531,7 @@ def export(db_path: str = "prices.db", out_path: str = "docs/data.json",
         "alerts": alerts,
         "cheap_days": cheap,
         "usage": usage,
+        "holidays": holiday_block,
     }
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
