@@ -1,6 +1,6 @@
-# ADR 0005：第三方「更多機票 API」比較表的對照——只有 ChocoData 值得試接
+# ADR 0005：第三方「更多機票 API」比較表的對照——ChocoData 實測沒有機票端點
 
-- 狀態：**評估完成**（2026-11-13）；ChocoData 試接**待使用者註冊金鑰**
+- 狀態：**評估完成**（2026-11-13）；ChocoData **實測後不採用**（沒有 Google Flights 端點，見文末）
 - 輸入：使用者提供的外部調研比較表「FareHunter 更多機票 API」（2026-11-13，Muse 頁面，
   AI 產生、未經驗證）。本 ADR 只記對照結論，不轉載全文。
 - 相關：ADR 0001（SerpAPI deals）、ADR 0003（13 種免費來源實測、fli 觀察期）、
@@ -94,3 +94,22 @@ Bright Data。
 - fli 日曆有價比例回到 ≥95% → 回 ADR 0003 第二階段，重新考慮它當主力。
 - Bright Data 免費層變動 → 先試 ChocoData／google-flights2 補位，不急著付費。
 - 冷門線 Google 實價筆數追上熱門線 → 新來源的價值下降，可以不接。
+
+## 2026-11-13 ChocoData 實測結果：不採用
+
+使用者註冊並存好 secret `CHOCODATA_API_KEY` 後，用一次性 workflow `Probe ChocoData` 探測
+（run 43385166572、43385381300、43385535411；探測腳本與 workflow 已刪除，見 git 歷史 #27/#28）：
+
+- 呼叫格式：`GET https://api.chocodata.com/api/v1/{target}/{resource}?api_key=…`（官方 SDK
+  `chocodata` 0.1.0；金鑰在網址查詢參數，header 認證回 401）。
+- `google/flights`、`google_flights/search` 等 6 個候選全部 404 `unknown_target`。錯誤回應附了
+  **全部 497 個可用端點**，其中跟 Google／旅遊有關的只有：`google.search`、`googlenews.*`、
+  `googleplay.*`、`agoda.*`、`airbnb.*`、`expedia.hotel/search`、`kayak.hotel/search`、
+  `priceline.hotel/search`、`tripadvisor.*`——**沒有 Google Flights，也沒有任何機票端點**。
+- `kayak/search` 不帶參數回 400 `invalid_params`，唯一必填是 `location`（單一地點＝住宿搜尋的
+  形狀，不是出發地＋目的地的航班搜尋）。
+- 404 與 400 的回應 header 都是 `Spb-Cost: 0`：打錯路徑、缺參數不扣點；三輪探測共花 0 點。
+
+結論：比較表「ChocoData 有 Google Flights 端點、每月 1,000 次」的說法不成立（至少 2026-11-13
+的端點清單沒有）。不再追。若要補冷門線 Google 實價，下一個候選是 google-flights2（RapidAPI，
+每月免費 150 次、CalendarGrid），一樣先用不扣點的方式確認端點與參數再實測。
