@@ -30,6 +30,7 @@ from urllib.parse import quote
 
 import requests
 
+from . import calendar_hints
 from .models import Offer
 from .price_state import carrier_signature
 from .travelpayouts import FULL_SERVICE
@@ -248,6 +249,8 @@ class Verifier:
     第二驗證來源，只是來源、解析與額度不同。
     """
     provider = PROVIDER
+    #: Picker 線索價的上限（(origin, dest) → 門檻×CAP_RATIO），runner 設定；沒設就不設上限
+    hint_caps: dict = {}
     label = "Bright Data"
     parse = staticmethod(parse)
 
@@ -428,9 +431,20 @@ class Verifier:
             seen.add(key)
             queues[(c.origin, c.destination)].append((c.depart_date, c.return_date, c.carriers))
         for (o, d), q in queues.items():
+            # Picker 線索（calendar_hints）：Google 日曆顯示便宜的日子排最前面。線索價含轉機、
+            # 不寫入；這裡只決定先查哪幾天，查到直飛實價才會留下觀測。
+            known = None
+            if (o, d) in calendar_hints.ROUTES:
+                known = self.weekday_outcomes(o, d)
+                have = {(dep, ret) for dep, ret, _ in q}
+                hinted = [(dep, ret, None) for dep, ret in calendar_hints.pick(
+                    self.store, self.now, o, d, avoid=known.avoid, cap=self.hint_caps.get((o, d)))
+                    if (dep, ret) not in have]
+                q[:0] = hinted
+                self.stats["hinted"] = self.stats.get("hinted", 0) + len(hinted)
             need = ROUTE_MIN_TRIPS - len(q)
             if need > 0:
-                known = self.weekday_outcomes(o, d)
+                known = known or self.weekday_outcomes(o, d)
                 have = {(dep, ret) for dep, ret, _ in q}
                 q.extend((dep, ret, None) for dep, ret in
                          anchor_trips(self.now, need, prefer=known.prefer, avoid=known.avoid)

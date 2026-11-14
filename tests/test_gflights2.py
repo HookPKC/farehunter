@@ -145,7 +145,8 @@ def _label(price, airline):
             f'with {airline}. Leaves Kaohsiung at 6:50 AM."></li>')
 
 
-def _run(tmp_path, monkeypatch, *, bd_fetch=None, g2_fetch=None, offers=None, now=NOW):
+def _run(tmp_path, monkeypatch, *, bd_fetch=None, g2_fetch=None, offers=None, now=NOW,
+         picker=None):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         "defaults:\n  currency: twd\n  months_ahead: 1\n  pause_seconds: 0\n"
@@ -168,6 +169,7 @@ def _run(tmp_path, monkeypatch, *, bd_fetch=None, g2_fetch=None, offers=None, no
             monkeypatch.setenv(name, "k")
             monkeypatch.setattr(mod, "fetch", f)
     monkeypatch.setattr(bd.Verifier, "sweep", lambda self, c, r: None)
+    monkeypatch.setattr(g2, "fetch_picker", picker or (lambda *a, **k: []))   # 測試絕不連外
     monkeypatch.setenv("FAREHUNTER_FORCE", "1")
     summary = runner_mod.run(str(cfg), str(tmp_path / "prices.db"), now=now)
     return summary, sent

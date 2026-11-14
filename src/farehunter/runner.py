@@ -21,6 +21,7 @@ from . import price_state
 from . import brightdata_flights as brightdata
 from . import chocodata_flights as chocodata
 from . import gflights2_flights as gflights2
+from . import calendar_hints
 from .models import stay_ok
 
 log = logging.getLogger(__name__)
@@ -405,6 +406,19 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 log.warning("航線本輪零記錄 %s→%s（%d/%d 個月回空）",
                             origin, dest, route_empty, len(months))
 
+        # Picker 線索（ADR 0005，calendar_hints）：每輪最多抓一段 Google 日曆，告訴下面兩個巡檢先查
+        # 哪幾天。線索價含轉機，只存在 calendar_hints；直飛實價仍然只由巡檢寫入。
+        hint_caps = {(r["origin"], r["destination"]): r["absolute_threshold"] * calendar_hints.CAP_RATIO
+                     for r in cfg["routes"] if r.get("absolute_threshold")}
+        if second is not None and not all_searches_failed(summary):
+            try:
+                summary["picker"] = gflights2.refresh_hints(store, now)
+                log.info("google-flights2 Picker 本輪：%s", summary["picker"])
+            except Exception:
+                log.exception("Picker 線索更新意外失敗，本輪略過")
+        if verifier is not None:
+            verifier.hint_caps = hint_caps
+
         if verifier is not None and all_searches_failed(summary):
             # Aviasales 全部失敗的輪次會 exit 1、不 commit prices.db，這輪的帳本會消失；
             # guard 也不會擋下一輪。這時巡檢等於花了額度卻不記帳，所以不巡檢。
@@ -431,6 +445,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
         # 才不會重查它這輪剛查過的行程；Aviasales 全滅的輪次不 commit，帳本會消失，所以不跑。
         if chocodata.configured() and not all_searches_failed(summary):
             sweeper = chocodata.ColdSweeper(store, now)
+            sweeper.hint_caps = hint_caps
             try:
                 sweeper.sweep(sweep_candidates)
             except Exception:
