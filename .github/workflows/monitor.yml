@@ -76,6 +76,8 @@ jobs:
           BRIGHTDATA_ZONE: ${{ secrets.BRIGHTDATA_ZONE }}
           # ChocoData（ADR 0005）：一次性約 950 頁，只補冷門線的 Google 實價，用完自動停。沒設就跳過
           CHOCODATA_API_KEY: ${{ secrets.CHOCODATA_API_KEY }}
+          # google-flights2（ADR 0005）：每月 150 次，只在 Bright Data 驗證不到警報時再查一次。沒設就跳過
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
           FAREHUNTER_FORCE: ${{ inputs.force && '1' || '' }}
         run: python run.py
 

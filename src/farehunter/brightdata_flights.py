@@ -241,14 +241,21 @@ def run_allowance(used_this_month: int, now: datetime, *,
 
 
 class Verifier:
-    """一輪 monitor 的 Bright Data 用量：警報驗證優先，剩下的給巡檢。"""
+    """一輪 monitor 的 Bright Data 用量：警報驗證優先，剩下的給巡檢。
+
+    provider／label／parse／_default_fetch／_allowance 可由子類別換掉：google-flights2
+    （gflights2_flights.Verifier）用同一套「查一次、寫入、記帳、24 小時內不重查」流程當
+    第二驗證來源，只是來源、解析與額度不同。
+    """
+    provider = PROVIDER
+    label = "Bright Data"
+    parse = staticmethod(parse)
 
     def __init__(self, store, now: datetime, *, allowance: int | None = None,
                  fetcher=None, clock=time.monotonic):
         self.store, self.now = store, now
-        used = store.api_usage_since(PROVIDER, month_start(now).date().isoformat())
-        self.left = run_allowance(used, now) if allowance is None else allowance
-        self.fetch = fetcher or fetch
+        self.left = self._allowance() if allowance is None else allowance
+        self.fetch = fetcher or self._default_fetch()
         self.clock = clock
         # no_direct：頁面正常但沒有可寫入的直飛價（那天沒直飛、或航空公司名稱對不上）
         # timeouts：等不到回應的次數（含在 errors 裡）；ok_over_60s：成功、但花了超過 60 秒
@@ -258,6 +265,13 @@ class Verifier:
                       "no_direct": 0, "alerts_checked": 0, "swept": 0, "errors": 0,
                       "timeouts": 0, "ok_over_60s": 0, "slowest_s": 0}
         self.spent_s = 0.0        # 這輪 check() 花掉的秒數（含失敗、解析與寫入），對照 RUN_BUDGET_S
+
+    def _allowance(self) -> int:
+        used = self.store.api_usage_since(self.provider, month_start(self.now).date().isoformat())
+        return run_allowance(used, self.now)
+
+    def _default_fetch(self):
+        return fetch
 
     def _can_send(self) -> bool:
         """還有額度，而且這輪花在請求上的時間還沒到 RUN_BUDGET_S。"""
@@ -282,9 +296,9 @@ class Verifier:
             page = self.fetch(origin, dest, depart, ret)
             took = self.clock() - started
             self.stats["slowest_s"] = max(self.stats["slowest_s"], round(took))
-            itineraries = parse(page)
+            itineraries = self.parse(page)
             # 拿到頁面就記「查過」：就算沒有可寫入的直飛價，24 小時內巡檢也不再查這趟
-            self.store.record_api_check(PROVIDER, origin, dest, depart, ret, stamp,
+            self.store.record_api_check(self.provider, origin, dest, depart, ret, stamp,
                                         parsed=bool(itineraries),
                                         want=carrier_signature(want_carriers))
             if not itineraries:
@@ -296,6 +310,11 @@ class Verifier:
             offers, matched = select(origin, dest, depart, ret, itineraries, want_carriers)
             if not offers:
                 _log_no_direct(origin, dest, depart, ret, itineraries)
+            if self.provider != PROVIDER:
+                offers = [replace(o, provider=self.provider) for o in offers]
+                matched = next((o for o in offers if matched is not None
+                                and o.fare_class == matched.fare_class
+                                and o.carriers == matched.carriers), None)
             for o in offers:
                 self.store.record(o, observed_at=stamp)
             self.stats["recorded"] += len(offers)
@@ -305,18 +324,18 @@ class Verifier:
             timed_out = isinstance(exc, BrightDataTimeout)
             self.stats["errors"] += 1
             self.stats["timeouts"] += timed_out
-            log.warning("Bright Data %s→%s %s/%s: %s", origin, dest, depart, ret, exc)
+            log.warning("%s %s→%s %s/%s: %s", self.label, origin, dest, depart, ret, exc)
             return None
         except Exception:
             # 預期外的錯（解析程式的 bug 之類）也只記下來：這一則警報照原狀態發
             self.stats["errors"] += 1
-            log.exception("Bright Data %s→%s %s/%s 意外失敗", origin, dest, depart, ret)
+            log.exception("%s %s→%s %s/%s 意外失敗", self.label, origin, dest, depart, ret)
             return None
         finally:
             elapsed = self.clock() - started
             self.spent_s += elapsed
             self.stats["ok"] += ok
-            self.store.record_api_usage(PROVIDER, self.now.date().isoformat(), ok=ok,
+            self.store.record_api_usage(self.provider, self.now.date().isoformat(), ok=ok,
                                         timeout=timed_out, slow_ok=slow, seconds=elapsed)
 
     def _ago(self, **delta) -> str:
@@ -336,8 +355,8 @@ class Verifier:
         """
         want = carrier_signature(carriers)
         if want is None:
-            return self.store.api_checked_since(PROVIDER, origin, dest, depart, ret, self._since())
-        return self.store.api_checked_for(PROVIDER, origin, dest, depart, ret, want, self._since())
+            return self.store.api_checked_since(self.provider, origin, dest, depart, ret, self._since())
+        return self.store.api_checked_for(self.provider, origin, dest, depart, ret, want, self._since())
 
     def recent_match(self, origin: str, dest: str, depart: str, ret: str,
                      carriers: str | None) -> Offer | None:
@@ -346,13 +365,13 @@ class Verifier:
         if want is None:
             return None
         for row in self.store.google_rows_since(origin, dest, depart, ret, self._since(),
-                                                provider=PROVIDER):
+                                                provider=self.provider):
             if carrier_signature(row["carriers"]) == want:
                 return Offer(origin=origin, destination=dest, depart_date=depart,
                              return_date=ret, price=row["price"], currency=row["currency"],
                              carriers=row["carriers"], stops=row["stops"], duration="",
                              link=search_url(origin, dest, depart, ret),
-                             fare_class=row["fare_class"], source="google", provider=PROVIDER)
+                             fare_class=row["fare_class"], source="google", provider=self.provider)
         return None
 
     def verify_alert(self, origin: str, dest: str, depart: str, ret: str,
@@ -373,7 +392,7 @@ class Verifier:
         不看幾個月前的快取。
         """
         hits = self.store.google_nonstop_by_date(origin, dest, self._ago(days=HIT_MEMORY_DAYS))
-        misses = self.store.api_misses_by_date(PROVIDER, origin, dest,
+        misses = self.store.api_misses_by_date(self.provider, origin, dest,
                                                self._ago(days=MISS_MEMORY_DAYS))
         latest: dict[int, tuple[float, bool]] = {}      # 星期幾 → (最近時間, 有沒有直飛)
         for rows, hit in ((hits, True), (misses, False)):
@@ -397,7 +416,7 @@ class Verifier:
         if not self._can_send():
             return
         since = self._since()
-        self.store.prune_api_checks(PROVIDER, self._ago(days=MISS_MEMORY_DAYS))
+        self.store.prune_api_checks(self.provider, self._ago(days=MISS_MEMORY_DAYS))
         earliest = (self.now.date() + timedelta(days=MIN_LEAD_DAYS)).isoformat()
         queues: dict[tuple[str, str], list[tuple[str, str, str | None]]] = {r: [] for r in routes}
         seen = set()
@@ -423,7 +442,7 @@ class Verifier:
 
         def fresh(o, d, dep, ret):
             return (self.store.has_google_since(o, d, dep, ret, since)
-                    or self.store.api_checked_since(PROVIDER, o, d, dep, ret, since))
+                    or self.store.api_checked_since(self.provider, o, d, dep, ret, since))
 
         deadline = self.clock() + SWEEP_DEADLINE_S
         while self._can_send() and self.clock() < deadline and any(queues.values()):

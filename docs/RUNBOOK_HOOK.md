@@ -172,6 +172,15 @@ FAIL 時看 `shadow_within_by_provider`／`calendar_vs_ref_by_provider`，分得
 - **想停用**：刪掉 repo secret `CHOCODATA_API_KEY`，下一輪起就完全不碰 ChocoData。
 - **安全**：ChocoData 的金鑰是放在網址裡送出的，程式已經不印網址；金鑰一樣不要貼進對話、文件或 commit。
 
+## 3d-3. google-flights2（警報的第二驗證來源，2026-11-14 起）
+
+Bright Data 驗證不到某一則警報時（頁面上沒有那家航空、逾時、額度用完），發出前會再用
+google-flights2（RapidAPI，每月 150 次免費）查一次。查到同一家航空的直飛價就照實價判斷：夠便宜→
+以「已驗證」廣播；不便宜→不發。查不到→照舊以「未驗證」只發給你。
+
+- **看用量**：monitor 的 log 有一行「google-flights2 本輪：{…}」。程式每天最多 6 次、30 天最多 130 次。
+- **壞了不影響任何事**：只是少了第二次驗證。想停用就刪掉 repo secret `RAPIDAPI_KEY`。
+
 ## 3e. LINE 通知發給誰、什麼時候響（2026-11-10 起）
 
 **先記住：你永遠收得到每一則。** 朋友收到幾則，由 LINE 免費額度決定。
