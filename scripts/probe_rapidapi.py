@@ -63,6 +63,21 @@ def main() -> int:
     except ValueError:
         print("非 JSON：", red(r.text[:500]))
         return 1
+    data = body.get("data") if isinstance(body, dict) else None
+    its = data.get("itineraries") if isinstance(data, dict) else None
+    if isinstance(its, dict):          # searchFlights：每個行程一行（價格、停靠、航空、班號）
+        print("itineraries keys:", {k: (len(v) if isinstance(v, list) else type(v).__name__) for k, v in its.items()})
+        for group, rows in its.items():
+            for it in rows if isinstance(rows, list) else []:
+                legs = it.get("flights") or []
+                print(f"  [{group}] price={it.get('price')} stops={it.get('stops')} "
+                      f"airlines={[f.get('airline') for f in legs]} "
+                      f"nums={[f.get('flight_number') for f in legs]} "
+                      f"logo={str(it.get('airline_logo'))[-6:]} keys={sorted(it)[:14]}")
+        ph = data.get("priceHistory") or {}
+        print("priceHistory.summary:", json.dumps(ph.get("summary"), ensure_ascii=False),
+              "history points:", len(ph.get("history") or []))
+        print("data keys:", sorted(data))
     text = red(json.dumps(body, ensure_ascii=False))
     print("結構：\n" + red(shape(body)))
     limit = int(os.environ.get("RAPID_DUMP") or 3000)
