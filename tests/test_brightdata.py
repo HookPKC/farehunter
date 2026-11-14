@@ -850,6 +850,53 @@ def test_a_bigger_drop_after_an_unmatched_check_is_sent_without_a_new_request(
     assert alerts == [(7761.0, "unverified"), (6900.0, "unverified")]
 
 
+def test_a_check_for_another_airline_does_not_count_as_checked(tmp_path, monkeypatch):
+    """2026-11-13 的實例：KHH-KIX 前一天替樂桃查過（頁面只留下樂桃的價格），隔天快取冒出
+    亞航 8,120，被當成「24 小時內查過」直接以未驗證廣播；5 小時後 Google 實價是 10,910。
+    替別家航空查過的不算：重查一次，實價不便宜就不發。"""
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    fetch, calls = _counting(_page(_label("8,610", "Peach"), _label("10,910", "AirAsia")))
+    peach = [Offer("KHH", "NRT", DEP, RET, 6348.0, "TWD", "MM", 0, "180")]
+    _, sent, alerts = _run(tmp_path, monkeypatch, fetch, offers=peach)
+    assert len(calls) == 1 and sent == [] and alerts == []       # 樂桃實價 8,610：不便宜
+    airasia = [Offer("KHH", "NRT", DEP, RET, 7900.0, "TWD", "AK", 0, "180")]
+    summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, offers=airasia,
+                                 now=NOW + timedelta(hours=20))
+    assert len(calls) == 2                                       # 替亞航重查
+    assert sent == [] and alerts == []                           # 亞航實價 10,910：不發
+    # 同一家再出現：這次有那家的實價可用，不再花額度
+    _run(tmp_path, monkeypatch, fetch, offers=airasia, now=NOW + timedelta(hours=21))
+    assert len(calls) == 2
+
+
+def test_an_airline_missing_from_the_page_is_not_rechecked_every_hour(tmp_path, monkeypatch):
+    """替這家查過、頁面上卻沒有它：24 小時內不重查（照原狀態發一次，去重擋掉後面的）。"""
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
+    fetch, calls = _counting(_page(_label("9,500", "Tigerair Taiwan")))
+    for h in (0, 1, 2):
+        summary, sent, alerts = _run(tmp_path, monkeypatch, fetch, now=NOW + timedelta(hours=h))
+    assert len(calls) == 1 and alerts == [(7761.0, "unverified")]
+
+
+def test_api_check_wants_are_per_airline_and_pruned(tmp_path):
+    st = _store(tmp_path)
+    at = NOW.isoformat(timespec="seconds")
+    since = (NOW - timedelta(hours=24)).isoformat(timespec="seconds")
+    st.record_api_check("brightdata", "KHH", "KIX", DEP, RET, at, want="MM")
+    st.record_api_check("brightdata", "KHH", "KIX", DEP, RET, at)            # 巡檢的固定日期：沒有指定航空
+    assert st.api_checked_for("brightdata", "KHH", "KIX", DEP, RET, "MM", since)
+    assert not st.api_checked_for("brightdata", "KHH", "KIX", DEP, RET, "AK", since)
+    assert not st.api_checked_for("chocodata", "KHH", "KIX", DEP, RET, "MM", since)
+    v = bd.Verifier(st, NOW, allowance=0)
+    assert v.checked_recently("KHH", "KIX", DEP, RET, "MM")
+    assert not v.checked_recently("KHH", "KIX", DEP, RET, "AK")
+    assert v.checked_recently("KHH", "KIX", DEP, RET, None)                  # 判不出航空：任何查詢都算
+    later = NOW + timedelta(hours=25)
+    assert not bd.Verifier(st, later, allowance=0).checked_recently("KHH", "KIX", DEP, RET, "MM")
+    st.prune_api_checks("brightdata", (NOW + timedelta(days=1)).isoformat())
+    assert st.conn.execute("SELECT COUNT(*) FROM api_check_wants").fetchone()[0] == 0
+
+
 def test_a_connecting_candidate_is_not_sent_to_bright_data(tmp_path, monkeypatch):
     """Bright Data 只寫直飛價：轉機的候選查了也對不上，白花一次。"""
     monkeypatch.setenv("BRIGHTDATA_API_KEY", "k")
