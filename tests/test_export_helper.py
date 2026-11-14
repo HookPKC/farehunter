@@ -165,6 +165,35 @@ def test_usage_block_reports_each_service_without_guessing(tmp_path):
     assert (u["serpapi"]["left"], u["serpapi"]["limit"]) == (205, 250)
 
 
+def test_usage_block_covers_chocodata_and_google_flights2(tmp_path):
+    """ChocoData 是一次性額度（累計、跨月都算）；google-flights2 看近 30 天，沒用過也照實顯示 0。"""
+    from datetime import datetime, timezone
+    from farehunter.storage import Store
+    from farehunter.export_web import export
+    from farehunter import chocodata_flights as cd, gflights2_flights as g2
+    now = datetime(2026, 12, 2, 6, 0, tzinfo=timezone.utc)
+    db = tmp_path / "p.db"
+    st = Store(str(db))
+    st.close()
+    u = export(str(db), str(tmp_path / "data.json"), now=now)["usage"]
+    assert u["chocodata"] is None                                        # 從沒用過：不顯示
+    assert u["gflights2"] == {"used": 0, "ok": 0, "limit": g2.WINDOW_MAX, "plan_limit": 150,
+                              "window_days": 30, "today": 0, "daily_max": g2.DAILY_MAX}
+    st = Store(str(db))
+    for day, n in (("2026-11-13", 30), ("2026-11-30", 29), ("2026-12-02", 2)):
+        for i in range(n):
+            st.record_api_usage("chocodata", day, ok=i > 0)
+    st.record_api_usage("gflights2", "2026-11-01", ok=True)               # 31 天前：滾出視窗
+    st.record_api_usage("gflights2", "2026-11-20", ok=True)
+    st.record_api_usage("gflights2", "2026-12-02", ok=False)
+    st.close()
+    u = export(str(db), str(tmp_path / "data.json"), now=now)["usage"]
+    c = u["chocodata"]
+    assert (c["used"], c["ok"], c["limit"], c["today"], c["first_day"]) == (61, 58, cd.TOTAL_MAX, 2, "2026-11-13")
+    assert c["days_left"] == -(-(cd.TOTAL_MAX - 61) // cd.DAILY_MAX)
+    assert (u["gflights2"]["used"], u["gflights2"]["ok"], u["gflights2"]["today"]) == (2, 1, 1)
+
+
 def test_usage_survives_a_database_older_than_the_send_log(tmp_path):
     """export 直接開檔、不經 Store 的 migration：還沒有 quota_left 欄的舊檔也要匯得出來。"""
     import sqlite3

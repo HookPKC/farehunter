@@ -278,6 +278,10 @@ def build_usage(conn, now: datetime, quota_path: Path) -> dict:
         from farehunter import brightdata_flights as bd
     except ImportError:                 # pragma: no cover
         from . import brightdata_flights as bd
+    try:
+        from farehunter import chocodata_flights as cd, gflights2_flights as g2
+    except ImportError:                 # pragma: no cover
+        from . import chocodata_flights as cd, gflights2_flights as g2
     month_utc = now.strftime("%Y-%m-01")
     out: dict = {"month": now.strftime("%Y-%m")}
 
@@ -294,6 +298,33 @@ def build_usage(conn, now: datetime, quota_path: Path) -> dict:
             " FROM api_usage WHERE provider='brightdata' AND day >= ?", (month_utc,)).fetchone()
         return {"used": r[0], "ok": r[1], "timeouts": r[2], "limit": bd.MONTHLY_FREE,
                 "target": int(bd.MONTHLY_FREE * bd.USE_FRACTION)}
+
+    def _usage(provider, since):
+        r = conn.execute(
+            "SELECT COALESCE(SUM(requests),0), COALESCE(SUM(ok),0), MIN(day) FROM api_usage"
+            " WHERE provider=? AND day >= ?", (provider, since)).fetchone()
+        return r[0], r[1], r[2]
+
+    def _chocodata():
+        # 一次性額度（不每月重置）：累計，不是本月。從沒用過就不顯示。
+        used, ok, first = _usage(cd.PROVIDER, "2000-01-01")
+        if not used:
+            return None
+        today = _usage(cd.PROVIDER, now.strftime("%Y-%m-%d"))[0]
+        left = max(0, cd.TOTAL_MAX - used)
+        return {"used": used, "ok": ok, "limit": cd.TOTAL_MAX, "today": today,
+                "daily_max": cd.DAILY_MAX, "first_day": first,
+                "days_left": -(-left // cd.DAILY_MAX)}
+
+    def _gflights2():
+        # 額度約 30 天重置、重置日不是月初：顯示近 30 天的用量。只在警報驗證不到時才用，
+        # 常常是 0——0 也照實顯示（看得到「還沒用」才知道額度還在）。
+        since = (now.date() - timedelta(days=g2.WINDOW_DAYS - 1)).isoformat()
+        used, ok, _ = _usage(g2.PROVIDER, since)
+        return {"used": used, "ok": ok, "limit": g2.WINDOW_MAX, "plan_limit": 150,
+                "window_days": g2.WINDOW_DAYS,
+                "today": _usage(g2.PROVIDER, now.strftime("%Y-%m-%d"))[0],
+                "daily_max": g2.DAILY_MAX}
 
     def _scrapedo():
         n = conn.execute(
@@ -329,6 +360,7 @@ def build_usage(conn, now: datetime, quota_path: Path) -> dict:
 
     out["brightdata"], out["scrapedo"] = _try(_brightdata), _try(_scrapedo)
     out["serpapi"], out["line"] = _try(_serpapi), _try(_line)
+    out["chocodata"], out["gflights2"] = _try(_chocodata), _try(_gflights2)
     return out
 
 
