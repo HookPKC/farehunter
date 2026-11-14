@@ -36,6 +36,8 @@ API_LABEL = {
     "serpapi": "Google Flights (SerpAPI)",
     "scrapedo": "Google Flights (Scrape.do)",
     "brightdata": "Google Flights (Bright Data)",
+    "chocodata": "Google Flights (ChocoData)",
+    "gflights2": "Google Flights (google-flights2)",
     "searchapi": "Google Flights 日曆 (SearchApi)",
     "travelpayouts": "Travelpayouts / Aviasales 快取",
 }

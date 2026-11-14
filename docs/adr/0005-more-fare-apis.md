@@ -159,3 +159,25 @@ Bright Data。
   'google'；含傳統航空那筆（fare_class='full'）。排名的可靠度與新鮮度都依 source 查表，不受影響。
 - 金鑰在網址查詢參數：連線錯誤只留例外類型（`from None`），HTTP 錯誤訊息遮掉金鑰的原文與三種
   網址編碼；預期外的例外只記類型。測試鎖住這幾點。
+
+## 2026-11-14 google-flights2（RapidAPI）：接成警報的第二驗證來源
+
+使用者訂閱 BASIC（$0）並存好 secret `RAPIDAPI_KEY`。探測（workflow `Probe RapidAPI`，共 6 次）：
+
+- 額度：回應 header `X-RateLimit-Requests-Limit: 150`，約 30 天重置；參數錯誤（400 類）也扣 1 次。
+- `GET /api/v1/searchFlights`（`departure_id`、`arrival_id`、`outbound_date`、`return_date`、
+  `currency=TWD`…）可用。跟 Bright Data 同一小時（06:17Z 查、06:42Z 比）的兩趟，4 個價格完全相同：
+  KHH-NRT 11/30–12/07 捷星 11,114、泰亞航 13,087、華航 14,468；KHH-OKA 01/15–01/17 捷星 7,478。
+- 回應的坑：`stops` 連轉機航班都是 0（直飛要看 `flights` 只有一段）；`price` 可能是 "unavailable"。
+  航空公司代碼取班號前綴，不用名稱對照（所以聯合航空這類 Bright Data 對照表沒有的也讀得到）。
+- 附帶 `priceHistory`：Google 的 low／typical／high 區間與 61 天走勢。**這次沒有存**，之後可拿來
+  補冷門線的「Google 判定」。
+- `getCalendarGrid`（去程×回程價格表）：`departure_id`／`arrival_id` 正確（用 `origin`／
+  `destination` 會被退回），但指定日期範圍的參數名稱還沒找到，回的是預設的近 7 天且含轉機價。
+  待使用者提供 RapidAPI 頁面的參數清單；探測 workflow 先留著。
+
+接入（`src/farehunter/gflights2_flights.py`）：`Verifier` 繼承 Bright Data 的同一套流程
+（`brightdata_flights.Verifier` 的 provider／parse／額度改成可由子類別換掉），provider='gflights2'、
+source 仍是 'google'。`runner` 只在 Bright Data 之後警報仍不是 VERIFIED 時才問它；查到同航空的
+直飛價就照實價重判（不便宜不發），查不到照原狀態（未驗證→只發給擁有者）。額度每輪 2、每天 6、
+近 30 天 130 次；不巡檢。

@@ -20,6 +20,7 @@ from . import health
 from . import price_state
 from . import brightdata_flights as brightdata
 from . import chocodata_flights as chocodata
+from . import gflights2_flights as gflights2
 from .models import stay_ok
 
 log = logging.getLogger(__name__)
@@ -267,6 +268,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
     transport_errors = 0          # 見 MAX_TRANSPORT_ERRORS
     # Bright Data（ADR 0004）：沒有 BRIGHTDATA_API_KEY 就是 None，整輪跟以前完全一樣
     verifier = brightdata.Verifier(store, now) if brightdata.configured() else None
+    # google-flights2（ADR 0005）：Bright Data 驗證不到時的第二驗證來源；沒有 RAPIDAPI_KEY 就是 None
+    second = gflights2.Verifier(store, now) if gflights2.configured() else None
     sweep_candidates = []         # 本輪寫入的直飛來回快取價，抓完後給巡檢挑
 
     try:
@@ -360,6 +363,16 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                         if checked is None:
                             continue
                         pstate, eval_offer, verdict = checked
+                    # 還是沒驗證到（頁面上沒有那家航空、逾時、額度用完、沒設 Bright Data）→
+                    # 再問 google-flights2 一次；流程與判斷跟上面完全相同。
+                    if (second is not None and offer.return_date and offer.stops == 0
+                            and pstate.state != price_state.VERIFIED):
+                        checked = _verify_with_brightdata(
+                            store, second, offer, now, judge, csig,
+                            (pstate, eval_offer, verdict))
+                        if checked is None:
+                            continue
+                        pstate, eval_offer, verdict = checked
                     if _downgrade_without_news(store, offer, pstate, csig):
                         continue
                     sent = notify(eval_offer, verdict, pstate, line_budget=line_budget)
@@ -409,6 +422,10 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 log.exception("Bright Data 巡檢意外失敗，本輪略過")
             summary["brightdata"] = verifier.stats
             log.info("Bright Data 本輪：%s", verifier.stats)
+
+        if second is not None:
+            summary["gflights2"] = second.stats
+            log.info("google-flights2 本輪：%s", second.stats)
 
         # ChocoData（ADR 0005）：一次性免費額度，只補冷門線。放在 Bright Data 巡檢之後，
         # 才不會重查它這輪剛查過的行程；Aviasales 全滅的輪次不 commit，帳本會消失，所以不跑。
