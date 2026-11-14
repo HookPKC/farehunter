@@ -33,6 +33,7 @@ import requests
 from .brightdata_flights import (MIN_LEAD_DAYS, RECHECK_HOURS, HIT_MEMORY_DAYS,
                                  MISS_MEMORY_DAYS, anchor_trips, parse, search_url, select)
 from .brightdata_flights import PROVIDER as BRIGHTDATA
+from . import calendar_hints
 
 log = logging.getLogger(__name__)
 
@@ -119,8 +120,9 @@ class ColdSweeper:
         self.left = allowance(store, now) if left is None else left
         self.fetch = fetcher or fetch
         self.clock = clock
+        self.hint_caps: dict = {}     # 同 brightdata_flights.Verifier.hint_caps
         self.stats = {"allowance": self.left, "requests": 0, "ok": 0, "recorded": 0,
-                      "no_direct": 0, "errors": 0, "exhausted": False}
+                      "no_direct": 0, "errors": 0, "exhausted": False, "hinted": 0}
 
     def _ago(self, **delta) -> str:
         return (self.now - timedelta(**delta)).isoformat(timespec="seconds")
@@ -160,9 +162,18 @@ class ColdSweeper:
             seen.add(key)
             out[r].append((c.depart_date, c.return_date, c.carriers))
         for (o, d), q in out.items():
+            prefer, avoid = self._weekdays(o, d)
+            if (o, d) in calendar_hints.ROUTES:
+                # Picker 線索排最前面（見 calendar_hints）。取得比 Bright Data 多：前幾名它查過後，
+                # 這裡會因為「24 小時內查過」跳過，往下查其餘的。
+                have = {(dep, ret) for dep, ret, _ in q}
+                hinted = [(dep, ret, None) for dep, ret in calendar_hints.pick(
+                    self.store, self.now, o, d, avoid=avoid, cap=self.hint_caps.get((o, d)),
+                    limit=2 * calendar_hints.PER_ROUTE) if (dep, ret) not in have]
+                q[:0] = hinted
+                self.stats["hinted"] += len(hinted)
             need = TRIPS_PER_ROUTE - len(q)
             if need > 0:
-                prefer, avoid = self._weekdays(o, d)
                 have = {(dep, ret) for dep, ret, _ in q}
                 q.extend((dep, ret, None) for dep, ret in
                          anchor_trips(self.now + timedelta(days=ANCHOR_OFFSET_DAYS), need,

@@ -21,16 +21,22 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 
 import requests
 
 from . import brightdata_flights as bd
+from . import calendar_hints
 
 log = logging.getLogger(__name__)
 
 HOST = "google-flights2.p.rapidapi.com"
 API_URL = f"https://{HOST}/api/v1/searchFlights"
+PICKER_URL = f"https://{HOST}/api/v1/getCalendarPicker"
+#: Picker 跟警報驗證共用同一份額度（帳本同一個 provider）。Picker 只在近 30 天用量低於這個數、
+#: 今天用量低於 PICKER_DAILY_CEILING 時才抓，其餘留給警報驗證。每輪最多抓 1 段。
+PICKER_WINDOW_CEILING = 65
+PICKER_DAILY_CEILING = 3
 PROVIDER = "gflights2"
 WINDOW_DAYS = 30
 WINDOW_MAX = 130             # 每月 150 次，留 20 次給手動探測與誤差
@@ -69,16 +75,21 @@ def configured() -> bool:
 
 def fetch(origin: str, dest: str, depart: str, ret: str,
           session: requests.Session | None = None) -> dict:
+    return _get(API_URL, {"departure_id": origin, "arrival_id": dest, "outbound_date": depart,
+                          "return_date": ret, "travel_class": "ECONOMY", "adults": "1",
+                          "currency": "TWD", "country_code": "TW", "language_code": "en-US"},
+                session)
+
+
+def _get(url: str, params: dict, session=None) -> dict:
+    """共用的 GET：金鑰在 header；錯誤訊息遮罩、連線錯誤只留例外類型。"""
     key = os.environ.get("RAPIDAPI_KEY", "").strip()
     if not key:
         raise GFlights2Error("missing RAPIDAPI_KEY")
-    s = session or requests
     try:
-        r = s.get(API_URL, timeout=(CONNECT_TIMEOUT_S, READ_TIMEOUT_S),
-                  headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": HOST},
-                  params={"departure_id": origin, "arrival_id": dest, "outbound_date": depart,
-                          "return_date": ret, "travel_class": "ECONOMY", "adults": "1",
-                          "currency": "TWD", "country_code": "TW", "language_code": "en-US"})
+        r = (session or requests).get(url, params=params,
+                                      timeout=(CONNECT_TIMEOUT_S, READ_TIMEOUT_S),
+                                      headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": HOST})
     except requests.RequestException as exc:
         kind = GFlights2Timeout if isinstance(exc, requests.Timeout) else GFlights2Error
         raise kind(f"transport: {type(exc).__name__}") from None
@@ -92,6 +103,76 @@ def fetch(origin: str, dest: str, depart: str, ret: str,
         msg = body.get("message") if isinstance(body, dict) else body
         raise GFlights2Error(f"status false: {msg}".replace(key, "***")[:200])
     return body
+
+
+def fetch_picker(origin: str, dest: str, start: str, end: str, *, nights: int,
+                 session=None) -> list[tuple[str, str, float]]:
+    """getCalendarPicker：[start, end] 每個出發日「＋nights 晚」的最低價（含轉機、沒有航空公司）。
+
+    只收回程日剛好是去程日＋nights、日期在範圍內、價格是正數的列——回應若變形，寧可少收。
+    """
+    body = _get(PICKER_URL, {"departure_id": origin, "arrival_id": dest, "start_date": start,
+                             "end_date": end, "trip_type": "ROUND", "trip_days": str(nights),
+                             "currency": "TWD", "country_code": "TW", "language_code": "en-US"},
+                session)
+    out = []
+    for row in body.get("data") or []:
+        try:
+            dep, ret, price = str(row["departure"]), str(row["return"]), row["price"]
+            ok = ((date.fromisoformat(ret) - date.fromisoformat(dep)).days == nights
+                  and start <= dep <= end)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if ok and not isinstance(price, bool) and isinstance(price, (int, float)) and price > 0:
+            out.append((dep, ret, float(price)))
+    return out
+
+
+def refresh_hints(store, now, *, fetcher=None) -> dict:
+    """該重抓的 Picker 時間段抓一段（每輪最多 1 次請求），寫進 calendar_hints。
+
+    哪一段該抓：那段日期裡、REFRESH_DAYS 天內抓到的線索不到一半。額度不夠（留給警報驗證）
+    就不抓；失敗只記 log——線索過期後巡檢自然退回固定日期。
+    """
+    stats = {"requests": 0, "ok": 0, "hints": 0, "errors": 0, "skipped": ""}
+    day = now.date()
+    window = store.api_usage_since(PROVIDER, (day - timedelta(days=WINDOW_DAYS - 1)).isoformat())
+    today = store.api_usage_since(PROVIDER, day.isoformat())
+    if window >= PICKER_WINDOW_CEILING or today >= PICKER_DAILY_CEILING:
+        stats["skipped"] = "quota"
+        return stats
+    since = (now - timedelta(days=calendar_hints.REFRESH_DAYS)).isoformat(timespec="seconds")
+    due = None
+    for start, end in calendar_hints.windows(day):
+        for o, d in calendar_hints.ROUTES:
+            have = store.calendar_hints_fresh(o, d, start.isoformat(), end.isoformat(), since)
+            if have < calendar_hints.WINDOW_DAYS // 2:
+                due = (o, d, start.isoformat(), end.isoformat())
+                break
+        if due:
+            break
+    if due is None:
+        stats["skipped"] = "fresh"
+        return stats
+    o, d, start, end = due
+    stats["requests"] = 1
+    ok = False
+    try:
+        rows = (fetcher or fetch_picker)(o, d, start, end, nights=calendar_hints.STAY_NIGHTS)
+        if not rows:
+            raise GFlights2Error("picker returned no usable rows")
+        store.record_calendar_hints(o, d, rows, now.isoformat(timespec="seconds"))
+        ok = True
+        stats["ok"], stats["hints"] = 1, len(rows)
+    except GFlights2Error as exc:
+        stats["errors"] = 1
+        log.warning("google-flights2 Picker %s→%s %s~%s: %s", o, d, start, end, exc)
+    except Exception as exc:
+        stats["errors"] = 1
+        log.warning("google-flights2 Picker %s→%s 意外失敗：%s", o, d, type(exc).__name__)
+    finally:
+        store.record_api_usage(PROVIDER, day.isoformat(), ok=ok)
+    return stats
 
 
 def _code(flight_number) -> str:

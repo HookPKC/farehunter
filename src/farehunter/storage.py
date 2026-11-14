@@ -106,6 +106,18 @@ CREATE TABLE IF NOT EXISTS api_check_wants (
     checked_at  TEXT NOT NULL,
     PRIMARY KEY (provider, origin, destination, depart_date, return_date, want)
 );
+
+-- Picker 線索（calendar_hints.py）：google-flights2 日曆回的「出發日＋N 晚」最低價。**含轉機、
+-- 沒有航空公司**，只用來決定巡檢先查哪幾天；價格、看板、警報、統計都不讀這張表。
+CREATE TABLE IF NOT EXISTS calendar_hints (
+    origin      TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    depart_date TEXT NOT NULL,
+    return_date TEXT NOT NULL,
+    price       REAL NOT NULL,
+    fetched_at  TEXT NOT NULL,
+    PRIMARY KEY (origin, destination, depart_date, return_date)
+);
 """ + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
 
 
@@ -520,6 +532,35 @@ class Store:
                  AND return_date=? AND want=? AND julianday(checked_at) >= julianday(?)""",
             (provider, origin, destination, depart_date, return_date, want, since)
         ).fetchone() is not None
+
+    def record_calendar_hints(self, origin: str, destination: str,
+                              rows: list[tuple[str, str, float]], fetched_at: str) -> None:
+        """寫入一段 Picker 線索（去程日, 回程日, 價格）；同一趟只留最新的。順手清掉已出發的。"""
+        self.conn.executemany(
+            """INSERT INTO calendar_hints VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(origin, destination, depart_date, return_date)
+               DO UPDATE SET price = excluded.price, fetched_at = excluded.fetched_at""",
+            [(origin, destination, dep, ret, float(price), fetched_at) for dep, ret, price in rows])
+        self.conn.execute("DELETE FROM calendar_hints WHERE depart_date < ?", (fetched_at[:10],))
+        self.conn.commit()
+
+    def calendar_hints(self, origin: str, destination: str, earliest: str,
+                       since: str) -> list[tuple[str, str, float]]:
+        """出發日 ≥ earliest、since 之後抓到的線索，價格由低到高。"""
+        return [tuple(r) for r in self.conn.execute(
+            """SELECT depart_date, return_date, price FROM calendar_hints
+               WHERE origin=? AND destination=? AND depart_date >= ?
+                 AND julianday(fetched_at) >= julianday(?)
+               ORDER BY price, depart_date""", (origin, destination, earliest, since))]
+
+    def calendar_hints_fresh(self, origin: str, destination: str, start: str, end: str,
+                             since: str) -> int:
+        """出發日在 [start, end]、since 之後抓到的線索有幾筆（判斷這一段要不要重抓）。"""
+        return self.conn.execute(
+            """SELECT COUNT(*) FROM calendar_hints
+               WHERE origin=? AND destination=? AND depart_date BETWEEN ? AND ?
+                 AND julianday(fetched_at) >= julianday(?)""",
+            (origin, destination, start, end, since)).fetchone()[0]
 
     def google_nonstop_by_date(self, origin: str, destination: str,
                                since: str) -> list[tuple[str, float]]:
