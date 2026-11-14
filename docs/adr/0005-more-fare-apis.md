@@ -172,9 +172,16 @@ Bright Data。
   航空公司代碼取班號前綴，不用名稱對照（所以聯合航空這類 Bright Data 對照表沒有的也讀得到）。
 - 附帶 `priceHistory`：Google 的 low／typical／high 區間與 61 天走勢。**這次沒有存**，之後可拿來
   補冷門線的「Google 判定」。
-- `getCalendarGrid`（去程×回程價格表）：`departure_id`／`arrival_id` 正確（用 `origin`／
-  `destination` 會被退回），但指定日期範圍的參數名稱還沒找到，回的是預設的近 7 天且含轉機價。
-  待使用者提供 RapidAPI 頁面的參數清單；探測 workflow 先留著。
+- `getCalendarGrid`（去程×回程價格表）：必填 `departure_id`／`arrival_id`（`origin`／`destination`
+  會被退回）。不帶範圍時回預設的近 7 天；帶 `start_date_x/end_date_x/start_date_y/end_date_y`
+  回 `Something went wrong`（2026-11-14 試一次，沒再追）。
+- `getCalendarPicker`：**可用**。`departure_id`、`arrival_id`、`start_date`、`end_date`、
+  `trip_type=ROUND`、`trip_days=5` → 一次回 62 天、每天一筆「出發日＋5 晚」的最低價。KHH-NGO
+  有直飛的日子跟當天的 Bright Data／ChocoData 直飛價一致（12/02 10,910、12/09 9,110、12/12 12,237、
+  12/14 9,910、12/21 18,561、12/23 12,910、12/30 12,810）。**但它是含轉機的最低價、沒有航空公司**：
+  沒有直飛的日子回的是轉機價（一整排 13,359／13,442），有直飛但轉機更便宜的日子也回轉機價
+  （01/13 回 13,359，直飛是 16,710）；`stops=1` 參數被忽略。所以**不能當直飛的 Google 實價寫入**，
+  只能當「哪幾天可能便宜」的線索，交給 Bright Data／ChocoData 去查實價。尚未接入。
 
 接入（`src/farehunter/gflights2_flights.py`）：`Verifier` 繼承 Bright Data 的同一套流程
 （`brightdata_flights.Verifier` 的 provider／parse／額度改成可由子類別換掉），provider='gflights2'、
