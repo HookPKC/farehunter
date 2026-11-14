@@ -426,3 +426,43 @@ def test_the_send_record_keeps_the_remaining_quota(tmp_path, monkeypatch):
     st2, b2 = _budget(tmp_path / "u")
     assert N.send_line("x", session=_PacedApi(unlimited=True), budget=b2) is True         # 查不到額度 → 不猜
     assert [tuple(r) for r in st2.conn.execute("SELECT mode, quota_left FROM line_sends")] == [("broadcast", None)]
+
+
+# ---- 只廣播經 Google 驗證的警報（2026-11-14）------------------------------------
+
+def _notify_with(monkeypatch, state, user=True):
+    from types import SimpleNamespace
+    _broadcast_env(monkeypatch, user=user)
+    api = _LineApi(limit=200, used=50)
+    monkeypatch.setattr(N.requests, "get", api.get)
+    monkeypatch.setattr(N.requests, "post", api.post)
+    monkeypatch.setattr(N, "format_alert", lambda *a: "便宜機票")
+    st = None if state is None else SimpleNamespace(state=state)
+    assert N.notify(_offer(), VERDICT, st) == ["line"]
+    return _mode(api)
+
+
+def test_only_verified_alerts_are_broadcast(monkeypatch):
+    """2026-11-01～11-13：10 則未驗證警報有 3 則事後看是錯的（例：KHH-KIX 亞航 8,120，Google
+    實價 10,910）。朋友只收經 Google 驗證的；未驗證、價格有落差的只發給擁有者。"""
+    assert _notify_with(monkeypatch, "verified") == "broadcast"
+    assert _notify_with(monkeypatch, "unverified") == "owner"
+    assert _notify_with(monkeypatch, "conflict") == "owner"
+
+
+def test_notify_without_a_state_still_broadcasts(monkeypatch):
+    assert _notify_with(monkeypatch, None) == "broadcast"
+
+
+def test_an_unverified_alert_without_an_owner_id_is_still_sent(monkeypatch):
+    """沒設 LINE_USER_ID 就沒有「只發給擁有者」可言：照舊廣播，不能整則吞掉。"""
+    assert _notify_with(monkeypatch, "unverified", user=False) == "broadcast"
+
+
+def test_an_owner_only_alert_does_not_use_up_todays_broadcast(tmp_path, monkeypatch):
+    _broadcast_env(monkeypatch)
+    st, b = _budget(tmp_path)
+    api = _PacedApi(limit=200, used=50)
+    assert N.send_line("疑似低價", session=api, budget=b, owner_only=True) is True
+    assert _mode(api) == "owner" and b.broadcasts_today() == 0
+    assert st.line_sends_since("owner", "2026-11-10T00:00:00+00:00") == 1
