@@ -1,0 +1,44 @@
+name: Probe RapidAPI
+
+# 一次性探測（ADR 0005）：google-flights2 的端點、參數、扣額度方式。只能手動觸發；
+# 唯讀、不 commit、不碰 prices.db。每次只打一個請求。結論寫回 ADR 0005 後刪掉。
+
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: "端點路徑，例如 /api/v1/getCalendarGrid"
+        default: "/api/v1/searchAirport"
+      params:
+        description: "查詢參數 JSON"
+        default: "{}"
+      host:
+        description: "X-RapidAPI-Host（預設 google-flights2.p.rapidapi.com）"
+        default: ""
+      dump:
+        description: "印出回應的前幾個字"
+        default: "3000"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests
+      - name: Probe
+        env:
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          RAPID_PATH: ${{ inputs.path }}
+          RAPID_PARAMS: ${{ inputs.params }}
+          RAPID_HOST: ${{ inputs.host }}
+          RAPID_DUMP: ${{ inputs.dump }}
+        run: python scripts/probe_rapidapi.py
