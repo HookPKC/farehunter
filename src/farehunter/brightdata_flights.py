@@ -285,7 +285,8 @@ class Verifier:
             itineraries = parse(page)
             # 拿到頁面就記「查過」：就算沒有可寫入的直飛價，24 小時內巡檢也不再查這趟
             self.store.record_api_check(PROVIDER, origin, dest, depart, ret, stamp,
-                                        parsed=bool(itineraries))
+                                        parsed=bool(itineraries),
+                                        want=carrier_signature(want_carriers))
             if not itineraries:
                 # 頁面拿到了卻一筆都解析不到：多半是 Google 改版，要看得見
                 raise BrightDataError("page fetched but no itineraries parsed")
@@ -326,9 +327,17 @@ class Verifier:
         """「24 小時內查過」的起點。"""
         return self._ago(hours=RECHECK_HOURS)
 
-    def checked_recently(self, origin: str, dest: str, depart: str, ret: str) -> bool:
-        """24 小時內 Bright Data 拿過這趟的頁面（不論有沒有寫入直飛價）。"""
-        return self.store.api_checked_since(PROVIDER, origin, dest, depart, ret, self._since())
+    def checked_recently(self, origin: str, dest: str, depart: str, ret: str,
+                         carriers: str | None = None) -> bool:
+        """24 小時內 Bright Data **替這一組航空公司**拿過這趟的頁面（不論有沒有寫入直飛價）。
+
+        頁面只留下全場最低與指定航空的直飛價（select），所以替別家航空查過的不算：
+        那次沒留下這家的價格，不代表這家沒有直飛。carriers 判不出簽章時退回「任何查詢都算」。
+        """
+        want = carrier_signature(carriers)
+        if want is None:
+            return self.store.api_checked_since(PROVIDER, origin, dest, depart, ret, self._since())
+        return self.store.api_checked_for(PROVIDER, origin, dest, depart, ret, want, self._since())
 
     def recent_match(self, origin: str, dest: str, depart: str, ret: str,
                      carriers: str | None) -> Offer | None:

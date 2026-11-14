@@ -75,6 +75,9 @@ def _verify_with_brightdata(store, verifier, offer, now, judge, csig, current):
       行程，驗證前的狀態又會回到 UNVERIFIED／CONFLICT、去重的桶子也不同——不擋的話，
       同一則警報（或實價不便宜的行程）每小時都會再花一次額度。改用那次的實價：
       不便宜、或已經用它通知過「已驗證」→ 不發；沒有同航空公司的直飛價 → 照原狀態發。
+      「查過」只算**替同一組航空公司**查的那次：頁面只留全場最低與指定航空的價格，替樂桃
+      查過的那次答不了亞航（2026-11-13 KHH-KIX：亞航 8,120 以未驗證發出，實價 10,910）。
+      替別家查過的 → 重查一次。
     """
     o, d, dep, ret = offer.origin, offer.destination, offer.depart_date, offer.return_date
     recent = verifier.recent_match(o, d, dep, ret, offer.carriers)
@@ -88,7 +91,7 @@ def _verify_with_brightdata(store, verifier, offer, now, judge, csig, current):
                                   reference_price=None, reason=recent_verdict.reason):
             return None
         # 實價夠便宜、卻還沒通知過（例如上次送不出去）→ 重新驗證一次再發
-    elif verifier.checked_recently(o, d, dep, ret):
+    elif verifier.checked_recently(o, d, dep, ret, offer.carriers):
         return current
     auth = verifier.verify_alert(o, d, dep, ret, offer.carriers)
     if auth is None:

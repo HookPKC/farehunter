@@ -91,6 +91,21 @@ CREATE TABLE IF NOT EXISTS api_checks (
     parsed      INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (provider, origin, destination, depart_date, return_date)
 );
+
+-- 每次查詢是「替哪一組航空公司」查的（carrier 簽章）。警報驗證靠它判斷「24 小時內查過」
+-- 算不算數：頁面只會留下全場最低與指定航空的直飛價，替樂桃查過的頁面答不了亞航的價格。
+-- 2026-11-13：KHH-KIX 前一天替樂桃查過，隔天快取冒出亞航 8,120，被當成「查過了」直接以
+-- 未驗證發出；5 小時後 Google 實價是 10,910。跟 api_checks 一起清（prune_api_checks）。
+CREATE TABLE IF NOT EXISTS api_check_wants (
+    provider    TEXT NOT NULL,
+    origin      TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    depart_date TEXT NOT NULL,
+    return_date TEXT NOT NULL,
+    want        TEXT NOT NULL,
+    checked_at  TEXT NOT NULL,
+    PRIMARY KEY (provider, origin, destination, depart_date, return_date, want)
+);
 """ + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
 
 
@@ -470,7 +485,14 @@ class Store:
 
     def record_api_check(self, provider: str, origin: str, destination: str,
                          depart_date: str, return_date: str, checked_at: str,
-                         *, parsed: bool = True) -> None:
+                         *, parsed: bool = True, want: str | None = None) -> None:
+        """記下拿過這趟的頁面；want＝這次是替哪一組航空公司查的（carrier 簽章，沒有就不記）。"""
+        if want:
+            self.conn.execute(
+                """INSERT INTO api_check_wants VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(provider, origin, destination, depart_date, return_date, want)
+                   DO UPDATE SET checked_at = excluded.checked_at""",
+                (provider, origin, destination, depart_date, return_date, want, checked_at))
         self.conn.execute(
             """INSERT INTO api_checks
                  (provider, origin, destination, depart_date, return_date, checked_at, parsed)
@@ -487,6 +509,16 @@ class Store:
                WHERE provider=? AND origin=? AND destination=? AND depart_date=?
                  AND return_date=? AND julianday(checked_at) >= julianday(?)""",
             (provider, origin, destination, depart_date, return_date, since)
+        ).fetchone() is not None
+
+    def api_checked_for(self, provider: str, origin: str, destination: str,
+                        depart_date: str, return_date: str, want: str, since: str) -> bool:
+        """since 之後有沒有替這一組航空公司（want）查過這趟。"""
+        return self.conn.execute(
+            """SELECT 1 FROM api_check_wants
+               WHERE provider=? AND origin=? AND destination=? AND depart_date=?
+                 AND return_date=? AND want=? AND julianday(checked_at) >= julianday(?)""",
+            (provider, origin, destination, depart_date, return_date, want, since)
         ).fetchone() is not None
 
     def google_nonstop_by_date(self, origin: str, destination: str,
@@ -517,9 +549,10 @@ class Store:
                GROUP BY c.depart_date""", (provider, origin, destination, since))]
 
     def prune_api_checks(self, provider: str, before: str) -> None:
-        self.conn.execute("DELETE FROM api_checks WHERE provider=? "
-                          "AND julianday(checked_at) < julianday(?)",
-                          (provider, before))
+        for table in ("api_checks", "api_check_wants"):
+            self.conn.execute(f"DELETE FROM {table} WHERE provider=? "
+                              "AND julianday(checked_at) < julianday(?)",
+                              (provider, before))
         self.conn.commit()
 
     def record_cheap_day_notice(self, origin: str, destination: str,
