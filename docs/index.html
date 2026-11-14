@@ -779,6 +779,11 @@ function renderUsage(u, env){
   const b = u.brightdata, s = u.serpapi, d = u.scrapedo, l = u.line;
   if(b) rows.push(row("Bright Data（Google 實價）", b.used, b.limit, `${fmt(b.used)} / ${fmt(b.limit)} 次`,
     `成功 ${fmt(b.ok)} 次${b.timeouts ? `、逾時 ${b.timeouts} 次` : ""}；程式配速用到約 ${fmt(b.target)} 次，每月 1 日重置`));
+  const c = u.chocodata, g = u.gflights2;
+  if(c) rows.push(row("ChocoData（冷門線 Google 實價）", c.used, c.limit, `${fmt(c.used)} / ${fmt(c.limit)} 頁`,
+    `一次性額度，用完不會補；成功 ${fmt(c.ok)} 頁、今天 ${c.today} / ${c.daily_max} 頁${c.used < c.limit ? `，照這個速度約 ${c.days_left} 天後用完` : "，已用完"}`));
+  if(g) rows.push(row("google-flights2（警報第二驗證）", g.used, g.limit, `${fmt(g.used)} / ${fmt(g.limit)} 次`,
+    `近 ${g.window_days} 天程式用掉的次數（方案每月 ${g.plan_limit} 次，程式用到 ${g.limit} 次為止；手動探測不算在內）；成功 ${fmt(g.ok)} 次、今天 ${g.today} / ${g.daily_max} 次`));
   if(s) rows.push(row("SerpAPI（每日快照與驗證）", s.limit - s.left, s.limit, `剩 ${fmt(s.left)} / ${fmt(s.limit)} 次`,
     s.next_reset ? `預計 ${s.next_reset.slice(5).replace("-","/")} 前後重置` : ""));
   if(d) rows.push(row("Scrape.do（便宜日驗證）", d.credits_used, d.credits_limit, `${fmt(d.credits_used)} / ${fmt(d.credits_limit)} 點`,
