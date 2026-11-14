@@ -263,11 +263,14 @@ def _line_quota_left(s, headers: dict, token: str) -> int | None:
 
 
 def send_line(text: str, session: requests.Session | None = None, *,
-              budget: LineBudget | None = None) -> bool:
+              budget: LineBudget | None = None, owner_only: bool = False) -> bool:
     """LINE_BROADCAST=1：廣播給官方帳號的所有好友；本月額度剩不到 LINE_OWNER_RESERVE
     則時改成只 push 給 LINE_USER_ID，至少擁有者不會漏掉通知。有 budget 時再加上配速
     （見 LineBudget），超出今天份額的只發給擁有者。其餘情況照舊 push 給 LINE_USER_ID
-    一個人。額度查不到時照樣廣播。台灣時間半夜靜音送達（quiet_hours）。"""
+    一個人。額度查不到時照樣廣播。台灣時間半夜靜音送達（quiet_hours）。
+
+    owner_only：這則不廣播、只發給擁有者（notify 對沒有經 Google 驗證的警報這樣做）。
+    沒設 LINE_USER_ID 時無人可發，只好照舊廣播。"""
     token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
     user_id = os.environ.get("LINE_USER_ID")
     broadcast = os.environ.get("LINE_BROADCAST") == "1"
@@ -279,7 +282,10 @@ def send_line(text: str, session: requests.Session | None = None, *,
     left, n = None, DEFAULT_RECIPIENTS      # 本月剩餘則數（查不到是 None）、一次廣播用掉幾則
     if broadcast and user_id:
         left = _line_quota_left(s, headers, token)
-        if left is not None and left < LINE_OWNER_RESERVE:
+        if owner_only:
+            log.info("LINE：這則警報沒有經 Google 驗證，只發給擁有者、不廣播")
+            broadcast = False
+        elif left is not None and left < LINE_OWNER_RESERVE:
             log.warning("LINE 本月只剩 %d 則（保留 %d 則給擁有者）：這則只發給擁有者",
                         left, LINE_OWNER_RESERVE)
             broadcast = False
@@ -316,13 +322,19 @@ def channels_configured() -> bool:
 
 def notify(offer: Offer, verdict: Verdict, state=None, *,
            line_budget: LineBudget | None = None) -> list[str]:
-    """Send to all configured channels; return the list that succeeded."""
+    """Send to all configured channels; return the list that succeeded.
+
+    LINE 只廣播**經 Google 驗證**（state.state == VERIFIED）的警報；未驗證、價格有落差的只發給
+    擁有者。2026-11-01～11-13 的 31 則警報有 10 則未驗證，其中 3 則事後看是錯的（實價高
+    25–34%，或 Google 上沒有那家航空）——朋友收到錯價會不再相信警報。state 沒給時照舊。
+    """
     text = format_alert(offer, verdict, state)
+    owner_only = state is not None and getattr(state, "state", None) != "verified"   # price_state.VERIFIED
     sent = []
     quiet = quiet_hours(line_budget.now if line_budget else datetime.now(timezone.utc))
     if send_telegram(text, quiet=quiet):
         sent.append("telegram")
-    if send_line(text, budget=line_budget):
+    if send_line(text, budget=line_budget, owner_only=owner_only):
         sent.append("line")
     if not sent:
         log.info("No notification channel configured; alert printed only:\n%s", text)
