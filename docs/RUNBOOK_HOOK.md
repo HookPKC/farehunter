@@ -156,6 +156,14 @@ FAIL 時看 `shadow_within_by_provider`／`calendar_vs_ref_by_provider`，分得
   `BRIGHTDATA_API_KEY`。下一輪起就完全不碰 Bright Data。
 - **安全**：Bright Data 後台或 API 給的 zone 密碼、金鑰，都不要貼進對話、文件或 commit。
 
+## 3d-1. 巡檢低價警報（2026-11-16 起，先開 KHH-OKA）
+
+巡檢查到的 Google 直飛實價低於門檻，也會發「已驗證」警報。log 會出現「巡檢警報：KHH→OKA …」，
+monitor 的 summary 有 `sweep_alerts`（這輪發了幾則）。
+
+- 只有 `config.yaml` 裡寫了 `sweep_alerts: true` 的航線會發。想關掉就刪掉那一行或改成 `false`。
+- 想多開一條線，先確認那條線的門檻是用實價重算過的，不然可能一次跳出好幾則。
+
 ## 3d-2. ChocoData（冷門線的 Google 實價，2026-11-13 起）
 
 **先記住：ChocoData 壞了或用完都不影響抓價、警報、看板。** 它只在每小時那一輪替四條冷門線

@@ -6,7 +6,7 @@ import os
 import sqlite3
 import time
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -14,7 +14,7 @@ import yaml
 from .travelpayouts import (TravelpayoutsClient, parse_offers, TravelpayoutsError,
                             TRANSPORT_ERROR)
 from .storage import Store, meaningfully_cheaper
-from .analyzer import evaluate
+from .analyzer import Verdict, evaluate
 from .notify import notify, channels_configured, LineBudget
 from . import health
 from . import price_state
@@ -22,7 +22,7 @@ from . import brightdata_flights as brightdata
 from . import chocodata_flights as chocodata
 from . import gflights2_flights as gflights2
 from . import calendar_hints
-from .models import stay_ok
+from .models import Offer, stay_ok
 
 log = logging.getLogger(__name__)
 
@@ -130,6 +130,70 @@ def _downgrade_without_news(store, offer, pstate, csig) -> bool:
         offer.origin, offer.destination, offer.depart_date,
         return_date=offer.return_date, carrier_signature=csig)
     return floor is not None and not meaningfully_cheaper(pstate.selected_price, floor)
+
+
+#: 巡檢供應商：它們寫入的是 Google 直飛實價（ADR 0004／0005）
+SWEEP_PROVIDERS = (brightdata.PROVIDER, chocodata.PROVIDER, gflights2.PROVIDER)
+SWEEP_ALERT_MIN_LEAD_DAYS = 2
+
+
+def _sweep_alerts(store, cfg, now, line_budget) -> int:
+    """巡檢這一輪查到的直飛實價，低於門檻就發警報（只限 config 開了 sweep_alerts 的航線）。
+
+    警報原本只從 Aviasales 快取價觸發，Google 實價只拿來驗證；巡檢自己查到的低價只進資料庫
+    和看板（2026-11-14：24 小時內有 19 趟低於門檻卻沒通知）。這些本身就是 Google 直飛實價，
+    所以直接當「已驗證」：
+    - 只看門檻（absolute）。big_drop／new_low 的基準是快取價算的統計，拿實價去比會誤判。
+    - 住 2–10 晚、出發日至少 SWEEP_ALERT_MIN_LEAD_DAYS 天後；同一趟這輪只取最便宜的一筆。
+    - 去重跟快取那條路共用（同一趟、同航空 30 天內只發一次，除非再便宜 10%）。
+    門檻是用快取價校準的：航線的門檻用實價重算過，才開 sweep_alerts（2026-11-16 先開 KHH-OKA）。
+    """
+    defaults = cfg.get("defaults", {})
+    routes = {(r["origin"], r["destination"]): {**defaults, **r} for r in cfg["routes"]
+              if r.get("sweep_alerts") and r.get("absolute_threshold")}
+    if not routes:
+        return 0
+    stamp = now.isoformat(timespec="seconds")
+    earliest = (now.date() + timedelta(days=SWEEP_ALERT_MIN_LEAD_DAYS)).isoformat()
+    best: dict = {}
+    for r in store.google_rows_at(stamp, SWEEP_PROVIDERS):
+        key = (r["origin"], r["destination"])
+        if key not in routes or r["depart_date"] < earliest:
+            continue
+        if not stay_ok(r["depart_date"], r["return_date"]):
+            continue
+        trip = (*key, r["depart_date"], r["return_date"])
+        if trip not in best or r["price"] < best[trip]["price"]:
+            best[trip] = r
+    sent_count = 0
+    for (o, d, dep, ret), r in sorted(best.items()):
+        threshold = routes[(o, d)]["absolute_threshold"]
+        if r["price"] > threshold:
+            continue
+        offer = Offer(origin=o, destination=d, depart_date=dep, return_date=ret,
+                      price=r["price"], currency=r["currency"], carriers=r["carriers"],
+                      stops=0, duration="", fare_class="any", source="google",
+                      provider=r["provider"])
+        pstate = _resolve_state(store, offer, now, authoritative=offer)
+        if pstate.state != price_state.VERIFIED:
+            continue                      # 理論上不會發生；不確定就不發
+        verdict = Verdict(True, "absolute",
+                          f"{r['price']:,.0f} {r['currency']} <= 門檻 {threshold:,.0f}")
+        csig = price_state.carrier_signature(offer.carriers)
+        if _already_alerted(store, offer, pstate, verdict, csig):
+            continue
+        sent = notify(offer, verdict, pstate, line_budget=line_budget)
+        if not sent and channels_configured():
+            log.error("巡檢警報發送失敗，下一輪巡檢查到時再發: %s→%s %s", o, d, dep)
+            continue
+        store.record_alert(o, d, dep, pstate.selected_price, verdict.reason,
+                           return_date=ret, carrier_signature=csig,
+                           price_source=pstate.selected_source, price_status=pstate.state,
+                           reference_price=None, reference_observed_at=None)
+        log.info("巡檢警報：%s→%s %s~%s %s %.0f（門檻 %.0f）",
+                 o, d, dep, ret, offer.carriers, r["price"], threshold)
+        sent_count += 1
+    return sent_count
 
 
 # ---- 防重複 guard（fail-open）----------------------------------------------
@@ -452,6 +516,16 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 log.exception("ChocoData 巡檢意外失敗，本輪略過")
             summary["chocodata"] = sweeper.stats
             log.info("ChocoData 本輪：%s", sweeper.stats)
+
+        # 巡檢查到的直飛實價低於門檻 → 警報（只限 sweep_alerts 航線）。Aviasales 全滅的輪次
+        # 不 commit，記下的警報會消失、下一輪重發，所以不跑。
+        if not all_searches_failed(summary):
+            try:
+                n = _sweep_alerts(store, cfg, now, line_budget)
+                summary["sweep_alerts"] = n
+                summary["alerts"] += n
+            except Exception:
+                log.exception("巡檢警報意外失敗，本輪略過")
 
         if summary["zero_record_routes"]:
             # 只看 Aviasales：Bright Data 寫入的 Google 實價不算在內（冷門線常只有它）
