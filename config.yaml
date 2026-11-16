@@ -48,6 +48,7 @@ routes:
   - origin: KHH
     destination: OKA      # 沖繩那霸
     absolute_threshold: 6500    # 原 6000 → 8200（7–8 月資料）→ 2026-11 重算 6500，每月約 2 次
+    sweep_alerts: true          # 巡檢查到的 Google 直飛實價 ≤ 門檻也發警報（2026-11-16 起；門檻用實價重算過的航線才開）
   - origin: KHH
     destination: NGO      # 名古屋中部
     absolute_threshold: 11100   # 原 7500（史上最低 9,148，永不觸發）→ 每月約 2 次

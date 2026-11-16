@@ -483,6 +483,17 @@ class Store:
                LIMIT 1""",
             (origin, destination, depart_date, return_date, since)).fetchone() is not None
 
+    def google_rows_at(self, observed_at: str, providers: tuple[str, ...]) -> list:
+        """這一輪（observed_at 剛好等於這個時間戳）由巡檢供應商寫入的直飛 Google 實價（'any' 列）。"""
+        marks = ",".join("?" * len(providers))
+        return self.conn.execute(
+            f"""SELECT origin, destination, depart_date, return_date, price, currency, carriers,
+                       stops, provider
+                FROM observations
+                WHERE observed_at=? AND source='google' AND fare_class='any' AND stops=0
+                  AND provider IN ({marks}) AND return_date IS NOT NULL AND return_date != ''
+                ORDER BY price""", (observed_at, *providers)).fetchall()
+
     def google_rows_since(self, origin: str, destination: str, depart_date: str,
                           return_date: str, since: str, *, provider: str) -> list:
         """同一行程在 since 之後、某個供應商寫入的 Google 實價，最新的在前。"""
