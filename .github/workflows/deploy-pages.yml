@@ -24,7 +24,7 @@ jobs:
   deploy:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -32,5 +32,15 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs
+      # 偶發：artifact 已上傳成功，deploy 卻回「No artifacts named "github-pages"」（GitHub 端
+      # metadata 還沒就緒；2026-11-13、11-19 各一次，下一輪都自己恢復）。第一次失敗就等 30 秒再試
+      # 一次；第二次也失敗才讓整個 job 失敗、寄信。
       - id: deployment
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+      - name: 第一次部署失敗：等 30 秒
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 30
+      - id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v5
