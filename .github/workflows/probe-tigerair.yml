@@ -1,0 +1,26 @@
+name: Probe Tigerair
+
+# 一次性探測：虎航官網日曆（station-daily-prices）還能不能用、格式、跟 Google 直飛實價差多少。
+# 只能手動觸發；唯讀、不 commit、不碰 prices.db 以外的東西、不用任何 secret。每次只打 2 個請求。
+# 特賣偵測方案確定後刪掉。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests
+      - name: Probe
+        run: python scripts/probe_tigerair.py
