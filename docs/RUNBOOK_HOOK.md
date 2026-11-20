@@ -38,8 +38,10 @@
 
 ## 3. Deploy Pages 失敗時（紅 ✗）
 
-Pages 偶爾一次性抽風（歷史上發生過，artifact 都建好了最後一步掛掉）。
-Actions → **Deploy Pages** → 點進紅色那筆 → 右上 **Re-run all jobs**。重跑幾乎必過。
+Pages 偶爾一次性抽風（歷史上發生過，artifact 都建好了最後一步掛掉，log 寫「No artifacts named
+"github-pages"」）。2026-11-20 起 workflow 會自己等 30 秒再試一次，第二次也失敗才會變紅、寄信。
+真的收到失敗信：多半下一輪（一小時內）就自己恢復；想馬上恢復就 Actions → **Deploy Pages** →
+點進紅色那筆 → 右上 **Re-run all jobs**。重跑幾乎必過。
 
 若紅的是 **FareHunter Monitor** 本身：點進 log 看第一個紅色步驟——若是「Run monitor」且最後一行是「✖ 本輪 N 次搜尋全部失敗」，往上看 `Search failed` 那幾行：提到 401/token，多半是 Travelpayouts token 過期，到 repo Settings → Secrets 更新 `TRAVELPAYOUTS_TOKEN`；提到 `API error 0: ReadTimeout`／`ConnectionError`，是 Travelpayouts 那端故障，不用處理，恢復後下一班自動補上（只有零星幾個月份逾時時 run 仍是綠的，不會紅）。若訊息是 `ArchiveIntegrityError`，照下面 §3b。
 
