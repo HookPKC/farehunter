@@ -586,17 +586,26 @@ class Store:
             out[(r[0], r[1], r[2])] = r[3]
         return out
 
-    def record_tigerair_fares(self, legs: dict, fetched_at: str, keep_since: str) -> int:
+    def record_tigerair_fares(self, legs: dict, fetched_at: str, *, keep_from: str,
+                              keep_to: str, history_since: str) -> int:
         """legs = {(出發地, 目的地, 日期): (價格, updatedAt)}；只寫新的格子和價格變了的。
 
-        順手刪掉出發日早於 keep_since 的紀錄。回傳寫了幾筆。
+        順手清理，讓表不會一直長：出發日不在 [keep_from, keep_to] 的整格刪掉；history_since
+        之前寫的變化紀錄刪掉，但每格保留最新一筆（下次比對「有沒有變」要用）。回傳寫了幾筆。
         """
         last = self.tigerair_latest()
         rows = [(o, d, dep, float(price), up or None, fetched_at)
                 for (o, d, dep), (price, up) in sorted(legs.items())
                 if last.get((o, d, dep)) != float(price)]
         self.conn.executemany("INSERT INTO tigerair_fares VALUES (?, ?, ?, ?, ?, ?)", rows)
-        self.conn.execute("DELETE FROM tigerair_fares WHERE depart_date < ?", (keep_since,))
+        self.conn.execute("DELETE FROM tigerair_fares WHERE depart_date < ? OR depart_date > ?",
+                          (keep_from, keep_to))
+        self.conn.execute(
+            """DELETE FROM tigerair_fares
+               WHERE julianday(fetched_at) < julianday(?)
+                 AND rowid NOT IN (SELECT MAX(rowid) FROM tigerair_fares
+                                   GROUP BY origin, destination, depart_date)""",
+            (history_since,))
         self.conn.commit()
         return len(rows)
 
