@@ -269,3 +269,44 @@ def test_a_broken_tigerair_does_not_stop_the_run(tmp_path, monkeypatch):
     assert summary["health"] is not None
     assert summary["tigerair"]["errors"] == 2 and summary["tigerair"]["hint_routes"] == 0
     assert asked                                                         # 巡檢照舊
+
+
+# ---- 表不會一直長（2026-11-21：上線後每小時 240–270 筆變化）-------------------------
+
+def test_only_dates_within_the_store_window_are_saved_but_hints_see_the_whole_year(tmp_path):
+    st = _store(tmp_path)
+    far = tc.STORE_DAYS_AHEAD + 30
+    legs, stats = tc.collect(st, NOW, ROUTES, fetcher=lambda s: [
+        _row("KHH", "OKA", 10, 999), _row("KHH", "OKA", far, 999), _row("OKA", "KHH", far + 5, 999)])
+    assert ("KHH", "OKA", _d(far)) in legs and stats["legs"] == 3      # 線索照樣看得到遠期
+    assert stats["written"] == 1
+    saved = [r[0] for r in st.conn.execute("SELECT depart_date FROM tigerair_fares")]
+    assert saved == [_d(10)]
+    assert tc.hints(legs, ROUTES, NOW, {}, limit=4) == {("KHH", "OKA"): [(_d(far), _d(far + 5))]}
+
+
+def test_old_history_keeps_only_the_latest_row_per_day(tmp_path):
+    st = _store(tmp_path)
+    old = (NOW - timedelta(days=tc.HISTORY_DAYS + 1)).isoformat(timespec="seconds")
+    older = (NOW - timedelta(days=tc.HISTORY_DAYS + 2)).isoformat(timespec="seconds")
+    recent = (NOW - timedelta(days=1)).isoformat(timespec="seconds")
+    st.conn.executemany("INSERT INTO tigerair_fares VALUES ('KHH','OKA',?,?,NULL,?)", [
+        (_d(10), 1999.0, older), (_d(10), 999.0, old),                 # 舊的兩筆 → 只留 999
+        (_d(20), 2999.0, old), (_d(20), 2499.0, recent)])              # 一舊一新 → 舊的刪、新的留
+    st.conn.commit()
+    tc.collect(st, NOW, ROUTES, fetcher=lambda s: [_row("KHH", "OKA", 10, 999),
+                                                   _row("KHH", "OKA", 20, 2499)])
+    rows = st.conn.execute("""SELECT depart_date, price FROM tigerair_fares
+                              ORDER BY depart_date, rowid""").fetchall()
+    assert [tuple(r) for r in rows] == [(_d(10), 999.0), (_d(20), 2499.0)]
+    assert st.tigerair_latest() == {("KHH", "OKA", _d(10)): 999.0, ("KHH", "OKA", _d(20)): 2499.0}
+
+
+def test_rows_saved_before_the_window_existed_are_dropped(tmp_path):
+    st = _store(tmp_path)
+    st.conn.execute("INSERT INTO tigerair_fares VALUES ('KHH','OKA',?,999,NULL,?)",
+                    (_d(tc.STORE_DAYS_AHEAD + 1), AT))
+    st.conn.commit()
+    tc.collect(st, NOW, ROUTES, fetcher=lambda s: [_row("KHH", "OKA", 10, 999)])
+    left = [r[0] for r in st.conn.execute("SELECT depart_date FROM tigerair_fares")]
+    assert left == [_d(10)]
