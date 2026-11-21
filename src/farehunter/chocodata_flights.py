@@ -33,7 +33,7 @@ import requests
 from .brightdata_flights import (MIN_LEAD_DAYS, RECHECK_HOURS, HIT_MEMORY_DAYS,
                                  MISS_MEMORY_DAYS, anchor_trips, parse, search_url, select)
 from .brightdata_flights import PROVIDER as BRIGHTDATA
-from . import calendar_hints
+from . import calendar_hints, tigerair_calendar
 
 log = logging.getLogger(__name__)
 
@@ -121,8 +121,10 @@ class ColdSweeper:
         self.fetch = fetcher or fetch
         self.clock = clock
         self.hint_caps: dict = {}     # 同 brightdata_flights.Verifier.hint_caps
+        self.tiger_hints: dict = {}   # 同 brightdata_flights.Verifier.tiger_hints（這裡取兩倍）
         self.stats = {"allowance": self.left, "requests": 0, "ok": 0, "recorded": 0,
-                      "no_direct": 0, "errors": 0, "exhausted": False, "hinted": 0}
+                      "no_direct": 0, "errors": 0, "exhausted": False, "hinted": 0,
+                      "tiger_hinted": 0}
 
     def _ago(self, **delta) -> str:
         return (self.now - timedelta(**delta)).isoformat(timespec="seconds")
@@ -172,6 +174,9 @@ class ColdSweeper:
                     limit=2 * calendar_hints.PER_ROUTE) if (dep, ret) not in have]
                 q[:0] = hinted
                 self.stats["hinted"] += len(hinted)
+            # 虎航官網日曆線索排最最前面（見 tigerair_calendar；取兩倍，理由同 Picker）
+            self.stats["tiger_hinted"] += tigerair_calendar.put_first(
+                q, self.tiger_hints.get((o, d), ())[:2 * tigerair_calendar.PER_ROUTE])
             need = TRIPS_PER_ROUTE - len(q)
             if need > 0:
                 have = {(dep, ret) for dep, ret, _ in q}

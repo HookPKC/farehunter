@@ -22,6 +22,7 @@ from . import brightdata_flights as brightdata
 from . import chocodata_flights as chocodata
 from . import gflights2_flights as gflights2
 from . import calendar_hints
+from . import tigerair_calendar
 from .models import Offer, stay_ok
 
 log = logging.getLogger(__name__)
@@ -472,6 +473,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
 
         # Picker 線索（ADR 0005，calendar_hints）：每輪最多抓一段 Google 日曆，告訴下面兩個巡檢先查
         # 哪幾天。線索價含轉機，只存在 calendar_hints；直飛實價仍然只由巡檢寫入。
+        route_pairs = [(r["origin"], r["destination"]) for r in cfg["routes"]]
         hint_caps = {(r["origin"], r["destination"]): r["absolute_threshold"] * calendar_hints.CAP_RATIO
                      for r in cfg["routes"] if r.get("absolute_threshold")}
         if second is not None and not all_searches_failed(summary):
@@ -480,8 +482,23 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 log.info("google-flights2 Picker 本輪：%s", summary["picker"])
             except Exception:
                 log.exception("Picker 線索更新意外失敗，本輪略過")
+
+        # 虎航官網日曆（ADR 0005，tigerair_calendar）：每輪 2 個請求、不用金鑰。單程未稅價只記有
+        # 變化的（收集中，不通知），並把「去回加總最便宜」的日子交給下面兩個巡檢先查。官網價不寫進
+        # 價格資料；抓不到就沒有虎航線索，巡檢照舊。Aviasales 全滅的輪次不 commit，所以不抓。
+        tiger_hints: dict = {}
+        if not all_searches_failed(summary):
+            try:
+                legs, summary["tigerair"] = tigerair_calendar.collect(store, now, route_pairs)
+                tiger_hints = tigerair_calendar.hints(
+                    legs, route_pairs, now, hint_caps, limit=2 * tigerair_calendar.PER_ROUTE)
+                summary["tigerair"]["hint_routes"] = len(tiger_hints)
+                log.info("虎航官網日曆本輪：%s", summary["tigerair"])
+            except Exception:
+                log.exception("虎航官網日曆意外失敗，本輪略過")
         if verifier is not None:
             verifier.hint_caps = hint_caps
+            verifier.tiger_hints = tiger_hints
 
         if verifier is not None and all_searches_failed(summary):
             # Aviasales 全部失敗的輪次會 exit 1、不 commit prices.db，這輪的帳本會消失；
@@ -492,8 +509,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
             # 抓完 Aviasales 後，剩下的 Bright Data 額度拿去查各航線最便宜、24 小時內還沒查過
             # 的行程（ADR 0004）。放在健康檢查之前，健康報告才看得到這輪補的資料。
             try:
-                verifier.sweep(sweep_candidates,
-                               [(r["origin"], r["destination"]) for r in cfg["routes"]])
+                verifier.sweep(sweep_candidates, route_pairs)
             except Exception:
                 # 巡檢是加分項：任何意外都不能讓整輪中止、跳過後面的匯出（HANDOFF §6 的
                 # 10-18 事故就是一個沒接住的例外讓整輪停掉）
@@ -510,6 +526,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
         if chocodata.configured() and not all_searches_failed(summary):
             sweeper = chocodata.ColdSweeper(store, now)
             sweeper.hint_caps = hint_caps
+            sweeper.tiger_hints = tiger_hints
             try:
                 sweeper.sweep(sweep_candidates)
             except Exception:

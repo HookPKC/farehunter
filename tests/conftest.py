@@ -26,6 +26,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from farehunter import cheap_days as _cheap_days
+from farehunter import tigerair_calendar as _tigerair
 
 #: 清掉所有可能讓測試真的連外的金鑰。新增付費 API 時記得加進來。
 API_KEY_ENV_VARS = (
@@ -68,3 +69,18 @@ def _isolate_board_file(monkeypatch):
     而不是拿到今天剛好長什麼樣的真實資料。
     """
     monkeypatch.setattr(_cheap_days, "DEFAULT_DATA_PATH", _NONEXISTENT_BOARD)
+
+
+def _tigerair_offline(*a, **k):
+    raise _tigerair.TigerairError("tests never fetch Tigerair")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_tigerair(monkeypatch):
+    """虎航官網日曆不用金鑰，上面清金鑰的做法擋不住：runner.run() 每輪都會去抓。
+
+    CI 的 Run tests 步驟連得到虎航，不擋的話每小時跑測試就會真的打過去。這裡把預設抓取
+    換成一律失敗（runner 照「抓不到」處理）；想測抓取結果的測試明確傳 fetcher=。
+    """
+    monkeypatch.setattr(_tigerair, "fetch", _tigerair_offline)
+    monkeypatch.setattr(_tigerair, "PAUSE_S", 0)
