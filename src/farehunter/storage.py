@@ -131,6 +131,12 @@ CREATE TABLE IF NOT EXISTS tigerair_fares (
 );
 CREATE INDEX IF NOT EXISTS idx_tigerair_fares
     ON tigerair_fares (origin, destination, depart_date, fetched_at);
+
+-- Telegram 每日摘要（daily_digest.py）發過的台灣日期，一天只發一次。
+CREATE TABLE IF NOT EXISTS digest_sends (
+    day     TEXT PRIMARY KEY,
+    sent_at TEXT NOT NULL
+);
 """ + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
 
 
@@ -576,6 +582,13 @@ class Store:
                WHERE origin=? AND destination=? AND depart_date >= ?
                  AND julianday(fetched_at) >= julianday(?)
                ORDER BY price, depart_date""", (origin, destination, earliest, since))]
+
+    def digest_sent(self, day: str) -> bool:
+        return self.conn.execute("SELECT 1 FROM digest_sends WHERE day=?", (day,)).fetchone() is not None
+
+    def record_digest(self, day: str, sent_at: str) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO digest_sends VALUES (?, ?)", (day, sent_at))
+        self.conn.commit()
 
     def tigerair_latest(self) -> dict:
         """每格最後記下的價格 {(出發地, 目的地, 日期): 價格}。"""

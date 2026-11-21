@@ -94,7 +94,8 @@ cp .env.example .env    # 填入金鑰後 export，或直接設定環境變數
 2. 跟你的 bot 說一句話，然後開 `https://api.telegram.org/bot<TOKEN>/getUpdates` 找到 `chat.id` → `TELEGRAM_CHAT_ID`
 
 設了 Telegram 之後，擁有者的通知都走 Telegram；LINE 只用來廣播給朋友（只發給擁有者的那一則，
-Telegram 送到就不再用 LINE 發，保留額度也從 30 則降到 10 則）。細節見 RUNBOOK §3e。
+Telegram 送到就不再用 LINE 發，保留額度也從 30 則降到 10 則）。每天早上另發一則各線行情摘要到
+Telegram（`daily_digest.py`）。細節見 RUNBOOK §3e。
 
 ### 3. LINE 通知（可選）
 
