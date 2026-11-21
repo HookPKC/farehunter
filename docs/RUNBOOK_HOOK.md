@@ -217,6 +217,10 @@ google-flights2（RapidAPI，每月 150 次免費）查一次。查到同一家�
   額度，省下來給朋友的廣播。Telegram 送不出去時自動退回 LINE 發給你，不會漏。log 會出現
   「擁有者已經從 Telegram 收到這則，不再用 LINE 發」。要停用 Telegram：刪掉 repo secret
   `TELEGRAM_BOT_TOKEN`，一切回到只用 LINE。
+- **每日行情摘要**（2026-11-21 起，只走 Telegram）：每天台灣時間早上 8 點那輪，發一則各線近 48 小時
+  的最低 Google 直飛實價（住 2–10 晚）、跟上週比漲跌、低於門檻的標 ✅，另列昨天警報數與 LINE 剩餘。
+  那輪沒送成會在下一輪補，最晚到中午；一天只發一次（prices.db 的 `digest_sends`）。只列 Google 實價，
+  不列快取估價與虎航官網價。log 會出現「每日摘要已發到 Telegram」。
 
 - **廣播與額度**：`LINE_BROADCAST=1` 時，通知會廣播給官方帳號的所有好友。每位收件人算一則；
   免費方案每月約 200 則，5 個人時一次廣播就用掉 5 則。

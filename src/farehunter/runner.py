@@ -23,6 +23,7 @@ from . import chocodata_flights as chocodata
 from . import gflights2_flights as gflights2
 from . import calendar_hints
 from . import tigerair_calendar
+from . import daily_digest
 from .models import Offer, stay_ok
 
 log = logging.getLogger(__name__)
@@ -543,6 +544,15 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 summary["alerts"] += n
             except Exception:
                 log.exception("巡檢警報意外失敗，本輪略過")
+
+        # Telegram 每日摘要（daily_digest）：台灣時間早上那輪發給擁有者，不用 LINE。放在所有警報
+        # 之後，摘要才算得到這輪的實價與警報。Aviasales 全滅的輪次不 commit，「今天發過」的紀錄
+        # 會消失、下一輪重發，所以不跑。
+        if not all_searches_failed(summary):
+            try:
+                summary["digest"] = daily_digest.maybe_send(store, cfg["routes"], now)
+            except Exception:
+                log.exception("每日摘要意外失敗，本輪略過")
 
         if summary["zero_record_routes"]:
             # 只看 Aviasales：Bright Data 寫入的 Google 實價不算在內（冷門線常只有它）
