@@ -50,7 +50,9 @@ jobs:
           if status != 200 or not (me or {}).get("ok"):
               print(f"❌ getMe 失敗：HTTP {status}")
               sys.exit(1)
-          print("✅ token 有效")
+          name = str((me.get("result") or {}).get("username") or "")
+          # 不印全名（公開紀錄）：前 3 個字＋總長度，夠你確認是不是你那個 bot
+          print(f"✅ token 有效：bot @{name[:3]}…（共 {len(name)} 個字）")
 
           status, upd = call("getUpdates")
           if status == 409:
@@ -59,14 +61,19 @@ jobs:
           if status != 200 or not (upd or {}).get("ok"):
               print(f"❌ getUpdates 失敗：HTTP {status}")
               sys.exit(1)
-          chats = []
-          for u in upd.get("result") or []:
+          results = upd.get("result") or []
+          chats, kinds = [], {}
+          for u in results:
               msg = u.get("message") or u.get("edited_message") or {}
               chat = msg.get("chat") or {}
+              kind = chat.get("type") or next((k for k in u if k != "update_id"), "?")
+              kinds[kind] = kinds.get(kind, 0) + 1
               if chat.get("type") == "private" and chat.get("id") is not None:
                   chats.append(chat["id"])
+          print(f"bot 目前收到 {len(results)} 筆更新：{kinds or '沒有'}")
           if not chats:
-              print("❌ bot 還沒收到你的訊息：在 Telegram 對你的 bot 傳一句話，再跑一次")
+              print("❌ bot 還沒收到你的私訊。確認上面的 bot 名稱是你傳訊息的那個；"
+                    "對它傳一句話後再跑一次")
               sys.exit(1)
           print(f"找到 {len(set(chats))} 個私訊對話，用最新的那個")
           chat_id = chats[-1]
