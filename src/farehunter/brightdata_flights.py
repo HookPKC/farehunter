@@ -30,7 +30,7 @@ from urllib.parse import quote
 
 import requests
 
-from . import calendar_hints
+from . import calendar_hints, tigerair_calendar
 from .models import Offer
 from .price_state import carrier_signature
 from .travelpayouts import FULL_SERVICE
@@ -251,6 +251,8 @@ class Verifier:
     provider = PROVIDER
     #: Picker 線索價的上限（(origin, dest) → 門檻×CAP_RATIO），runner 設定；沒設就不設上限
     hint_caps: dict = {}
+    #: 虎航官網日曆線索（(origin, dest) → [(去程日, 回程日)]），runner 設定；只取前 PER_ROUTE 個
+    tiger_hints: dict = {}
     label = "Bright Data"
     parse = staticmethod(parse)
 
@@ -442,6 +444,12 @@ class Verifier:
                     if (dep, ret) not in have]
                 q[:0] = hinted
                 self.stats["hinted"] = self.stats.get("hinted", 0) + len(hinted)
+            # 虎航官網日曆線索（tigerair_calendar）：官網去回加總最便宜的日子排最最前面。虎航在
+            # 這些航線只飛直飛，比含轉機的 Picker 線索準；同樣只決定先查哪天、價格不寫入。
+            n = tigerair_calendar.put_first(
+                q, self.tiger_hints.get((o, d), ())[:tigerair_calendar.PER_ROUTE])
+            if n:
+                self.stats["tiger_hinted"] = self.stats.get("tiger_hinted", 0) + n
             need = ROUTE_MIN_TRIPS - len(q)
             if need > 0:
                 known = known or self.weekday_outcomes(o, d)

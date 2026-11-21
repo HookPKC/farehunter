@@ -118,6 +118,19 @@ CREATE TABLE IF NOT EXISTS calendar_hints (
     fetched_at  TEXT NOT NULL,
     PRIMARY KEY (origin, destination, depart_date, return_date)
 );
+
+-- 虎航官網日曆（tigerair_calendar.py）：每日**單程、未稅**最低價，同一格只在價格變了才寫一筆
+-- （看特賣怎麼出現）。不是來回實價：價格、看板、警報、統計都不讀這張表。
+CREATE TABLE IF NOT EXISTS tigerair_fares (
+    origin      TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    depart_date TEXT NOT NULL,
+    price       REAL NOT NULL,
+    updated_at  TEXT,
+    fetched_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tigerair_fares
+    ON tigerair_fares (origin, destination, depart_date, fetched_at);
 """ + archive.MANIFEST_DDL   # 封存檔的筆數帳本，定義與說明在 archive.py
 
 
@@ -563,6 +576,29 @@ class Store:
                WHERE origin=? AND destination=? AND depart_date >= ?
                  AND julianday(fetched_at) >= julianday(?)
                ORDER BY price, depart_date""", (origin, destination, earliest, since))]
+
+    def tigerair_latest(self) -> dict:
+        """每格最後記下的價格 {(出發地, 目的地, 日期): 價格}。"""
+        out = {}
+        for r in self.conn.execute(
+                """SELECT origin, destination, depart_date, price FROM tigerair_fares
+                   ORDER BY fetched_at, rowid"""):
+            out[(r[0], r[1], r[2])] = r[3]
+        return out
+
+    def record_tigerair_fares(self, legs: dict, fetched_at: str, keep_since: str) -> int:
+        """legs = {(出發地, 目的地, 日期): (價格, updatedAt)}；只寫新的格子和價格變了的。
+
+        順手刪掉出發日早於 keep_since 的紀錄。回傳寫了幾筆。
+        """
+        last = self.tigerair_latest()
+        rows = [(o, d, dep, float(price), up or None, fetched_at)
+                for (o, d, dep), (price, up) in sorted(legs.items())
+                if last.get((o, d, dep)) != float(price)]
+        self.conn.executemany("INSERT INTO tigerair_fares VALUES (?, ?, ?, ?, ?, ?)", rows)
+        self.conn.execute("DELETE FROM tigerair_fares WHERE depart_date < ?", (keep_since,))
+        self.conn.commit()
+        return len(rows)
 
     def calendar_hints_fresh(self, origin: str, destination: str, start: str, end: str,
                              since: str) -> int:
