@@ -221,8 +221,10 @@ def run(db_path: str = "prices.db", data_path: str | None = None,
                 print(text); print("-" * 40)
                 summary["sent"] += 1
                 continue
-            sent = [c for c, ok in (("telegram", send_telegram(text, quiet=quiet_hours(now))),
-                                    ("line", send_line(text, budget=budget))) if ok]
+            telegram_ok = send_telegram(text, quiet=quiet_hours(now))
+            # Telegram 已經送到擁有者：LINE 只在會廣播給朋友時才發（notify.send_line）
+            line_ok = send_line(text, budget=budget, owner_reached=telegram_ok)
+            sent = [c for c, ok in (("telegram", telegram_ok), ("line", line_ok)) if ok]
             if not sent:
                 # 沒設任何管道時 notify.notify 的行為是印出來，這裡沿用：
                 # 本機執行看得到內容，而不是靜默什麼都沒發生。

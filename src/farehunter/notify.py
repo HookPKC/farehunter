@@ -179,6 +179,18 @@ LINE_API = "https://api.line.me/v2/bot/message"
 #: 廣播時，本月剩不到這麼多則就改成只 push 給 LINE_USER_ID。LINE 官方帳號每位收件人算
 #: 一則，廣播給 5 個人就用掉 5 則；免費方案每月約 200 則，用完連擁有者都收不到。
 LINE_OWNER_RESERVE = 30
+#: 有設 Telegram 時的保留額度（2026-11-21 使用者決定）：擁有者的通知改走 Telegram，LINE 的
+#: 保留額度只是 Telegram 送不出去時的備援，留 10 則就夠，其餘都給朋友的廣播。
+LINE_OWNER_RESERVE_WITH_TELEGRAM = 10
+
+
+def telegram_configured() -> bool:
+    return bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"))
+
+
+def owner_reserve() -> int:
+    """LINE 要留給擁有者的則數：有 Telegram 時 10，沒有時 30。"""
+    return LINE_OWNER_RESERVE_WITH_TELEGRAM if telegram_configured() else LINE_OWNER_RESERVE
 #: 讀不到好友統計時，一次廣播當作用掉幾則（擁有者＋4 位朋友）
 DEFAULT_RECIPIENTS = 5
 LINE_INSIGHT_API = "https://api.line.me/v2/bot/insight/followers"
@@ -189,7 +201,7 @@ class LineBudget:
     月底朋友完全收不到。
 
     規則（send_line 廣播前檢查）：
-      - 台灣日期今天第一則：照常廣播，只要廣播完還留得下 LINE_OWNER_RESERVE。
+      - 台灣日期今天第一則：照常廣播，只要廣播完還留得下保留額度（owner_reserve）。
       - 今天第二則以後：廣播完還得留夠「之後每天一則廣播」的額度＋保留額度，否則只發給
         擁有者。前面沒用完的額度自然留給後面忙的日子。
     只需要「今天廣播過幾次」（prices.db 的 line_sends）與 LINE 回報的本月剩餘則數。
@@ -212,10 +224,10 @@ class LineBudget:
         return calendar.monthrange(t.year, t.month)[1] - t.day + 1
 
     def allows_broadcast(self, left: int, recipients: int) -> bool:
-        after = left - recipients
+        after, reserve = left - recipients, owner_reserve()
         if self.broadcasts_today() == 0:
-            return after >= LINE_OWNER_RESERVE
-        return after >= LINE_OWNER_RESERVE + recipients * (self.days_left() - 1)
+            return after >= reserve
+        return after >= reserve + recipients * (self.days_left() - 1)
 
     def record(self, mode: str, quota_left: int | None = None) -> None:
         self.store.record_line_send(self.now.isoformat(timespec="seconds"), mode, quota_left)
@@ -263,14 +275,19 @@ def _line_quota_left(s, headers: dict, token: str) -> int | None:
 
 
 def send_line(text: str, session: requests.Session | None = None, *,
-              budget: LineBudget | None = None, owner_only: bool = False) -> bool:
-    """LINE_BROADCAST=1：廣播給官方帳號的所有好友；本月額度剩不到 LINE_OWNER_RESERVE
-    則時改成只 push 給 LINE_USER_ID，至少擁有者不會漏掉通知。有 budget 時再加上配速
+              budget: LineBudget | None = None, owner_only: bool = False,
+              owner_reached: bool = False) -> bool:
+    """LINE_BROADCAST=1：廣播給官方帳號的所有好友；本月額度剩不到保留額度（owner_reserve）
+    時改成只 push 給 LINE_USER_ID，至少擁有者不會漏掉通知。有 budget 時再加上配速
     （見 LineBudget），超出今天份額的只發給擁有者。其餘情況照舊 push 給 LINE_USER_ID
     一個人。額度查不到時照樣廣播。台灣時間半夜靜音送達（quiet_hours）。
 
     owner_only：這則不廣播、只發給擁有者（notify 對沒有經 Google 驗證的警報這樣做）。
-    沒設 LINE_USER_ID 時無人可發，只好照舊廣播。"""
+    沒設 LINE_USER_ID 時無人可發，只好照舊廣播。
+
+    owner_reached：擁有者已經從 Telegram 收到這則。廣播模式下這則最後只會發給擁有者時，
+    就不再用 LINE 發（每則扣 1 則額度，LINE 留給朋友的廣播），回傳 False。Telegram 沒送到
+    時呼叫端傳 False，照舊用 LINE 發給擁有者。沒開廣播（例如手動測試通知）時不受影響。"""
     token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
     user_id = os.environ.get("LINE_USER_ID")
     broadcast = os.environ.get("LINE_BROADCAST") == "1"
@@ -280,14 +297,16 @@ def send_line(text: str, session: requests.Session | None = None, *,
     headers = {"Authorization": f"Bearer {token}"}
     messages = [{"type": "text", "text": text[:5000]}]
     left, n = None, DEFAULT_RECIPIENTS      # 本月剩餘則數（查不到是 None）、一次廣播用掉幾則
-    if broadcast and user_id:
+    broadcast_mode = broadcast and bool(user_id)
+    if broadcast_mode:
         left = _line_quota_left(s, headers, token)
+        reserve = owner_reserve()
         if owner_only:
             log.info("LINE：這則警報沒有經 Google 驗證，只發給擁有者、不廣播")
             broadcast = False
-        elif left is not None and left < LINE_OWNER_RESERVE:
+        elif left is not None and left < reserve:
             log.warning("LINE 本月只剩 %d 則（保留 %d 則給擁有者）：這則只發給擁有者",
-                        left, LINE_OWNER_RESERVE)
+                        left, reserve)
             broadcast = False
         elif left is not None and budget is not None:
             n = _line_recipients(s, headers, token, budget.now)
@@ -296,6 +315,9 @@ def send_line(text: str, session: requests.Session | None = None, *,
                          "（每次廣播 %d 則）：這則只發給擁有者",
                          left, budget.broadcasts_today(), budget.days_left(), n)
                 broadcast = False
+    if broadcast_mode and not broadcast and owner_reached:
+        log.info("LINE：擁有者已經從 Telegram 收到這則，不再用 LINE 發（省下 1 則額度給朋友）")
+        return False
     quiet = quiet_hours(budget.now if budget else datetime.now(timezone.utc))
     url, body = ((f"{LINE_API}/broadcast", {"messages": messages}) if broadcast else
                  (f"{LINE_API}/push", {"to": user_id, "messages": messages}))
@@ -332,9 +354,11 @@ def notify(offer: Offer, verdict: Verdict, state=None, *,
     owner_only = state is not None and getattr(state, "state", None) != "verified"   # price_state.VERIFIED
     sent = []
     quiet = quiet_hours(line_budget.now if line_budget else datetime.now(timezone.utc))
-    if send_telegram(text, quiet=quiet):
+    telegram_ok = send_telegram(text, quiet=quiet)
+    if telegram_ok:
         sent.append("telegram")
-    if send_line(text, budget=line_budget, owner_only=owner_only):
+    # Telegram 已經送到擁有者：LINE 只在會廣播給朋友時才發（見 send_line 的 owner_reached）
+    if send_line(text, budget=line_budget, owner_only=owner_only, owner_reached=telegram_ok):
         sent.append("line")
     if not sent:
         log.info("No notification channel configured; alert printed only:\n%s", text)

@@ -466,3 +466,125 @@ def test_an_owner_only_alert_does_not_use_up_todays_broadcast(tmp_path, monkeypa
     assert N.send_line("疑似低價", session=api, budget=b, owner_only=True) is True
     assert _mode(api) == "owner" and b.broadcasts_today() == 0
     assert st.line_sends_since("owner", "2026-11-10T00:00:00+00:00") == 1
+
+
+# ---- 擁有者改走 Telegram，LINE 只留給朋友的廣播（2026-11-21）-------------------------
+
+def _both_env(monkeypatch):
+    """Telegram＋LINE 廣播模式（monitor 的設定）。"""
+    _env(monkeypatch, telegram=True, line=True)
+    monkeypatch.setenv("LINE_BROADCAST", "1")
+
+
+class _BothApi(_LineApi):
+    """Telegram 與 LINE 共用的假 requests；telegram_fails=True 時 Telegram 逾時。"""
+    def __init__(self, telegram_fails=False, **kw):
+        super().__init__(**kw)
+        self.telegram_fails = telegram_fails
+
+    def post(self, url, **kw):
+        if "api.telegram.org" in url and self.telegram_fails:
+            raise requests.Timeout("timed out")
+        return super().post(url, **kw)
+
+    def line_posts(self):
+        return [(u, b) for u, b in self.posts if "api.line.me" in u]
+
+
+def _notify_both(monkeypatch, state, api, budget=None):
+    from types import SimpleNamespace
+    monkeypatch.setattr(N.requests, "get", api.get)
+    monkeypatch.setattr(N.requests, "post", api.post)
+    monkeypatch.setattr(N, "format_alert", lambda *a: "便宜機票")
+    return N.notify(_offer(), VERDICT, SimpleNamespace(state=state), line_budget=budget)
+
+
+def test_an_owner_only_alert_goes_to_telegram_and_skips_line(tmp_path, monkeypatch, caplog):
+    """未驗證的警報原本 LINE 只發給擁有者、每則扣 1 則額度；Telegram 送到了就不再用 LINE 發。"""
+    _both_env(monkeypatch)
+    st, b = _budget(tmp_path)
+    api = _BothApi(limit=200, used=50)
+    with caplog.at_level(logging.INFO, logger="farehunter.notify"):
+        assert _notify_both(monkeypatch, "unverified", api, b) == ["telegram"]
+    assert api.line_posts() == []
+    assert st.line_sends_since("owner", "2026-11-10T00:00:00+00:00") == 0
+    assert "不再用 LINE 發" in caplog.text
+
+
+def test_when_telegram_fails_line_still_reaches_the_owner(tmp_path, monkeypatch):
+    """Telegram 壞了：照舊用 LINE 發給擁有者，不會漏。"""
+    _both_env(monkeypatch)
+    st, b = _budget(tmp_path)
+    api = _BothApi(telegram_fails=True, limit=200, used=50)
+    assert _notify_both(monkeypatch, "unverified", api, b) == ["line"]
+    (url, body), = api.line_posts()
+    assert url.endswith("/push") and body["to"] == "U42"
+
+
+def test_verified_alerts_are_still_broadcast_to_friends(tmp_path, monkeypatch):
+    _both_env(monkeypatch)
+    st, b = _budget(tmp_path)
+    api = _BothApi(limit=200, used=50)
+    assert _notify_both(monkeypatch, "verified", api, b) == ["telegram", "line"]
+    (url, _), = api.line_posts()
+    assert url.endswith("/broadcast") and b.broadcasts_today() == 1
+
+
+def test_a_paced_down_broadcast_is_skipped_once_telegram_delivered(tmp_path, monkeypatch):
+    """今天已廣播過、配速不准再廣播：原本改發給擁有者，現在擁有者已從 Telegram 收到 → 不發。"""
+    _both_env(monkeypatch)
+    st, b = _budget(tmp_path, earlier=[("2026-11-10T01:00:00+00:00", "broadcast")])
+    api = _PacedApi(limit=200, used=100)
+    assert N.send_line("x", session=api, budget=b, owner_reached=True) is False
+    assert api.posts == []
+    api2 = _PacedApi(limit=200, used=100)
+    assert N.send_line("x", session=api2, budget=b, owner_reached=False) is True
+    assert _mode(api2) == "owner"
+
+
+def test_with_telegram_the_owner_reserve_drops_to_ten(tmp_path, monkeypatch):
+    """本月剩 15 則：沒有 Telegram 時低於保留的 30 則、只發給擁有者；有 Telegram 時保留 10 則，
+    廣播 5 則後剩 10 → 今天第一則照常廣播給朋友。"""
+    _broadcast_env(monkeypatch)                                         # 只有 LINE
+    st, b = _budget(tmp_path)
+    assert N.owner_reserve() == N.LINE_OWNER_RESERVE == 30
+    api = _PacedApi(limit=200, used=185)
+    assert N.send_line("x", session=api, budget=b) is True and _mode(api) == "owner"
+
+    _both_env(monkeypatch)                                              # 加上 Telegram
+    (tmp_path / "t").mkdir()
+    st2, b2 = _budget(tmp_path / "t")
+    assert N.owner_reserve() == N.LINE_OWNER_RESERVE_WITH_TELEGRAM == 10
+    api2 = _PacedApi(limit=200, used=185)
+    assert N.send_line("x", session=api2, budget=b2) is True and _mode(api2) == "broadcast"
+    api3 = _PacedApi(limit=200, used=186)                               # 剩 14：廣播完剩 9 < 10
+    (tmp_path / "u").mkdir()
+    _, b3 = _budget(tmp_path / "u")
+    assert N.send_line("x", session=api3, budget=b3, owner_reached=True) is False
+    assert api3.posts == []
+
+
+def test_without_broadcast_mode_line_still_pushes_even_if_telegram_delivered(monkeypatch):
+    """手動測試通知（沒開廣播）要測的就是 LINE 本身：不受 owner_reached 影響。"""
+    _env(monkeypatch, telegram=True, line=True)
+    api = _LineApi()
+    assert N.send_line("測試", session=api, owner_reached=True) is True
+    (url, body), = api.posts
+    assert url.endswith("/push")
+
+
+def test_cheap_day_push_skips_the_line_owner_push_once_telegram_delivered(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(C, "send_telegram", lambda text, **k: True)
+    monkeypatch.setattr(C, "send_line", lambda text, **k: seen.update(k) or False)
+    now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    item = {"origin": "TPE", "destination": "NRT", "depart_date": "2026-11-20",
+            "return_date": "2026-11-25", "price": 7200.0,
+            "neighbour_median": 12000.0, "neighbours": 8, "discount_pct": 40.0,
+            "notable": True, "source": "google", "carriers": "BR",
+            "observed_at": (now - timedelta(minutes=5)).isoformat()}
+    board = tmp_path / "data.json"
+    board.write_text(json.dumps({"cheap_days": [item]}), encoding="utf-8")
+    s = C.run(str(tmp_path / "p.db"), str(board), now=now)
+    assert seen.get("owner_reached") is True
+    assert s["sent"] == 1 and s["failed"] == 0                          # Telegram 送到就算推播成功
