@@ -158,7 +158,7 @@ FAIL 時看 `shadow_within_by_provider`／`calendar_vs_ref_by_provider`，分得
   `BRIGHTDATA_API_KEY`。下一輪起就完全不碰 Bright Data。
 - **安全**：Bright Data 後台或 API 給的 zone 密碼、金鑰，都不要貼進對話、文件或 commit。
 
-## 3d-1. 巡檢低價警報（2026-11-16 起，先開 KHH-OKA）
+## 3d-1. 巡檢低價警報（2026-11-16 起；目前開 KHH-CTS／FUK／OKA／NGO／NRT）
 
 巡檢查到的 Google 直飛實價低於門檻，也會發「已驗證」警報。log 會出現「巡檢警報：KHH→OKA …」，
 monitor 的 summary 有 `sweep_alerts`（這輪發了幾則）。

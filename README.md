@@ -58,7 +58,7 @@ config.yaml ──> runner ──> Aviasales Data API ──> parse ──> SQLi
 ### 巡檢低價也發警報
 
 Bright Data／ChocoData 巡檢查到的 Google 直飛實價低於門檻時，也會發「已驗證」警報——只限 `config.yaml`
-裡開了 `sweep_alerts: true` 的航線（目前 KHH-OKA），只看門檻、住 2–10 晚，去重跟一般警報共用。
+裡開了 `sweep_alerts: true` 的航線（目前 KHH-CTS／FUK／OKA／NGO／NRT），只看門檻、住 2–10 晚，去重跟一般警報共用。
 
 ### 去重
 
