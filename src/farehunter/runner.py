@@ -20,6 +20,7 @@ from . import health
 from . import price_state
 from . import brightdata_flights as brightdata
 from . import chocodata_flights as chocodata
+from . import scrapingant_flights as scrapingant
 from . import gflights2_flights as gflights2
 from . import calendar_hints
 from . import tigerair_calendar
@@ -135,7 +136,8 @@ def _downgrade_without_news(store, offer, pstate, csig) -> bool:
 
 
 #: 巡檢供應商：它們寫入的是 Google 直飛實價（ADR 0004／0005）
-SWEEP_PROVIDERS = (brightdata.PROVIDER, chocodata.PROVIDER, gflights2.PROVIDER)
+SWEEP_PROVIDERS = (brightdata.PROVIDER, chocodata.PROVIDER, gflights2.PROVIDER,
+                   scrapingant.PROVIDER)
 SWEEP_ALERT_MIN_LEAD_DAYS = 2
 
 
@@ -534,6 +536,19 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 log.exception("ChocoData 巡檢意外失敗，本輪略過")
             summary["chocodata"] = sweeper.stats
             log.info("ChocoData 本輪：%s", sweeper.stats)
+
+        # ScrapingAnt（ADR 0005）：每月重置的免費額度，同一套冷門線巡檢；放在 ChocoData 之後，
+        # 兩家這輪查過的行程都會跳過。ChocoData 用完後由它接手。
+        if scrapingant.configured() and not all_searches_failed(summary):
+            try:
+                ant = scrapingant.Sweeper(store, now)
+                ant.hint_caps = hint_caps
+                ant.tiger_hints = tiger_hints
+                ant.sweep(sweep_candidates)
+                summary["scrapingant"] = ant.stats
+                log.info("ScrapingAnt 本輪：%s", ant.stats)
+            except Exception:
+                log.exception("ScrapingAnt 巡檢意外失敗，本輪略過")
 
         # 巡檢查到的直飛實價低於門檻 → 警報（只限 sweep_alerts 航線）。Aviasales 全滅的輪次
         # 不 commit，記下的警報會消失、下一輪重發，所以不跑。

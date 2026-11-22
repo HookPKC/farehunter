@@ -182,6 +182,15 @@ monitor 的 summary 有 `sweep_alerts`（這輪發了幾則）。
 - **想停用**：刪掉 repo secret `CHOCODATA_API_KEY`，下一輪起就完全不碰 ChocoData。
 - **安全**：ChocoData 的金鑰是放在網址裡送出的，程式已經不印網址；金鑰一樣不要貼進對話、文件或 commit。
 
+## 3d-2b. ScrapingAnt（冷門線的 Google 實價，2026-11-22 起，每月重置）
+
+跟 ChocoData 同一套冷門線巡檢，價格跟 Bright Data 一樣是 Google 直飛實價。免費方案每月 10,000 點、
+每頁 10 點（約 1,000 頁），週期從註冊日起算（這個帳號是每月 22 日）。ChocoData 約 12 月中用完後由它接手。
+
+- **看用量**：monitor 的 log 有一行「ScrapingAnt 本輪：{…}」；看板最下面的用量面板有一列。程式每輪先查剩餘
+  點數，把剩下的平均分到重置日，每輪最多 2 頁（每頁 6–20 秒）。
+- **壞了不影響任何事**：只是少了這份實價。想停用就刪掉 repo secret `SCRAPINGANT_API_KEY`。
+
 ## 3d-3. google-flights2（警報的第二驗證來源，2026-11-14 起）
 
 Bright Data 驗證不到某一則警報時（頁面上沒有那家航空、逾時、額度用完），發出前會再用

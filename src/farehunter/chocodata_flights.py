@@ -48,6 +48,8 @@ TRIPS_PER_ROUTE = 12         # 每條線每輪的候選行程數（快取日期�
 #: 固定日期跟 Bright Data 用同一套 anchor_trips；不錯開的話算出來的日子幾乎相同、都被「24 小時內
 #: 查過」擋掉。往後錯開 4 天（間隔 8 天的一半），兩家的日子交錯，冷門線一天能看到更多不同日期。
 ANCHOR_OFFSET_DAYS = 4
+#: ScrapingAnt（scrapingant_flights）也用這個巡檢類別；寫在這裡避免互相 import
+SCRAPINGANT = "scrapingant"
 CONNECT_TIMEOUT_S = 10
 READ_TIMEOUT_S = 90
 
@@ -112,13 +114,27 @@ def allowance(store, now: datetime) -> int:
 
 
 class ColdSweeper:
-    """一輪 monitor 的 ChocoData 用量：只查冷門線、24 小時內沒有 Google 實價的行程。"""
+    """一輪 monitor 的 ChocoData 用量：只查冷門線、24 小時內沒有 Google 實價的行程。
+
+    ScrapingAnt（scrapingant_flights.Sweeper）沿用整套流程，只換 provider／抓取／額度／固定日期的錯開。
+    """
+    provider = PROVIDER
+    label = "ChocoData"
+    anchor_offset_days = ANCHOR_OFFSET_DAYS
+    #: 24 小時內這幾家誰拿過這趟的頁面（即使沒有直飛價）就不再查
+    checkers = (BRIGHTDATA, PROVIDER, SCRAPINGANT)
+
+    def _allowance(self) -> int:
+        return allowance(self.store, self.now)
+
+    def _default_fetch(self):
+        return fetch
 
     def __init__(self, store, now: datetime, *, left: int | None = None, fetcher=None,
                  clock=time.monotonic):
         self.store, self.now = store, now
-        self.left = allowance(store, now) if left is None else left
-        self.fetch = fetcher or fetch
+        self.left = self._allowance() if left is None else left
+        self.fetch = fetcher or self._default_fetch()
         self.clock = clock
         self.hint_caps: dict = {}     # 同 brightdata_flights.Verifier.hint_caps
         self.tiger_hints: dict = {}   # 同 brightdata_flights.Verifier.tiger_hints（這裡取兩倍）
@@ -130,17 +146,16 @@ class ColdSweeper:
         return (self.now - timedelta(**delta)).isoformat(timespec="seconds")
 
     def _fresh(self, o: str, d: str, dep: str, ret: str, since: str) -> bool:
-        """24 小時內已有 Google 實價，或 Bright Data／ChocoData 拿過這趟的頁面。"""
+        """24 小時內已有 Google 實價，或 Bright Data／ChocoData／ScrapingAnt 拿過這趟的頁面。"""
         return (self.store.has_google_since(o, d, dep, ret, since)
-                or self.store.api_checked_since(BRIGHTDATA, o, d, dep, ret, since)
-                or self.store.api_checked_since(PROVIDER, o, d, dep, ret, since))
+                or any(self.store.api_checked_since(p, o, d, dep, ret, since)
+                       for p in self.checkers))
 
     def _weekdays(self, o: str, d: str) -> tuple[frozenset, frozenset]:
         """(有直飛的星期幾, 最近落空的星期幾)，以最近一次為準；落空看兩家供應商。"""
         hits = self.store.google_nonstop_by_date(o, d, self._ago(days=HIT_MEMORY_DAYS))
         since = self._ago(days=MISS_MEMORY_DAYS)
-        misses = (self.store.api_misses_by_date(BRIGHTDATA, o, d, since)
-                  + self.store.api_misses_by_date(PROVIDER, o, d, since))
+        misses = [m for p in self.checkers for m in self.store.api_misses_by_date(p, o, d, since)]
         latest: dict[int, tuple[float, bool]] = {}
         for rows, hit in ((hits, True), (misses, False)):
             for dep, jd in rows:
@@ -181,7 +196,7 @@ class ColdSweeper:
             if need > 0:
                 have = {(dep, ret) for dep, ret, _ in q}
                 q.extend((dep, ret, None) for dep, ret in
-                         anchor_trips(self.now + timedelta(days=ANCHOR_OFFSET_DAYS), need,
+                         anchor_trips(self.now + timedelta(days=self.anchor_offset_days), need,
                                       prefer=prefer, avoid=avoid)
                          if (dep, ret) not in have)
         return out
@@ -189,7 +204,7 @@ class ColdSweeper:
     def sweep(self, candidates) -> None:
         if self.left <= 0:
             return
-        self.store.prune_api_checks(PROVIDER, self._ago(days=MISS_MEMORY_DAYS))
+        self.store.prune_api_checks(self.provider, self._ago(days=MISS_MEMORY_DAYS))
         since = self._ago(hours=RECHECK_HOURS)
         queues = self.queues(candidates)
         order = list(queues)
@@ -217,28 +232,28 @@ class ColdSweeper:
         try:
             page = self.fetch(o, d, dep, ret)
             itineraries = parse(page)
-            self.store.record_api_check(PROVIDER, o, d, dep, ret, stamp,
+            self.store.record_api_check(self.provider, o, d, dep, ret, stamp,
                                         parsed=bool(itineraries))
             if not itineraries:
                 raise ChocoDataError("page fetched but no itineraries parsed")
             ok = True
             offers, _ = select(o, d, dep, ret, itineraries, carriers)
             for off in offers:
-                self.store.record(replace(off, provider=PROVIDER), observed_at=stamp)
+                self.store.record(replace(off, provider=self.provider), observed_at=stamp)
             self.stats["recorded"] += len(offers)
             self.stats["no_direct"] += not offers
         except ChocoDataExhausted as exc:
             self.stats["errors"] += 1
             self.stats["exhausted"] = True
-            log.warning("ChocoData 點數不足，本輪停止：%s", exc)
+            log.warning("%s 點數不足，本輪停止：%s", self.label, exc)
         except ChocoDataError as exc:
             self.stats["errors"] += 1
-            log.warning("ChocoData %s→%s %s/%s: %s", o, d, dep, ret, exc)
+            log.warning("%s %s→%s %s/%s: %s", self.label, o, d, dep, ret, exc)
         except Exception as exc:
             self.stats["errors"] += 1
             # 不用 log.exception：traceback 裡的區域變數不會印，但保守起見只記類型
-            log.warning("ChocoData %s→%s %s/%s 意外失敗：%s", o, d, dep, ret, type(exc).__name__)
+            log.warning("%s %s→%s %s/%s 意外失敗：%s", self.label, o, d, dep, ret, type(exc).__name__)
         finally:
             self.stats["ok"] += ok
-            self.store.record_api_usage(PROVIDER, self.now.date().isoformat(), ok=ok,
+            self.store.record_api_usage(self.provider, self.now.date().isoformat(), ok=ok,
                                         seconds=self.clock() - started)

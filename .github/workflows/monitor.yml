@@ -78,6 +78,8 @@ jobs:
           CHOCODATA_API_KEY: ${{ secrets.CHOCODATA_API_KEY }}
           # google-flights2（ADR 0005）：每月 150 次，只在 Bright Data 驗證不到警報時再查一次。沒設就跳過
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          # ScrapingAnt（ADR 0005）：每月重置的免費額度（約 950 頁），同一套冷門線巡檢、接替 ChocoData。沒設就跳過
+          SCRAPINGANT_API_KEY: ${{ secrets.SCRAPINGANT_API_KEY }}
           FAREHUNTER_FORCE: ${{ inputs.force && '1' || '' }}
         run: python run.py
 
