@@ -1,0 +1,29 @@
+name: Probe ScrapingAnt（一次性）
+
+# 一次性探測（ADR 0005）：ScrapingAnt 抓 Google Flights 頁面能不能拿到跟 Bright Data 一樣的直飛實價。
+# 只能手動執行、唯讀：不改 prices.db、不 commit。最多 5 個請求。紀錄不印金鑰、網址與回應原文。
+# 結論寫回 ADR 0005 後刪除這個檔案與 scripts/probe_scrapingant.py。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Probe
+        env:
+          SCRAPINGANT_API_KEY: ${{ secrets.SCRAPINGANT_API_KEY }}
+        run: python scripts/probe_scrapingant.py
