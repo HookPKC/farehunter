@@ -782,6 +782,9 @@ function renderUsage(u, env){
   const c = u.chocodata, g = u.gflights2;
   if(c) rows.push(row("ChocoData（冷門線 Google 實價）", c.used, c.limit, `${fmt(c.used)} / ${fmt(c.limit)} 頁`,
     `一次性額度，用完不會補；成功 ${fmt(c.ok)} 頁、今天 ${c.today} / ${c.daily_max} 頁${c.used < c.limit ? `，照這個速度約 ${c.days_left} 天後用完` : "，已用完"}`));
+  const a = u.scrapingant;
+  if(a) rows.push(row("ScrapingAnt（冷門線 Google 實價）", a.used, a.limit, `${fmt(a.used)} / ${fmt(a.limit)} 頁`,
+    `近 ${a.window_days} 天程式用掉的頁數（每月重置，程式照剩餘點數配速到重置日）；成功 ${fmt(a.ok)} 頁、今天 ${a.today} 頁`));
   if(g) rows.push(row("google-flights2（警報第二驗證）", g.used, g.limit, `${fmt(g.used)} / ${fmt(g.limit)} 次`,
     `近 ${g.window_days} 天程式用掉的次數（方案每月 ${g.plan_limit} 次，程式用到 ${g.limit} 次為止；手動探測不算在內）；成功 ${fmt(g.ok)} 次、今天 ${g.today} / ${g.daily_max} 次`));
   if(s) rows.push(row("SerpAPI（每日快照與驗證）", s.limit - s.left, s.limit, `剩 ${fmt(s.left)} / ${fmt(s.limit)} 次`,

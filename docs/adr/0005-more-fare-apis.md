@@ -279,3 +279,18 @@ source 仍是 'google'。`runner` 只在 Bright Data 之後警報仍不是 VERIF
 - 每頁 6–20 秒；免費方案同時只能 1 個請求，所以每輪頁數要少（跟 ChocoData 一樣每輪 2 頁）。
 - 價格語意跟 Bright Data 相同（google 觀測價精確），不動六處價格語意。接入另案提案。
 
+## 2026-11-22 ScrapingAnt 接入：第三個冷門線巡檢，接替 ChocoData
+
+- `scrapingant_flights.py`：沿用 `chocodata_flights.ColdSweeper` 整套巡檢（只查 CTS／NGO／FUK／OKA、
+  虎航與 Picker 線索優先、快取候選、固定日期補滿、沒飛的星期幾避開），只換 provider（'scrapingant'）、
+  抓取（`/v2/general`、`browser=true`、金鑰在 header）、額度、固定日期錯開 2 天（Bright Data 0、
+  ChocoData 4）。`ColdSweeper` 因此改成可由子類別換掉這幾項。
+- **24 小時內三家誰拿過這趟的頁面都不再查**（Bright Data／ChocoData／ScrapingAnt 互相看得到），
+  沒飛的星期幾也三家共用。
+- **配速照實際剩餘點數**：每輪先查 `/v2/usage`（不扣點），留 500 點緩衝，剩下的頁數平均分到重置日；
+  今天最多「(剩餘頁數＋今天已用) ÷ 含今天的剩餘天數」，每輪最多 2 頁。查不到剩餘點數時退回每天 30 頁、
+  近 30 天 950 頁。點數用完（402／訊息含 credits、quota、exceed）本輪立刻停。
+- 查到的實價跟其他巡檢一樣進 `_sweep_alerts`（SWEEP_PROVIDERS 加入 scrapingant）。
+- 看板用量面板加一列（近 30 天程式用量／950）。
+- 不拿來做警報驗證：11/14 起 31 則警報 29 則已驗證，google-flights2 近 30 天才用 18／130，不缺。
+

@@ -38,6 +38,9 @@ API_KEY_ENV_VARS = (
     "LINE_CHANNEL_ACCESS_TOKEN",
     "BRIGHTDATA_API_KEY",     # 設了 runner 就會真的去打 Bright Data（ADR 0004）
     "BRIGHTDATA_ZONE",
+    "CHOCODATA_API_KEY",
+    "RAPIDAPI_KEY",
+    "SCRAPINGANT_API_KEY",    # 設了 runner 就會真的去打 ScrapingAnt（ADR 0005）
 )
 
 

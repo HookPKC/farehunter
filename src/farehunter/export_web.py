@@ -280,8 +280,10 @@ def build_usage(conn, now: datetime, quota_path: Path) -> dict:
         from . import brightdata_flights as bd
     try:
         from farehunter import chocodata_flights as cd, gflights2_flights as g2
+        from farehunter import scrapingant_flights as sa
     except ImportError:                 # pragma: no cover
         from . import chocodata_flights as cd, gflights2_flights as g2
+        from . import scrapingant_flights as sa
     month_utc = now.strftime("%Y-%m-01")
     out: dict = {"month": now.strftime("%Y-%m")}
 
@@ -326,6 +328,15 @@ def build_usage(conn, now: datetime, quota_path: Path) -> dict:
                 "today": _usage(g2.PROVIDER, now.strftime("%Y-%m-%d"))[0],
                 "daily_max": g2.DAILY_MAX}
 
+    def _scrapingant():
+        # 每月重置（週期從註冊日起算，不是月初）：顯示近 30 天程式用掉的頁數。從沒用過就不顯示。
+        since = (now.date() - timedelta(days=sa.WINDOW_DAYS - 1)).isoformat()
+        used, ok, _ = _usage(sa.PROVIDER, since)
+        if not used:
+            return None
+        return {"used": used, "ok": ok, "limit": sa.WINDOW_MAX, "window_days": sa.WINDOW_DAYS,
+                "today": _usage(sa.PROVIDER, now.strftime("%Y-%m-%d"))[0]}
+
     def _scrapedo():
         n = conn.execute(
             "SELECT COUNT(*) FROM observations WHERE provider='scrapedo' AND observed_at >= ?",
@@ -361,6 +372,7 @@ def build_usage(conn, now: datetime, quota_path: Path) -> dict:
     out["brightdata"], out["scrapedo"] = _try(_brightdata), _try(_scrapedo)
     out["serpapi"], out["line"] = _try(_serpapi), _try(_line)
     out["chocodata"], out["gflights2"] = _try(_chocodata), _try(_gflights2)
+    out["scrapingant"] = _try(_scrapingant)
     return out
 
 
