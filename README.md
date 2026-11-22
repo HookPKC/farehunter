@@ -60,6 +60,9 @@ config.yaml ──> runner ──> Aviasales Data API ──> parse ──> SQLi
 Bright Data／ChocoData 巡檢查到的 Google 直飛實價低於門檻時，也會發「已驗證」警報——只限 `config.yaml`
 裡開了 `sweep_alerts: true` 的航線（目前 KHH-CTS／FUK／OKA／NGO／NRT），只看門檻、住 2–10 晚，去重跟一般警報共用。
 
+傳統航空（非廉航）另有特價警報：比該線近 14 天傳統航空最低價再便宜 5% 才發，`config.yaml` 的
+`defaults.full_alerts` 打開才會發（2026-11-22 寫好，預設關）。
+
 ### 去重
 
 同一個行程（航線＋去回程日＋航空公司＋價格狀態）在 **30 天內**只通知一次，

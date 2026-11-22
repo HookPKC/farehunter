@@ -502,16 +502,32 @@ class Store:
                LIMIT 1""",
             (origin, destination, depart_date, return_date, since)).fetchone() is not None
 
-    def google_rows_at(self, observed_at: str, providers: tuple[str, ...]) -> list:
-        """這一輪（observed_at 剛好等於這個時間戳）由巡檢供應商寫入的直飛 Google 實價（'any' 列）。"""
+    def google_rows_at(self, observed_at: str, providers: tuple[str, ...],
+                       fare_class: str = "any") -> list:
+        """這一輪（observed_at 剛好等於這個時間戳）由巡檢供應商寫入的直飛 Google 實價。
+        fare_class：'any'（全場最低）或 'full'（傳統航空最低）。"""
         marks = ",".join("?" * len(providers))
         return self.conn.execute(
             f"""SELECT origin, destination, depart_date, return_date, price, currency, carriers,
                        stops, provider
                 FROM observations
-                WHERE observed_at=? AND source='google' AND fare_class='any' AND stops=0
+                WHERE observed_at=? AND source='google' AND fare_class=? AND stops=0
                   AND provider IN ({marks}) AND return_date IS NOT NULL AND return_date != ''
-                ORDER BY price""", (observed_at, *providers)).fetchall()
+                ORDER BY price""", (observed_at, fare_class, *providers)).fetchall()
+
+    def full_floor(self, origin: str, destination: str, since: str, until: str,
+                   min_nights: int, max_nights: int) -> tuple[float | None, int]:
+        """[since, until) 寫入的傳統航空 Google 直飛實價的 (最低價, 筆數)；住 min～max 晚、
+        出發日至少在觀測日 2 天後（跟警報的條件一樣）。沒有資料時最低價是 None。"""
+        row = self.conn.execute(
+            """SELECT MIN(price), COUNT(*) FROM observations
+               WHERE origin=? AND destination=? AND source='google' AND fare_class='full'
+                 AND stops=0 AND return_date IS NOT NULL AND return_date != ''
+                 AND julianday(return_date) - julianday(depart_date) BETWEEN ? AND ?
+                 AND depart_date >= date(observed_at, '+2 day')
+                 AND julianday(observed_at) >= julianday(?) AND julianday(observed_at) < julianday(?)""",
+            (origin, destination, min_nights, max_nights, since, until)).fetchone()
+        return row[0], row[1]
 
     def google_rows_since(self, origin: str, destination: str, depart_date: str,
                           return_date: str, since: str, *, provider: str) -> list:

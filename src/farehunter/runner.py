@@ -25,7 +25,7 @@ from . import gflights2_flights as gflights2
 from . import calendar_hints
 from . import tigerair_calendar
 from . import daily_digest
-from .models import Offer, stay_ok
+from .models import MAX_STAY_NIGHTS, MIN_STAY_NIGHTS, Offer, stay_ok
 
 log = logging.getLogger(__name__)
 
@@ -196,6 +196,78 @@ def _sweep_alerts(store, cfg, now, line_budget) -> int:
                            reference_price=None, reference_observed_at=None)
         log.info("巡檢警報：%s→%s %s~%s %s %.0f（門檻 %.0f）",
                  o, d, dep, ret, offer.carriers, r["price"], threshold)
+        sent_count += 1
+    return sent_count
+
+
+#: 傳統航空特價警報（_full_alerts）：比這條線近 FULL_FLOOR_DAYS 天傳統航空的最低價再便宜
+#: FULL_DROP_PCT% 才發；近期資料不到 FULL_MIN_HISTORY 筆的線不判斷。
+FULL_FLOOR_DAYS = 14
+FULL_DROP_PCT = 5.0
+FULL_MIN_HISTORY = 30
+
+
+def _full_alerts(store, cfg, now, line_budget) -> int:
+    """傳統航空（非廉航）特價警報：這一輪巡檢查到的傳統航空 Google 直飛實價，比這條線近 14 天
+    的最低價再便宜 5% 以上就發（2026-11-22 使用者決定；config 的 defaults.full_alerts 打開才發，
+    預設關，12/1 LINE 額度重置後再開）。
+
+    不用固定門檻：傳統航空的價格擠在很窄的區間（KHH-OKA 最便宜 6 個價位都在 9,002–9,074），又跟
+    季節走，固定門檻差一點就從每月 2 則跳到 15 則以上。改成跟自己近 14 天的最低價比，門檻會自己跟著
+    季節移動；只有真的降價（新的票價艙等）才響。11/16–11/22 回測 0 則（那週沒有特價）。
+    其餘跟巡檢警報一樣：本身是 Google 實價、當「已驗證」；住 2–10 晚、出發至少 2 天後；同一趟這輪
+    只取最便宜的一筆；去重共用（同一趟、同航空 30 天一次，除非再便宜 10%）。
+    """
+    defaults = cfg.get("defaults", {})
+    if not defaults.get("full_alerts"):
+        return 0
+    routes = {(r["origin"], r["destination"]) for r in cfg["routes"]}
+    stamp = now.isoformat(timespec="seconds")
+    since = (now - timedelta(days=FULL_FLOOR_DAYS)).isoformat(timespec="seconds")
+    earliest = (now.date() + timedelta(days=SWEEP_ALERT_MIN_LEAD_DAYS)).isoformat()
+    best: dict = {}
+    for r in store.google_rows_at(stamp, SWEEP_PROVIDERS, fare_class="full"):
+        key = (r["origin"], r["destination"])
+        if key not in routes or r["depart_date"] < earliest:
+            continue
+        if not stay_ok(r["depart_date"], r["return_date"]):
+            continue
+        trip = (*key, r["depart_date"], r["return_date"])
+        if trip not in best or r["price"] < best[trip]["price"]:
+            best[trip] = r
+    floors: dict = {}
+    sent_count = 0
+    for (o, d, dep, ret), r in sorted(best.items()):
+        if (o, d) not in floors:
+            floors[(o, d)] = store.full_floor(o, d, since, stamp, MIN_STAY_NIGHTS, MAX_STAY_NIGHTS)
+        floor, n = floors[(o, d)]
+        if floor is None or n < FULL_MIN_HISTORY:
+            continue
+        if r["price"] > floor * (1 - FULL_DROP_PCT / 100.0):
+            continue
+        offer = Offer(origin=o, destination=d, depart_date=dep, return_date=ret,
+                      price=r["price"], currency=r["currency"], carriers=r["carriers"],
+                      stops=0, duration="", fare_class="full", source="google",
+                      provider=r["provider"])
+        pstate = _resolve_state(store, offer, now, authoritative=offer)
+        if pstate.state != price_state.VERIFIED:
+            continue
+        verdict = Verdict(True, "full_drop",
+                          f"傳統航空 {r['price']:,.0f} {r['currency']} ≤ 近 {FULL_FLOOR_DAYS} 天最低 "
+                          f"{floor:,.0f} 再低 {FULL_DROP_PCT:.0f}%")
+        csig = price_state.carrier_signature(offer.carriers)
+        if _already_alerted(store, offer, pstate, verdict, csig):
+            continue
+        sent = notify(offer, verdict, pstate, line_budget=line_budget)
+        if not sent and channels_configured():
+            log.error("傳統航空警報發送失敗，下一輪查到時再發: %s→%s %s", o, d, dep)
+            continue
+        store.record_alert(o, d, dep, pstate.selected_price, verdict.reason,
+                           return_date=ret, carrier_signature=csig,
+                           price_source=pstate.selected_source, price_status=pstate.state,
+                           reference_price=None, reference_observed_at=None)
+        log.info("傳統航空警報：%s→%s %s~%s %s %.0f（近 %d 天最低 %.0f）",
+                 o, d, dep, ret, offer.carriers, r["price"], FULL_FLOOR_DAYS, floor)
         sent_count += 1
     return sent_count
 
@@ -559,6 +631,13 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 summary["alerts"] += n
             except Exception:
                 log.exception("巡檢警報意外失敗，本輪略過")
+            try:
+                n = _full_alerts(store, cfg, now, line_budget)
+                if n:
+                    summary["full_alerts"] = n
+                    summary["alerts"] += n
+            except Exception:
+                log.exception("傳統航空警報意外失敗，本輪略過")
 
         # Telegram 每日摘要（daily_digest）：台灣時間早上那輪發給擁有者，不用 LINE。放在所有警報
         # 之後，摘要才算得到這輪的實價與警報。Aviasales 全滅的輪次不 commit，「今天發過」的紀錄
