@@ -26,6 +26,9 @@ routes:
   - origin: KHH
     destination: NRT
     absolute_threshold: 7500    # 原 8000 → 2026-11-20 用 Google 實價重算（見下方說明）
+    # 2026-11-22 開：11/13 起 Google 直飛實價 ≤ 7,500 有 2 趟（捷星 12/09 7,427、12/28 7,431），
+    # 12/09 那趟是巡檢查到的、沒有警報。門檻已用實價重算，條件跟四條冷門線相同。
+    sweep_alerts: true
   - origin: KHH
     destination: KIX
     absolute_threshold: 7500
