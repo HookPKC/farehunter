@@ -257,3 +257,25 @@ source 仍是 'google'。`runner` 只在 Bright Data 之後警報仍不是 VERIF
 - 線索日的實價比「官網去回加總」多 2,400–6,600，比探測時隨機配對的 1,100–2,900 大：官網最低價
   （例如 999）挑出來的多半在 Google 上訂不到（可能賣完或沒更新）。特賣提醒不能直接看官網價。
 
+## 2026-11-22 ScrapingAnt 實測：抓 Google Flights 跟 Bright Data 3/3 完全一致
+
+為什麼找：ChocoData 是一次性額度，約 12 月中用完；冷門線的 Google 實價會掉回只剩 Bright Data。
+要找**每月重置**的免費來源。ScrapingAnt 免費方案每月 10,000 點、不用信用卡，週期從註冊日起算
+（這個帳號是每月 22 日）。
+
+探測（run 44971164562，一次性 workflow，已刪除）：用 Bright Data 同一個 `search_url()`／`parse()`／
+`select()`，請 ScrapingAnt `/v2/general`（`browser=true`、預設機房 proxy、金鑰放 header `x-api-key`）
+抓 prices.db 裡同一小時剛查過的 3 趟：
+
+| 行程 | ScrapingAnt | 同一小時的 Google 實價 | 頁面 |
+|---|---|---|---|
+| KHH-FUK 12/11–12/16 | 8,173（直飛 4／18 個行程） | Bright Data 8,173 | 2.6 MB、6.1 秒 |
+| KHH-NGO 12/12–12/16 | 9,110（直飛 2／10） | ChocoData 9,110 | 2.5 MB、17.9 秒 |
+| KHH-NRT 12/07–12/10 | 8,490（直飛 14／18） | Bright Data 8,490 | 2.7 MB、19.8 秒 |
+
+- **價格 3/3 完全相同**，目標站都回 200，機房 proxy 就夠（沒用到住宅 proxy）。
+- `/v2/usage` 前後 10,000 → 9,970：**每頁 10 點**，每月約 1,000 頁（每天約 30 頁），跟 ChocoData 的
+  每天 30 頁同級，而且每月重置。
+- 每頁 6–20 秒；免費方案同時只能 1 個請求，所以每輪頁數要少（跟 ChocoData 一樣每輪 2 頁）。
+- 價格語意跟 Bright Data 相同（google 觀測價精確），不動六處價格語意。接入另案提案。
+
