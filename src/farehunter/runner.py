@@ -118,6 +118,17 @@ def _already_alerted(store, offer, pstate, verdict, csig) -> bool:
         reason=verdict.reason)
 
 
+def _same_departure_no_news(store, offer, pstate, verdict) -> bool:
+    """同一條線、同一出發日 7 天內已通知過，這次沒有再便宜 10%（不管回程與航空：回程差一天的
+    兩趟對收的人是同一個消息；2026-11-23 KHH-FUK 11/25 出發 6,781 發了兩次）。
+
+    **只能用最終價格、放在發送前**：快取那條路驗證前就判斷，會拿快取價去比，實價大跌而快取還沒
+    跟上時真正的新低價發不出去（同 _downgrade_without_news 的理由）。"""
+    floor = store.departure_alert_floor(offer.origin, offer.destination, offer.depart_date,
+                                        reason=verdict.reason)
+    return floor is not None and not meaningfully_cheaper(pstate.selected_price, floor)
+
+
 def _downgrade_without_news(store, offer, pstate, csig) -> bool:
     """這一趟已經用「已驗證」通知過，這次卻只能以未驗證／衝突發出（驗證落空：Bright Data
     逾時、只查到別家航空公司、或沒設金鑰），而且沒有比已驗證的最低價再便宜一截——不是新消息。
@@ -184,7 +195,8 @@ def _sweep_alerts(store, cfg, now, line_budget) -> int:
         verdict = Verdict(True, "absolute",
                           f"{r['price']:,.0f} {r['currency']} <= 門檻 {threshold:,.0f}")
         csig = price_state.carrier_signature(offer.carriers)
-        if _already_alerted(store, offer, pstate, verdict, csig):
+        if (_already_alerted(store, offer, pstate, verdict, csig)
+                or _same_departure_no_news(store, offer, pstate, verdict)):
             continue
         sent = notify(offer, verdict, pstate, line_budget=line_budget)
         if not sent and channels_configured():
@@ -256,7 +268,8 @@ def _full_alerts(store, cfg, now, line_budget) -> int:
                           f"傳統航空 {r['price']:,.0f} {r['currency']} ≤ 近 {FULL_FLOOR_DAYS} 天最低 "
                           f"{floor:,.0f} 再低 {FULL_DROP_PCT:.0f}%")
         csig = price_state.carrier_signature(offer.carriers)
-        if _already_alerted(store, offer, pstate, verdict, csig):
+        if (_already_alerted(store, offer, pstate, verdict, csig)
+                or _same_departure_no_news(store, offer, pstate, verdict)):
             continue
         sent = notify(offer, verdict, pstate, line_budget=line_budget)
         if not sent and channels_configured():
@@ -533,6 +546,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                             continue
                         pstate, eval_offer, verdict = checked
                     if _downgrade_without_news(store, offer, pstate, csig):
+                        continue
+                    if _same_departure_no_news(store, offer, pstate, verdict):
                         continue
                     sent = notify(eval_offer, verdict, pstate, line_budget=line_budget)
                     if not sent and channels_configured():
