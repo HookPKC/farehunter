@@ -106,6 +106,28 @@ def fetch(origin: str, dest: str, depart: str, ret: str,
     return page
 
 
+#: 解析不到航班時，頁面裡有沒有這些字（判斷是 Google 同意頁、驗證頁還是改版）
+_PAGE_MARKERS = (("consent", "consent"), ("before you continue", "同意頁"),
+                 ("unusual traffic", "異常流量"), ("captcha", "captcha"), ("/sorry/", "sorry 頁"),
+                 ("aria-label", "有 aria-label"))
+
+
+def page_hint(page) -> str:
+    """解析失敗的頁面摘要（大小、<title>、特徵字），給 log 判斷原因。頁面是 Google 的公開 HTML，
+    不含金鑰；只取標題前 60 字。"""
+    if not isinstance(page, str):
+        return f"非文字（{type(page).__name__}）"
+    low = page.lower()
+    title = ""
+    i = low.find("<title")
+    if i >= 0:
+        j, k = low.find(">", i), low.find("</title>", i)
+        if 0 <= j < k:
+            title = " ".join(page[j + 1:k].split())[:60]
+    marks = [name for key, name in _PAGE_MARKERS if key in low]
+    return f"{len(page):,} 字，標題「{title}」，特徵：{'、'.join(marks) or '無'}"
+
+
 def allowance(store, now: datetime) -> int:
     """這一輪可以送幾頁：每輪、每天、累計三個上限取最小。"""
     total = store.api_usage_since(PROVIDER, "2000-01-01")
@@ -146,9 +168,14 @@ class ColdSweeper:
         return (self.now - timedelta(**delta)).isoformat(timespec="seconds")
 
     def _fresh(self, o: str, d: str, dep: str, ret: str, since: str) -> bool:
-        """24 小時內已有 Google 實價，或 Bright Data／ChocoData／ScrapingAnt 拿過這趟的頁面。"""
+        """24 小時內已有 Google 實價，或 Bright Data／ChocoData／ScrapingAnt 拿過這趟的頁面。
+
+        別家只算**解析得到航班**的頁面：2026-11-22 ScrapingAnt 31 頁有 14 頁解析不到（Google 給了別的
+        版面），原本那幾趟會連帶讓 ChocoData 24 小時內不查。自己解析不到的照樣算查過（同一家重試多半
+        還是一樣，留給別家）。"""
         return (self.store.has_google_since(o, d, dep, ret, since)
-                or any(self.store.api_checked_since(p, o, d, dep, ret, since)
+                or any(self.store.api_checked_since(p, o, d, dep, ret, since,
+                                                    parsed_only=p != self.provider)
                        for p in self.checkers))
 
     def _weekdays(self, o: str, d: str) -> tuple[frozenset, frozenset]:
@@ -235,7 +262,7 @@ class ColdSweeper:
             self.store.record_api_check(self.provider, o, d, dep, ret, stamp,
                                         parsed=bool(itineraries))
             if not itineraries:
-                raise ChocoDataError("page fetched but no itineraries parsed")
+                raise ChocoDataError(f"page fetched but no itineraries parsed（{page_hint(page)}）")
             ok = True
             offers, _ = select(o, d, dep, ret, itineraries, carriers)
             for off in offers:
