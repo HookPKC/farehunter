@@ -158,7 +158,7 @@ def test_sweeper_writes_google_rows_under_its_own_provider(tmp_path):
 
 def test_trips_any_sweeper_checked_today_are_skipped_both_ways(tmp_path):
     st = _store(tmp_path)
-    st.record_api_check(cd.PROVIDER, "KHH", "CTS", _d(30), _d(35), AT, parsed=False)   # ChocoData 查過
+    st.record_api_check(cd.PROVIDER, "KHH", "CTS", _d(30), _d(35), AT, parsed=True)    # ChocoData 查過
     asked = []
     sw = sa.Sweeper(st, NOW, left=1, fetcher=lambda o, d, dep, ret: asked.append(dep) or _page())
     sw.tiger_hints = {("KHH", "CTS"): [(_d(30), _d(35)), (_d(31), _d(36))]}
@@ -171,6 +171,32 @@ def test_trips_any_sweeper_checked_today_are_skipped_both_ways(tmp_path):
     choco.queues = lambda c, _q=choco.queues: {r: q for r, q in _q(c).items() if r == ("KHH", "CTS")}
     choco.sweep([])
     assert asked2 == [_d(32)]                                       # ScrapingAnt 剛查過的 31 號跳過
+
+
+def test_another_sweepers_unparsable_page_does_not_block_but_its_own_does(tmp_path):
+    """2026-11-22：ScrapingAnt 31 頁有 14 頁解析不到，原本會連帶讓 ChocoData 24 小時內不查那幾趟。"""
+    st = _store(tmp_path)
+    st.record_api_check(sa.PROVIDER, "KHH", "CTS", _d(30), _d(35), AT, parsed=False)   # ScrapingAnt 解析不到
+    st.record_api_check(cd.PROVIDER, "KHH", "CTS", _d(31), _d(36), AT, parsed=False)   # ChocoData 自己解析不到
+    asked = []
+    choco = cd.ColdSweeper(st, NOW, left=1, fetcher=lambda o, d, dep, ret: asked.append(dep) or _page())
+    choco.tiger_hints = {("KHH", "CTS"): [(_d(31), _d(36)), (_d(30), _d(35))]}
+    choco.queues = lambda c, _q=choco.queues: {r: q for r, q in _q(c).items() if r == ("KHH", "CTS")}
+    choco.sweep([])
+    assert asked == [_d(30)]                                        # 31 號自己查過；30 號別家沒解析到 → 照查
+
+
+def test_an_unparsable_page_logs_a_hint_not_the_page(tmp_path, caplog):
+    import logging
+    st = _store(tmp_path)
+    page = "<html><head><title>Before you continue to Google</title></head><body>consent</body></html>"
+    sw = sa.Sweeper(st, NOW, left=1, fetcher=lambda *a: page)
+    sw.tiger_hints = {("KHH", "CTS"): [(_d(30), _d(35))]}
+    sw.queues = lambda c, _q=sw.queues: {r: q for r, q in _q(c).items() if r == ("KHH", "CTS")}
+    with caplog.at_level(logging.WARNING):
+        sw.sweep([])
+    assert "標題「Before you continue to Google」" in caplog.text and "同意頁" in caplog.text
+    assert cd.page_hint(None) == "非文字（NoneType）"
 
 
 def test_out_of_credits_stops_the_run(tmp_path):

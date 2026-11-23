@@ -561,11 +561,14 @@ class Store:
         self.conn.commit()
 
     def api_checked_since(self, provider: str, origin: str, destination: str,
-                          depart_date: str, return_date: str, since: str) -> bool:
+                          depart_date: str, return_date: str, since: str, *,
+                          parsed_only: bool = False) -> bool:
+        """since 之後這個供應商拿過這趟的頁面。parsed_only：只算解析得到航班的（parsed=1）。"""
         return self.conn.execute(
-            """SELECT 1 FROM api_checks
+            f"""SELECT 1 FROM api_checks
                WHERE provider=? AND origin=? AND destination=? AND depart_date=?
-                 AND return_date=? AND julianday(checked_at) >= julianday(?)""",
+                 AND return_date=? AND julianday(checked_at) >= julianday(?)
+                 {"AND parsed=1" if parsed_only else ""}""",
             (provider, origin, destination, depart_date, return_date, since)
         ).fetchone() is not None
 
