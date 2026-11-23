@@ -66,7 +66,8 @@ def test_fetch_puts_the_key_in_a_header_and_returns_the_html(monkeypatch):
     assert sa.fetch("KHH", "NGO", _d(30), _d(35), session=s) == _page()
     (url, kw), = s.calls
     assert url == sa.API_URL and kw["headers"] == {"x-api-key": KEY}
-    assert kw["params"] == {"url": bd.search_url("KHH", "NGO", _d(30), _d(35)), "browser": "true"}
+    assert kw["params"] == {"url": bd.search_url("KHH", "NGO", _d(30), _d(35)), "browser": "true",
+                            "proxy_country": "US"}     # 固定出口：避開歐洲 IP 的 Google 同意頁
     assert KEY not in url and KEY not in str(kw["params"])
 
 

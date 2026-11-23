@@ -294,3 +294,14 @@ source 仍是 'google'。`runner` 只在 Bright Data 之後警報仍不是 VERIF
 - 看板用量面板加一列（近 30 天程式用量／950）。
 - 不拿來做警報驗證：11/14 起 31 則警報 29 則已驗證，google-flights2 近 30 天才用 18／130，不缺。
 
+
+## 2026-11-23 ScrapingAnt 出口固定美國
+
+- 接入後兩天成功率約 41%（11/22 31 頁 13 頁解析到、11/23 17 頁 7 頁）。PR #60 加的頁面摘要在 10:17 那輪
+  抓到兩種失敗：標題「Before you continue」的 **Google 同意頁**（預設機房 proxy 隨機出口，換到歐洲 IP
+  時就會跳），以及約 200 萬字、標題正確卻解析不到航班的頁面（ChocoData 同一輪也有一次，原因未定）。
+- 改法：`/v2/general` 加 `proxy_country=US`（`scrapingant_flights.PROXY_COUNTRY`）。幣別與語言由網址的
+  `curr=TWD&hl=en&gl=tw` 決定，跟出口國家無關。配速照 `/v2/usage` 的實際剩餘點數，若指定國家改變了
+  每頁點數，配速會自動跟上。
+- 驗證：上線後兩天看每日成功率與 log 裡「Before you continue」是否消失；若美國出口不支援
+  （請求被拒）或成功率沒改善，改回隨機出口並另查第二種失敗。
