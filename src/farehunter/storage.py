@@ -132,6 +132,12 @@ CREATE TABLE IF NOT EXISTS tigerair_fares (
 CREATE INDEX IF NOT EXISTS idx_tigerair_fares
     ON tigerair_fares (origin, destination, depart_date, fetched_at);
 
+-- 每輪 monitor 開始時記一筆（runner.run）。防重複 guard 讀這裡的最新時間：快取價改成「沒變就不寫」
+-- （2026-11-23）之後，最新一筆 aviasales 觀測不再代表「上一輪什麼時候跑的」。
+CREATE TABLE IF NOT EXISTS monitor_runs (
+    started_at TEXT NOT NULL
+);
+
 -- Telegram 每日摘要（daily_digest.py）發過的台灣日期，一天只發一次。
 CREATE TABLE IF NOT EXISTS digest_sends (
     day     TEXT PRIMARY KEY,
@@ -601,6 +607,26 @@ class Store:
                WHERE origin=? AND destination=? AND depart_date >= ?
                  AND julianday(fetched_at) >= julianday(?)
                ORDER BY price, depart_date""", (origin, destination, earliest, since))]
+
+    def record_monitor_run(self, started_at: str) -> None:
+        self.conn.execute("INSERT INTO monitor_runs VALUES (?)", (started_at,))
+        self.conn.execute("DELETE FROM monitor_runs WHERE started_at < ?", (started_at[:10],))
+        self.conn.commit()
+
+    def same_cache_price_since(self, offer, since: str) -> bool:
+        """同一趟（航線、去回日、航空、艙等、來源）最新一筆快取價跟 offer 同價，而且在 since 之後
+        寫入——是的話這筆不必再寫（2026-11-23：快取價 97% 是跟上一筆一模一樣的重抄）。"""
+        row = self.conn.execute(
+            """SELECT price, observed_at FROM observations
+               WHERE origin=? AND destination=? AND depart_date=? AND return_date IS ?
+                 AND carriers IS ? AND fare_class=? AND source=?
+               ORDER BY julianday(observed_at) DESC, id DESC LIMIT 1""",
+            (offer.origin, offer.destination, offer.depart_date, offer.return_date,
+             offer.carriers, offer.fare_class, offer.source)).fetchone()
+        if row is None or float(row[0]) != float(offer.price):
+            return False
+        return self.conn.execute("SELECT julianday(?) >= julianday(?)",
+                                 (row[1], since)).fetchone()[0] == 1
 
     def digest_sent(self, day: str) -> bool:
         return self.conn.execute("SELECT 1 FROM digest_sends WHERE day=?", (day,)).fetchone() is not None

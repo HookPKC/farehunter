@@ -371,7 +371,8 @@ token 存自己 Google 帳號的 Script Properties，用 UrlFetchApp 發同一�
 - （每月一次，可選）Actions → **Archive DB** 最近一次 run →「Archive old
   observations」步驟的最後兩行：現行檔平常在約 37–45 MiB 之間起伏（大約每
   2–3 週 VACUUM 一次，會掉回 37–40 上下）。超過 48 MiB，或封存檔編號到 `observations-008.db`，
-  就找 AI 看（原因見 ADR 0002「已知限制」）
+  就找 AI 看（原因見 ADR 0002「已知限制」）。2026-11-23 起 Aviasales 快取價改成「沒變就不重寫、每 6 小時
+  至少一筆」，monitor log 的 Run summary 有 `unchanged`（這輪跳過幾筆同價）；每天成長應該在約 0.3 MB
 - 收到 healthchecks 或 cron-job.org email → 照第 0 節三步走
 - 三步走了還是不行 → `docs/PLAYBOOK.md` 案例 1-6 有完整排查法
   （順序：Scheduled run 是否存在 → workflow state → 手動 dispatch 是否正常）

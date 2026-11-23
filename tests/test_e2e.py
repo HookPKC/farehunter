@@ -52,7 +52,10 @@ def test_full_pipeline(tmp_path, monkeypatch, capsys):
 
     store = Store(str(db))
     by_date = store.route_stats_by_date("TPE", "NRT")
-    assert sum(s["n"] for s in by_date.values()) == 4   # stats only count fare_class='any'
+    # stats only count fare_class='any'；假 API 兩個月份回同一份資料，第二次是同一趟同價、
+    # 「沒變就不重寫」（ADR 0002 2026-11-23）→ 每趟只寫一筆
+    assert sum(s["n"] for s in by_date.values()) == 2
+    assert summary["unchanged"] == 4
     store.close()
 
     # second run within 24h: same prices -> dedup suppresses the alert

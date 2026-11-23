@@ -287,6 +287,9 @@ def _full_alerts(store, cfg, now, line_budget) -> int:
 #   而 08:42 已偏離整點，於是 09:xx 再跳一次。
 # 近三天 71 個整點中有 5 個完全沒有價格觀測，全部落在 07–09 UTC 這個區間。
 GUARD_MINUTES = 55
+#: 快取價沒變時最多隔這麼久重寫一筆（ADR 0002 2026-11-23）：保留「資料多新鮮」與各出發日的
+#: 觀測筆數，同時去掉每小時重抄同價的 97%。健康檢查 24 小時沒資料才算 stale，6 小時不會誤報。
+CACHE_REWRITE_HOURS = 6
 
 
 def guard_decision(db_path: str = "prices.db",
@@ -300,17 +303,24 @@ def guard_decision(db_path: str = "prices.db",
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
-            row = conn.execute(
+            stamps = [conn.execute(
                 "SELECT MAX(observed_at) FROM observations "
-                "WHERE source='aviasales'").fetchone()
+                "WHERE source='aviasales'").fetchone()[0]]
+            try:   # 2026-11-23 起每輪開始時記一筆；舊資料庫沒有這張表就只看觀測
+                stamps.append(conn.execute("SELECT MAX(started_at) FROM monitor_runs").fetchone()[0])
+            except sqlite3.OperationalError:
+                pass
         finally:
             conn.close()
-        if row is None or row[0] is None:
+        parsed = []
+        for v in stamps:
+            if v is None:
+                continue
+            ts = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            parsed.append(ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))
+        if not parsed:
             raise ValueError("尚無 aviasales 觀測")
-        ts = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        age = (datetime.now(timezone.utc) - ts).total_seconds() / 60
+        age = (datetime.now(timezone.utc) - max(parsed)).total_seconds() / 60
     except Exception as exc:  # noqa: BLE001 — fail-open：guard 絕不擋路
         log.warning("guard 無法判讀資料齡（%s），照常執行", exc)
         return False, None
@@ -397,7 +407,10 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
     # 薄航線偶爾回空是正常的——但必須可數、可見，否則一條航線可以連續 9 天
     # 全空而 workflow 從頭到尾綠燈。
     summary = {"searched": 0, "recorded": 0, "alerts": 0, "errors": 0,
-               "empty": 0, "zero_record_routes": []}
+               "empty": 0, "zero_record_routes": [], "unchanged": 0}
+    store.record_monitor_run(datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    cache_since = (datetime.now(timezone.utc)
+                   - timedelta(hours=CACHE_REWRITE_HOURS)).isoformat(timespec="seconds")
     # 日期基準一律由 now 導出，讓 run(now=) 是**完整**的時鐘注入。
     # 2026-09-06 生產事故：原本這裡與 upcoming_months() 各自取
     # date.today()（真實時鐘），但 run(now=) 只蓋到 _resolve_state 與
@@ -471,7 +484,12 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                 for offer in offers:
                     if offer.depart_date < today_iso:
                         continue                      # stale cache entry
-                    store.record(offer)
+                    # 沒變就不重寫（ADR 0002 2026-11-23）：同一趟同價、距上一筆不到 CACHE_REWRITE_HOURS
+                    # 小時就跳過。計數照「看到幾筆」算，零記錄航線的判斷不受影響。
+                    if store.same_cache_price_since(offer, cache_since):
+                        summary["unchanged"] += 1
+                    else:
+                        store.record(offer)
                     summary["recorded"] += 1
                     route_recorded += 1
                     in_range = stay_ok(offer.depart_date, offer.return_date)
