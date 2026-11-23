@@ -3,7 +3,7 @@
 **為什麼有這支**：ChocoData 的免費點數是一次性的，約 2026-12 中用完；冷門線的 Google 實價會掉回
 只剩 Bright Data。ScrapingAnt 免費方案每月 10,000 點、**每月重置**（週期從註冊日起算）。
 
-**做什麼**：通用擷取 `/v2/general`（`browser=true`、預設機房 proxy）抓 Bright Data 同一個 Google Flights
+**做什麼**：通用擷取 `/v2/general`（`browser=true`、機房 proxy、出口固定 PROXY_COUNTRY）抓 Bright Data 同一個 Google Flights
 搜尋頁，2026-11-22 實測 3/3 跟同一小時的 Bright Data／ChocoData 完全一致。網址、解析、要寫哪幾筆
 都沿用 Bright Data 的，巡檢流程沿用 chocodata_flights.ColdSweeper（同樣只查冷門線、24 小時內誰查過
 就不查、虎航與 Picker 線索優先），只把 provider 換成 'scrapingant'——source 仍是 'google'，價格語意
@@ -42,6 +42,10 @@ WINDOW_DAYS = 30
 WINDOW_MAX = 950
 #: 固定日期錯開：Bright Data 0、ChocoData 4（間隔 8 天的一半），這裡取 2，三家的日子交錯
 ANCHOR_OFFSET_DAYS = 2
+#: 機房 proxy 的出口國家。2026-11-23 起固定：預設隨機出口時約 6 成頁面解析不到，log 看到其中一種是
+#: 標題「Before you continue」的 Google 同意頁（歐洲 IP 才會跳）。固定美國出口避開同意牆；幣別與語言
+#: 由網址的 curr=TWD、hl=en、gl=tw 決定，跟出口國家無關。參數名 proxy_country（官方 proxy 設定文件）。
+PROXY_COUNTRY = "US"
 CONNECT_TIMEOUT_S = 10
 READ_TIMEOUT_S = 90
 
@@ -71,7 +75,8 @@ def fetch(origin: str, dest: str, depart: str, ret: str,
     key = _key()
     try:
         r = (session or requests).get(
-            API_URL, params={"url": search_url(origin, dest, depart, ret), "browser": "true"},
+            API_URL, params={"url": search_url(origin, dest, depart, ret), "browser": "true",
+                    "proxy_country": PROXY_COUNTRY},
             headers={"x-api-key": key}, timeout=(CONNECT_TIMEOUT_S, READ_TIMEOUT_S))
     except requests.RequestException as exc:
         raise ScrapingAntError(f"transport: {type(exc).__name__}") from None
