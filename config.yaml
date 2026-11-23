@@ -23,12 +23,22 @@ defaults:
   # market: 不要設——2026-10 實測 12 個市場結果完全相同、對冷門線沒有幫助（ADR 0003）
 
 routes:
+  # 2026-11-23 TPE-NRT／TPE-KIX／KHH-KIX 改用 Google 直飛實價重算（方法同下方 11/20 冷門線：住 2–10 晚、
+  # 出發至少 2 天後，照現行去重——含同出發日 7 天合併——逐筆重播，11/09 起／11/13 起換算每月則數）：
+  #   TPE-NRT 7,000（0 則）→ 7,800 約 2.1／0（觸發價：虎航 7,610；兩週最低 7,610、酷航 7,849）
+  #   TPE-KIX 6,500 → 6,000 約 4.2／0（虎航 5,734、捷星 5,923；11/10 巡檢查到 4 趟 < 6,500 但沒開
+  #           sweep_alerts、一則沒發，之後最低只到 7,108）
+  #   KHH-KIX 7,500（0 則）→ 8,000 約 2.1／2.9（虎航 7,907）
+  # 三條線一起開 sweep_alerts：門檻照實價定，實價多半是巡檢查到的。資料只有兩週、正好是 12 月與春假
+  # 的價格，2026-12-14 用約 6 週資料連同其他線一起重算。
   - origin: TPE
     destination: NRT
-    absolute_threshold: 7000    # TWD 來回，第一天就能用的絕對門檻
+    absolute_threshold: 7800    # 原 7000 → 2026-11-23 實價重算 7800
+    sweep_alerts: true
   - origin: TPE
     destination: KIX
-    absolute_threshold: 6500
+    absolute_threshold: 6000    # 原 6500 → 2026-11-23 實價重算 6000
+    sweep_alerts: true
   - origin: KHH
     destination: NRT
     absolute_threshold: 7500    # 原 8000 → 2026-11-20 用 Google 實價重算（見下方說明）
@@ -37,7 +47,8 @@ routes:
     sweep_alerts: true
   - origin: KHH
     destination: KIX
-    absolute_threshold: 7500
+    absolute_threshold: 8000    # 原 7500 → 2026-11-23 實價重算 8000
+    sweep_alerts: true
   # 以下四條線的門檻原本設在「史上最低觀測價」之下，absolute 規則永遠不可能
   # 觸發（KHH→FUK 門檻 7,000，但 5 週內最便宜只到 10,375）。它們原本只靠
   # big_drop 撐著，而那正是 2026-08 修掉的噪音——等於一邊收不到有用通知，
