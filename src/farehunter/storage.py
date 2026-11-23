@@ -378,6 +378,33 @@ class Store:
                 (origin, destination, depart_date, return_date,
                  carrier_signature, *status_params, f"-{within_hours} hours"))
 
+    #: 同一條線、同一出發日（不管回程與航空）幾天內只發一次，除非再便宜 IMPROVEMENT_PCT
+    DEPARTURE_SUPPRESS_DAYS = 7
+    #: 各自一桶、不跟其他理由互相擋的警報理由（史上最低；傳統航空特價跟廉航低價是兩回事）
+    OWN_BUCKET_REASONS = ("new_low", "full_drop")
+
+    def departure_alert_floor(self, origin: str, destination: str, depart_date: str, *,
+                              reason: str | None = None,
+                              within_days: int | None = None) -> float | None:
+        """同一條線、同一出發日、同一個理由桶，近 within_days 天通知過的最低價；沒有就 None。
+
+        2026-11-23：同一天出發、回程差一天的兩趟，照行程去重是兩則（KHH-NGO 11/25 出發 7,610 與
+        7,210、KHH-FUK 11/25 出發 6,781 兩次），對收的人是同一個消息。runner 用這個再擋一層。
+        """
+        days = self.DEPARTURE_SUPPRESS_DAYS if within_days is None else within_days
+        own = self.OWN_BUCKET_REASONS
+        if reason in own:
+            bucket, params = "reason=?", (reason,)
+        else:
+            bucket = f"(reason IS NULL OR reason NOT IN ({','.join('?' * len(own))}))"
+            params = own
+        row = self.conn.execute(
+            f"""SELECT MIN(price) FROM alerts
+                WHERE origin=? AND destination=? AND depart_date=? AND {bucket}
+                  AND sent_at >= datetime('now', ?)""",
+            (origin, destination, depart_date, *params, f"-{days} days")).fetchone()
+        return row[0]
+
     def verified_alert_floor(self, origin: str, destination: str, depart_date: str, *,
                              return_date: str | None,
                              carrier_signature: str | None) -> float | None:
