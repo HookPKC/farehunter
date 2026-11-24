@@ -88,6 +88,7 @@ def test_an_all_route_outage_is_one_problem_with_the_likely_cause(tmp_path):
 
 
 def test_threshold_edges(tmp_path):
+    assert health.GOOGLE_ROUTE_HOURS == 36           # 24 小時在 11/07～11/11 的 KHH-NGO 會誤報
     st = _store(tmp_path)
     _google(st, "TPE", "NRT", health.GOOGLE_ALL_ROUTES_HOURS - 0.1)
     _google(st, "KHH", "CTS", health.GOOGLE_ROUTE_HOURS - 0.1)
@@ -97,19 +98,19 @@ def test_threshold_edges(tmp_path):
 def test_one_quiet_route_is_listed_on_its_own(tmp_path):
     st = _store(tmp_path)
     _google(st, "TPE", "NRT", 0.5)
-    _google(st, "KHH", "CTS", 26)
+    _google(st, "KHH", "CTS", 40)
     _page(st, "KHH", "CTS", 3, 1)
     assert health.self_check(st.conn, ROUTES, NOW) == [
-        "KHH-CTS 已 26 小時沒有新的 Google 實價：1 頁有航班但沒有直飛價（可能這段日子沒有直飛）"]
+        "KHH-CTS 已 40 小時沒有新的 Google 實價：1 頁有航班但沒有直飛價（可能這段日子沒有直飛）"]
 
 
 def test_route_causes(tmp_path):
     st = _store(tmp_path)
     _google(st, "TPE", "NRT", 0.5)
     assert health.self_check(st.conn, ROUTES, NOW) == [
-        "KHH-CTS 從來沒有 Google 實價：24 小時內沒有拿到這條線的頁面（巡檢沒排到，或查詢失敗）"]
+        "KHH-CTS 從來沒有 Google 實價：36 小時內沒有拿到這條線的頁面（巡檢沒排到，或查詢失敗）"]
     _page(st, "KHH", "CTS", 2, 0)
-    _page(st, "KHH", "CTS", 30, 1, dep="2099-04-02")          # 24 小時以前的不算
+    _page(st, "KHH", "CTS", 40, 1, dep="2099-04-02")          # 36 小時以前的不算
     assert health.self_check(st.conn, ROUTES, NOW)[0].endswith("拿到 1 頁都解析不到航班")
 
 
@@ -201,7 +202,7 @@ def test_main_prints_one_line_per_problem(tmp_path, capsys):
                    encoding="utf-8")
     assert health.main([str(tmp_path / "p.db"), str(cfg)], now=NOW) == 0
     out = capsys.readouterr().out.splitlines()
-    assert out == ["KHH-CTS 從來沒有 Google 實價：24 小時內沒有拿到這條線的頁面（巡檢沒排到，或查詢失敗）"]
+    assert out == ["KHH-CTS 從來沒有 Google 實價：36 小時內沒有拿到這條線的頁面（巡檢沒排到，或查詢失敗）"]
 
 
 def test_main_reports_its_own_failure_instead_of_saying_all_good(tmp_path, capsys):
