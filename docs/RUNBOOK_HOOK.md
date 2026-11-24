@@ -358,6 +358,23 @@ token 存自己 Google 帳號的 Script Properties，用 UrlFetchApp 發同一�
    **run 綠但首頁沒變**＝ deploy 問題（照 §3 Re-run）。
 3. 照 §0 三步手動補一次資料，恢復後再回頭追原因。
 
+**收到「DOWN」信但首頁資料很新：自我檢查發現 Google 實價出問題（2026-11-24 起）**
+
+monitor 每輪 commit 之後會做一次自我檢查（`health.self_check`，只讀 prices.db），有問題時心跳改回報
+`/fail` 並附上原因，healthchecks 立刻寄「DOWN」信；問題解除後下一次正常回報會寄「UP」信。中間不會
+重複寄。原因在 healthchecks 該 check 的 **Events／最後一次回報內容**，Actions 裡 Heartbeat 步驟的
+log 也印同樣的文字（「自我檢查發現問題」）。三種問題：
+
+| 問題文字 | 意思 | 怎麼處理 |
+|---|---|---|
+| 全部 N 條航線已 X 小時沒有新的 Google 實價：… | Google 實價全面中斷（平常最久空 1.8 小時，門檻 3 小時）。警報會變成「尚未經 Google 驗證」、朋友收不到 | 看冒號後面的原因：**解析不到航班（Google 可能改版）**＝要修 `brightdata_flights.parse`，三家共用，找 AI；**都沒拿到頁面**＝金鑰過期或額度用完，看 Bright Data 後台與 `BRIGHTDATA_API_KEY`；**沒有送出任何查詢**＝額度配速歸零或巡檢被跳過，看 monitor log 的「Bright Data 本輪」 |
+| XXX-YYY 已 X 小時沒有新的 Google 實價：… | 只有這條線斷了（平常最久 KHH-CTS 17 小時，門檻 24 小時） | 「沒有直飛價」多半是這段日子沒班機，觀察即可；「解析不到」「沒拿到頁面」照上一列 |
+| 通知連續 2 輪送不出去 | 警報觸發了但 Telegram、LINE 都沒送到（會一直重試） | 看 Run monitor log 的「發送失敗」；Telegram 檢查 `TELEGRAM_BOT_TOKEN`，LINE 檢查 `LINE_CHANNEL_ACCESS_TOKEN` 與本月額度 |
+
+自我檢查程式本身出錯時也會回報 `/fail`（「自我檢查程式出錯」），避免壞掉的檢查一直說正常。
+**快取價（Aviasales）停更不在這裡**：整輪抓不到時 monitor 會變紅（上面的 missed-ping），個別航線
+停更看首頁的黃／紅提示條。
+
 ## 6. 安全守則（重要）
 
 - **不要**把任何 token 貼進與 AI 的對話（真的需要時，用完立刻刪）

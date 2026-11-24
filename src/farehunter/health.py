@@ -23,7 +23,10 @@ diff 都會顯示狀態變化。（唯一例外：整輪一次搜尋都沒成功
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import sqlite3
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from . import archive
 
@@ -230,3 +233,154 @@ def sweep_exit_code(summary: dict, name: str = "sweep",
         "workflow 將以非零結束碼失敗，以免這種狀況再次靜默五週。",
         name, int(summary.get("searched") or 0), summary)
     return 1
+
+
+# ---- 自我檢查：monitor 照常在跑，但 Google 實價斷了、或通知送不出去（2026-11-24） ----------
+#
+# 上面的 route health 看的是「有沒有任何觀測」，快取價每小時都有，Google 實價斷掉時它照樣全綠。
+# 價格以 Google 實價為準（警報驗證、巡檢警報都靠它），所以另外看兩件事：
+#   1. Google 實價有沒有在更新（全部航線、單一航線兩種門檻），附上最可能的原因；
+#   2. 通知是不是連續好幾輪一個管道都送不到。
+# 由 monitor.yml 的心跳步驟在 commit 之後呼叫（python -m farehunter.health）：有問題就回報
+# healthchecks 的 /fail 並附上原因，healthchecks 壞掉時寄一封、恢復時寄一封，不經過 Telegram bot。
+# 只讀 prices.db（唯讀開檔），不打任何 API，不影響 commit。
+
+#: 全部航線合起來這麼久沒有新的 Google 實價 → 中斷。2026-11-16～23 實測最久空 1.8 小時。
+GOOGLE_ALL_ROUTES_HOURS = 3.0
+#: 單一航線這麼久沒有 → 那條線有問題。同期最久是 KHH-CTS 的 17 小時，其他線都在 9 小時內。
+GOOGLE_ROUTE_HOURS = 24.0
+#: 最近這麼多輪都有通知一個管道都沒送到 → 通知管道壞了（單次逾時下一輪會重送，不算）。
+NOTIFY_FAIL_RUNS = 2
+
+
+def _google_age_hours(conn, origin: str, dest: str, now_iso: str) -> float | None:
+    """這條線最新一筆 Google 實價距今幾小時（不分供應商、艙等）；從來沒有回 None。"""
+    row = conn.execute(
+        "SELECT (julianday(?) - MAX(julianday(observed_at))) * 24 FROM observations"
+        " WHERE origin=? AND destination=? AND source='google'"
+        " AND julianday(observed_at) <= julianday(?)",
+        (now_iso, origin, dest, now_iso)).fetchone()
+    return None if row is None or row[0] is None else float(row[0])
+
+
+def _pages(conn, since_iso: str, now_iso: str, route=None) -> tuple[int, int]:
+    """(拿到幾頁, 其中幾頁解析得到航班)：api_checks 只記拿到頁面的查詢，傳輸錯誤不記。"""
+    sql = ("SELECT COUNT(*), COALESCE(SUM(parsed), 0) FROM api_checks"
+           " WHERE julianday(checked_at) >= julianday(?) AND julianday(checked_at) <= julianday(?)")
+    params = [since_iso, now_iso]
+    if route:
+        sql += " AND origin=? AND destination=?"
+        params += list(route)
+    fetched, parsed = conn.execute(sql, params).fetchone()
+    return int(fetched or 0), int(parsed or 0)
+
+
+def _runs(conn, since_iso: str, now_iso: str) -> tuple[int | None, int | None]:
+    """(這段時間開始了幾輪, 送出幾次 Google 查詢)。查詢數只算有記到的輪次；都沒記到時 None。"""
+    try:
+        rows = conn.execute(
+            "SELECT google_requests FROM monitor_runs WHERE julianday(started_at) >= julianday(?)"
+            " AND julianday(started_at) <= julianday(?)", (since_iso, now_iso)).fetchall()
+    except sqlite3.OperationalError:          # 舊資料庫還沒有這張表／欄位
+        return None, None
+    known = [r[0] for r in rows if r[0] is not None]
+    return len(rows), (sum(known) if known else None)
+
+
+def _google_cause(conn, since_iso: str, now_iso: str) -> str:
+    runs, requests = _runs(conn, since_iso, now_iso)
+    fetched, parsed = _pages(conn, since_iso, now_iso)
+    if runs == 0:
+        return "這段時間 monitor 一輪都沒有跑"
+    if requests == 0:
+        return "這段時間沒有送出任何 Google 實價查詢（額度配速或排程的問題）"
+    if fetched == 0:
+        sent = f"送出 {requests} 次查詢" if requests else "查詢"
+        return f"{sent}都沒拿到頁面（金鑰、額度或來源服務的問題）"
+    if parsed == 0:
+        return f"拿到 {fetched} 頁都解析不到航班（Google 可能改版，要修解析程式）"
+    return f"有 {parsed} 頁解析到航班，但沒有可寫入的直飛價"
+
+
+def _route_cause(conn, since_iso: str, now_iso: str, route) -> str:
+    fetched, parsed = _pages(conn, since_iso, now_iso, route)
+    if fetched == 0:
+        return f"{GOOGLE_ROUTE_HOURS:.0f} 小時內沒有拿到這條線的頁面（巡檢沒排到，或查詢失敗）"
+    if parsed == 0:
+        return f"拿到 {fetched} 頁都解析不到航班"
+    return f"{parsed} 頁有航班但沒有直飛價（可能這段日子沒有直飛）"
+
+
+def notify_problem(conn) -> str | None:
+    """最近 NOTIFY_FAIL_RUNS 輪都有通知一個管道都沒送到 → 問題描述；否則 None。"""
+    try:
+        rows = conn.execute(
+            "SELECT notify_failures FROM monitor_runs"
+            " ORDER BY julianday(started_at) DESC, rowid DESC LIMIT ?",
+            (NOTIFY_FAIL_RUNS,)).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    if len(rows) < NOTIFY_FAIL_RUNS or not all((r[0] or 0) > 0 for r in rows):
+        return None
+    return (f"通知連續 {NOTIFY_FAIL_RUNS} 輪送不出去（最近一輪 {rows[0][0]} 則；"
+            "Telegram／LINE 的金鑰或服務的問題）")
+
+
+def self_check(conn, routes, now: datetime) -> list[str]:
+    """回傳問題清單（一則一行，給人看）；空清單＝正常。routes：(出發地, 目的地) 的清單。"""
+    routes = list(routes)
+    if not routes:
+        return []
+    now_iso = now.isoformat(timespec="seconds")
+    problems = []
+    ages = {r: _google_age_hours(conn, r[0], r[1], now_iso) for r in routes}
+    known = [a for a in ages.values() if a is not None]
+    newest = min(known) if known else None
+    if newest is None or newest >= GOOGLE_ALL_ROUTES_HOURS:
+        since = (now - timedelta(hours=GOOGLE_ALL_ROUTES_HOURS)).isoformat(timespec="seconds")
+        lead = ("全部航線都沒有 Google 實價" if newest is None
+                else f"全部 {len(routes)} 條航線已 {newest:.0f} 小時沒有新的 Google 實價")
+        problems.append(f"{lead}：{_google_cause(conn, since, now_iso)}")
+    else:
+        since = (now - timedelta(hours=GOOGLE_ROUTE_HOURS)).isoformat(timespec="seconds")
+        for route, age in ages.items():
+            if age is not None and age < GOOGLE_ROUTE_HOURS:
+                continue
+            lead = (f"{route_key(*route)} 從來沒有 Google 實價" if age is None
+                    else f"{route_key(*route)} 已 {age:.0f} 小時沒有新的 Google 實價")
+            problems.append(f"{lead}：{_route_cause(conn, since, now_iso, route)}")
+    problem = notify_problem(conn)
+    if problem:
+        problems.append(problem)
+    return problems
+
+
+def main(argv=None, now: datetime | None = None) -> int:
+    """python -m farehunter.health [prices.db] [config.yaml]：有問題就一行一則印在 stdout。
+
+    一律回 0：結果由心跳步驟讀 stdout 決定回報成功或 /fail。檢查程式自己出錯也印一行，
+    讓它看得到（不然壞掉的檢查會一直回報「正常」）。
+    """
+    argv = sys.argv[1:] if argv is None else argv
+    db_path = argv[0] if argv else "prices.db"
+    config_path = argv[1] if len(argv) > 1 else "config.yaml"
+    try:
+        import yaml
+        cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        routes = [(r["origin"], r["destination"]) for r in cfg.get("routes", [])]
+        conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            problems = self_check(conn, routes, now or datetime.now(timezone.utc))
+        finally:
+            conn.close()
+    except Exception as exc:                   # noqa: BLE001 — 檢查程式自己壞了也要看得到
+        log.exception("自我檢查失敗")
+        problems = [f"自我檢查程式出錯（{type(exc).__name__}），請看 Actions log"]
+    for p in problems:
+        print(p)
+    return 0
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    raise SystemExit(main())

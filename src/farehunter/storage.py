@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from . import archive
@@ -134,8 +134,13 @@ CREATE INDEX IF NOT EXISTS idx_tigerair_fares
 
 -- 每輪 monitor 開始時記一筆（runner.run）。防重複 guard 讀這裡的最新時間：快取價改成「沒變就不寫」
 -- （2026-11-23）之後，最新一筆 aviasales 觀測不再代表「上一輪什麼時候跑的」。
+-- 自我檢查（health.self_check，2026-11-24）另外讀兩欄：google_requests＝這輪送出幾次 Google 實價
+-- 查詢（Bright Data／google-flights2／ChocoData／ScrapingAnt 合計，跑完才寫；沒跑完是 NULL），
+-- notify_failures＝這輪有幾則通知（警報、每日摘要）一個管道都沒送到。留最近 2 天。
 CREATE TABLE IF NOT EXISTS monitor_runs (
-    started_at TEXT NOT NULL
+    started_at      TEXT NOT NULL,
+    google_requests INTEGER,
+    notify_failures INTEGER NOT NULL DEFAULT 0
 );
 
 -- Telegram 每日摘要（daily_digest.py）發過的台灣日期，一天只發一次。
@@ -209,6 +214,13 @@ class Store:
         # migration: line_sends.quota_left（2026-11-11，用量面板）。舊列沒有這個資訊。
         if "quota_left" not in [r[1] for r in self.conn.execute("PRAGMA table_info(line_sends)")]:
             self.conn.execute("ALTER TABLE line_sends ADD COLUMN quota_left INTEGER")
+        # migration: monitor_runs 的自我檢查欄位（2026-11-24）。舊列沒有這些資訊：查詢數 NULL、通知失敗 0。
+        mcols = [r[1] for r in self.conn.execute("PRAGMA table_info(monitor_runs)")]
+        if "google_requests" not in mcols:
+            self.conn.execute("ALTER TABLE monitor_runs ADD COLUMN google_requests INTEGER")
+        if "notify_failures" not in mcols:
+            self.conn.execute(
+                "ALTER TABLE monitor_runs ADD COLUMN notify_failures INTEGER NOT NULL DEFAULT 0")
         self.conn.commit()
         # 一開檔就核對封存檔（ADR 0002）。所有 writer（monitor／FSC／Verify／
         # cheap_day_notify）都在打任何付費 API 之前建 Store，封存檔不完整時在
@@ -636,8 +648,24 @@ class Store:
                ORDER BY price, depart_date""", (origin, destination, earliest, since))]
 
     def record_monitor_run(self, started_at: str) -> None:
-        self.conn.execute("INSERT INTO monitor_runs VALUES (?)", (started_at,))
-        self.conn.execute("DELETE FROM monitor_runs WHERE started_at < ?", (started_at[:10],))
+        self.conn.execute("INSERT INTO monitor_runs (started_at) VALUES (?)", (started_at,))
+        # 留 2 天：自我檢查要看「最近 2 輪」，跨過 UTC 午夜也還在
+        keep_from = (datetime.fromisoformat(started_at) - timedelta(days=2)).isoformat(timespec="seconds")
+        self.conn.execute("DELETE FROM monitor_runs WHERE julianday(started_at) < julianday(?)",
+                          (keep_from,))
+        self.conn.commit()
+
+    def finish_monitor_run(self, started_at: str, *, google_requests: int) -> None:
+        """這輪跑完時補上送出的 Google 實價查詢數（自我檢查判斷「沒送出查詢」用）。"""
+        self.conn.execute("UPDATE monitor_runs SET google_requests=? WHERE started_at=?",
+                          (int(google_requests), started_at))
+        self.conn.commit()
+
+    def note_notify_failure(self) -> None:
+        """最新這輪多一則一個管道都沒送到的通知。沒有這輪的紀錄（測試直接呼叫）時不做事。"""
+        self.conn.execute(
+            "UPDATE monitor_runs SET notify_failures = notify_failures + 1"
+            " WHERE rowid = (SELECT MAX(rowid) FROM monitor_runs)")
         self.conn.commit()
 
     def same_cache_price_since(self, offer, since: str) -> bool:
