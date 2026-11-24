@@ -143,6 +143,14 @@ CREATE TABLE IF NOT EXISTS monitor_runs (
     notify_failures INTEGER NOT NULL DEFAULT 0
 );
 
+-- 免費額度回「點數不足」的紀錄（chocodata_flights.ColdSweeper，2026-11-24）。ChocoData 是一次性還是
+-- 每月重置不確定：first_at＝第一次不足、last_at＝最近一次試還是不足；拿到頁面就刪掉這一列。
+CREATE TABLE IF NOT EXISTS provider_exhaustion (
+    provider TEXT PRIMARY KEY,
+    first_at TEXT NOT NULL,
+    last_at  TEXT NOT NULL
+);
+
 -- Telegram 每日摘要（daily_digest.py）發過的台灣日期，一天只發一次。
 CREATE TABLE IF NOT EXISTS digest_sends (
     day     TEXT PRIMARY KEY,
@@ -653,6 +661,22 @@ class Store:
         keep_from = (datetime.fromisoformat(started_at) - timedelta(days=2)).isoformat(timespec="seconds")
         self.conn.execute("DELETE FROM monitor_runs WHERE julianday(started_at) < julianday(?)",
                           (keep_from,))
+        self.conn.commit()
+
+    def exhaustion(self, provider: str) -> tuple[str, str] | None:
+        """(第一次點數不足, 最近一次試還是不足)；沒有紀錄回 None。"""
+        row = self.conn.execute("SELECT first_at, last_at FROM provider_exhaustion WHERE provider=?",
+                                (provider,)).fetchone()
+        return None if row is None else (row[0], row[1])
+
+    def record_exhausted(self, provider: str, at: str) -> None:
+        self.conn.execute(
+            "INSERT INTO provider_exhaustion VALUES (?, ?, ?)"
+            " ON CONFLICT(provider) DO UPDATE SET last_at=excluded.last_at", (provider, at, at))
+        self.conn.commit()
+
+    def clear_exhausted(self, provider: str) -> None:
+        self.conn.execute("DELETE FROM provider_exhaustion WHERE provider=?", (provider,))
         self.conn.commit()
 
     def finish_monitor_run(self, started_at: str, *, google_requests: int) -> None:
