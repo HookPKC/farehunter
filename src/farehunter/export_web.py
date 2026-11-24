@@ -308,15 +308,25 @@ def build_usage(conn, now: datetime, quota_path: Path) -> dict:
         return r[0], r[1], r[2]
 
     def _chocodata():
-        # 一次性額度（不每月重置）：累計，不是本月。從沒用過就不顯示。
-        used, ok, first = _usage(cd.PROVIDER, "2000-01-01")
-        if not used:
+        # 一次性還是每月重置不確定（chocodata_flights 的說明）：顯示近 30 天用量、累計，以及點數
+        # 不足後的狀態。從沒用過就不顯示。
+        total, _, first = _usage(cd.PROVIDER, "2000-01-01")
+        if not total:
             return None
-        today = _usage(cd.PROVIDER, now.strftime("%Y-%m-%d"))[0]
-        left = max(0, cd.TOTAL_MAX - used)
-        return {"used": used, "ok": ok, "limit": cd.TOTAL_MAX, "today": today,
-                "daily_max": cd.DAILY_MAX, "first_day": first,
-                "days_left": -(-left // cd.DAILY_MAX)}
+        since = (now.date() - timedelta(days=cd.WINDOW_DAYS - 1)).isoformat()
+        used, ok, _ = _usage(cd.PROVIDER, since)
+        try:
+            row = conn.execute("SELECT first_at FROM provider_exhaustion WHERE provider=?",
+                               (cd.PROVIDER,)).fetchone()
+        except sqlite3.OperationalError:          # 還沒有這張表的舊檔
+            row = None
+        exhausted = row[0] if row else None
+        gave_up = bool(exhausted) and (
+            now - datetime.fromisoformat(exhausted)).total_seconds() >= cd.GIVE_UP_DAYS * 86400
+        return {"used": used, "ok": ok, "limit": cd.WINDOW_MAX, "window_days": cd.WINDOW_DAYS,
+                "today": _usage(cd.PROVIDER, now.strftime("%Y-%m-%d"))[0],
+                "daily_max": cd.DAILY_MAX, "first_day": first, "total": total,
+                "exhausted_since": exhausted, "gave_up": gave_up}
 
     def _gflights2():
         # 額度約 30 天重置、重置日不是月初：顯示近 30 天的用量。只在警報驗證不到時才用，

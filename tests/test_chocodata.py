@@ -122,7 +122,7 @@ def _use(st, n, day):
         st.record_api_usage(cd.PROVIDER, day, ok=True)
 
 
-def test_allowance_is_capped_per_run_per_day_and_in_total(tmp_path):
+def test_allowance_is_capped_per_run_per_day_and_per_30_days(tmp_path):
     st = _store(tmp_path)
     assert cd.allowance(st, NOW) == cd.PER_RUN_MAX
     _use(st, cd.DAILY_MAX - 1, NOW.date().isoformat())
@@ -131,10 +131,71 @@ def test_allowance_is_capped_per_run_per_day_and_in_total(tmp_path):
     assert cd.allowance(st, NOW) == 0
     (tmp_path / "b").mkdir()
     st2 = _store(tmp_path / "b")
-    _use(st2, cd.TOTAL_MAX - 1, "2026-11-13")
-    assert cd.allowance(st2, NOW) == 1                       # 一次性額度只剩 1 頁
-    _use(st2, 1, "2026-11-14")
+    _use(st2, cd.WINDOW_MAX - 1, (NOW.date() - timedelta(days=cd.WINDOW_DAYS - 1)).isoformat())
+    assert cd.allowance(st2, NOW) == 1                       # 近 30 天只剩 1 頁
+    _use(st2, 1, (NOW.date() - timedelta(days=1)).isoformat())
     assert cd.allowance(st2, NOW) == 0
+    # 用量滾出 30 天視窗就又能用：每月重置的話不會被自己的上限擋住（一次性的話會回點數不足）
+    assert cd.allowance(st2, NOW + timedelta(days=1)) == cd.PER_RUN_MAX
+
+
+# ---- 點數不足：每天試一次，恢復就回到平常配速 ---------------------------------------
+
+def _exhausted_fetch(*a):
+    raise cd.ChocoDataExhausted("HTTP 402 payment_required: Top up")
+
+
+def test_out_of_credits_is_remembered_and_probed_once_a_day(tmp_path):
+    st = _store(tmp_path)
+    cd.ColdSweeper(st, NOW, left=2, fetcher=_exhausted_fetch).sweep([])
+    stamp = NOW.isoformat(timespec="seconds")
+    assert st.exhaustion(cd.PROVIDER) == (stamp, stamp)
+    assert cd.allowance(st, NOW + timedelta(hours=23)) == 0
+    later = NOW + timedelta(hours=cd.PROBE_EVERY_HOURS)
+    assert cd.allowance(st, later) == 1                       # 一天後試 1 頁
+    sw = cd.ColdSweeper(st, later, fetcher=_exhausted_fetch)
+    assert sw.left == 1
+    sw.sweep([])
+    assert st.exhaustion(cd.PROVIDER) == (stamp, later.isoformat(timespec="seconds"))  # 第一次不變
+    assert cd.allowance(st, later + timedelta(hours=1)) == 0
+
+
+def test_credits_coming_back_clears_the_record_and_restores_the_pace(tmp_path, caplog):
+    st = _store(tmp_path)
+    st.record_exhausted(cd.PROVIDER, (NOW - timedelta(days=3)).isoformat(timespec="seconds"))
+    sw = cd.ColdSweeper(st, NOW, fetcher=lambda *a: _page(_label(9110, "Tigerair Taiwan")))
+    assert sw.left == 1
+    with caplog.at_level(logging.WARNING):
+        sw.sweep([])
+    assert st.exhaustion(cd.PROVIDER) is None
+    assert "點數恢復了" in caplog.text
+    assert cd.allowance(st, NOW + timedelta(hours=1)) == cd.PER_RUN_MAX     # 回到平常配速
+
+
+def test_an_unparsable_page_still_means_the_credits_are_back(tmp_path):
+    st = _store(tmp_path)
+    st.record_exhausted(cd.PROVIDER, (NOW - timedelta(days=3)).isoformat(timespec="seconds"))
+    cd.ColdSweeper(st, NOW, fetcher=lambda *a: "<html>no flights</html>").sweep([])
+    assert st.exhaustion(cd.PROVIDER) is None
+
+
+def test_after_40_days_without_credits_it_stops_probing(tmp_path):
+    st = _store(tmp_path)
+    first = NOW - timedelta(days=cd.GIVE_UP_DAYS)
+    st.record_exhausted(cd.PROVIDER, first.isoformat(timespec="seconds"))
+    st.record_exhausted(cd.PROVIDER, (NOW - timedelta(days=2)).isoformat(timespec="seconds"))
+    assert cd.allowance(st, NOW) == 0                         # 確定是一次性額度
+    assert cd.allowance(st, NOW - timedelta(hours=1)) == 1    # 前一刻還在每天試
+
+
+def test_other_errors_do_not_count_as_out_of_credits(tmp_path):
+    st = _store(tmp_path)
+
+    def broken(*a):
+        raise cd.ChocoDataError("HTTP 500 internal: oops")
+
+    cd.ColdSweeper(st, NOW, left=1, fetcher=broken).sweep([])
+    assert st.exhaustion(cd.PROVIDER) is None
 
 
 def test_bright_data_usage_does_not_count(tmp_path):

@@ -166,7 +166,7 @@ def test_usage_block_reports_each_service_without_guessing(tmp_path):
 
 
 def test_usage_block_covers_chocodata_and_google_flights2(tmp_path):
-    """ChocoData 是一次性額度（累計、跨月都算）；google-flights2 看近 30 天，沒用過也照實顯示 0。"""
+    """ChocoData 看近 30 天＋累計＋點數不足的狀態；google-flights2 看近 30 天，沒用過也照實顯示 0。"""
     from datetime import datetime, timezone
     from farehunter.storage import Store
     from farehunter.export_web import export
@@ -189,8 +189,18 @@ def test_usage_block_covers_chocodata_and_google_flights2(tmp_path):
     st.close()
     u = export(str(db), str(tmp_path / "data.json"), now=now)["usage"]
     c = u["chocodata"]
-    assert (c["used"], c["ok"], c["limit"], c["today"], c["first_day"]) == (61, 58, cd.TOTAL_MAX, 2, "2026-11-13")
-    assert c["days_left"] == -(-(cd.TOTAL_MAX - 61) // cd.DAILY_MAX)
+    # 近 30 天（11/03 起）＝61 頁；11/13 那 30 頁也在視窗內。累計同樣 61
+    assert (c["used"], c["ok"], c["limit"], c["today"], c["first_day"], c["total"]) == (
+        61, 58, cd.WINDOW_MAX, 2, "2026-11-13", 61)
+    assert (c["exhausted_since"], c["gave_up"]) == (None, False)
+    st = Store(str(db))
+    st.record_exhausted("chocodata", "2026-11-30T06:17:00+00:00")
+    st.close()
+    c = export(str(db), str(tmp_path / "data.json"), now=now)["usage"]["chocodata"]
+    assert (c["exhausted_since"], c["gave_up"]) == ("2026-11-30T06:17:00+00:00", False)
+    later = datetime(2027, 1, 10, 6, 0, tzinfo=timezone.utc)              # 41 天後
+    c = export(str(db), str(tmp_path / "data.json"), now=later)["usage"]["chocodata"]
+    assert c["gave_up"] is True and c["used"] == 0 and c["total"] == 61
     assert (u["gflights2"]["used"], u["gflights2"]["ok"], u["gflights2"]["today"]) == (2, 1, 1)
 
 

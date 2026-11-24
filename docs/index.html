@@ -780,8 +780,17 @@ function renderUsage(u, env){
   if(b) rows.push(row("Bright Data（Google 實價）", b.used, b.limit, `${fmt(b.used)} / ${fmt(b.limit)} 次`,
     `成功 ${fmt(b.ok)} 次${b.timeouts ? `、逾時 ${b.timeouts} 次` : ""}；程式配速用到約 ${fmt(b.target)} 次，每月 1 日重置`));
   const c = u.chocodata, g = u.gflights2;
-  if(c) rows.push(row("ChocoData（冷門線 Google 實價）", c.used, c.limit, `${fmt(c.used)} / ${fmt(c.limit)} 頁`,
-    `一次性額度，用完不會補；成功 ${fmt(c.ok)} 頁、今天 ${c.today} / ${c.daily_max} 頁${c.used < c.limit ? `，照這個速度約 ${c.days_left} 天後用完` : "，已用完"}`));
+  if(c){
+    // 舊格式 data.json（2026-11-24 以前：累計制，沒有 window_days／total）也要顯示得出來
+    const since = c.exhausted_since ? c.exhausted_since.slice(5, 10).replace("-", "/") : "";
+    const days = c.window_days || 30, total = c.total ?? c.used;
+    rows.push(row("ChocoData（冷門線 Google 實價）", c.used, c.limit, `${fmt(c.used)} / ${fmt(c.limit)} 頁`,
+      !c.exhausted_since
+        ? `近 ${days} 天程式用掉的頁數（還不確定是一次性還是每月重置，點數不足時會自動偵測）；成功 ${fmt(c.ok)} 頁、今天 ${c.today} / ${c.daily_max} 頁、累計 ${fmt(total)} 頁`
+        : c.gave_up
+          ? `${since} 起點數不足、超過 40 天沒恢復：確定是一次性額度，已停用（累計 ${fmt(total)} 頁）`
+          : `${since} 起點數不足，每天試 1 頁看會不會重置；累計 ${fmt(total)} 頁`));
+  }
   const a = u.scrapingant;
   if(a) rows.push(row("ScrapingAnt（冷門線 Google 實價）", a.used, a.limit, `${fmt(a.used)} / ${fmt(a.limit)} 頁`,
     `近 ${a.window_days} 天程式用掉的頁數（每月重置，程式照剩餘點數配速到重置日）；成功 ${fmt(a.ok)} 頁、今天 ${a.today} 頁`));

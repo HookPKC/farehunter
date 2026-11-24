@@ -1,4 +1,4 @@
-"""ChocoData 補冷門線的 Google 實價：一次性的 1,000 次免費額度，用完自動停（ADR 0005）。
+"""ChocoData 補冷門線的 Google 實價：免費約 1,000 頁，點數不足時自動停、每天試一次（ADR 0005）。
 
 **為什麼有這支**：Bright Data（ADR 0004）每天約 160 頁，但多半落在熱門線；2026-11-06～11-13
 的 Google 實價 KHH-NGO 只有 36 筆、KHH-CTS 38、KHH-FUK 42，KHH-NRT 卻有 522。NGO／CTS 的
@@ -9,10 +9,15 @@ HTML）抓 Bright Data 同一個 Google Flights 搜尋頁，2026-11-13 實測 4/
 所以網址（`search_url`）、解析（`parse`）、要寫哪幾筆（`select`）都直接沿用 Bright Data 的，
 只把 provider 換成 'chocodata'——source 仍是 'google'，價格語意完全相同。
 
-**額度**：免費方案是**註冊時一次性** 5,000 credits，每頁扣 5（＝約 1,000 頁），不是每月
-重置（後台方案卡寫「1,000 requests (one-time)」）。累計用到 TOTAL_MAX 就停；每天最多
-DAILY_MAX、每輪最多 PER_RUN_MAX，約一個月用完。帳本記在 api_usage（provider='chocodata'）。
-ChocoData 回「點數不足」時本輪立刻停。萬一點數其實每月重置，提高 TOTAL_MAX 就能接著用。
+**額度**：免費方案 5,000 credits，每頁扣 5（＝約 1,000 頁）。**是一次性還是每月重置不確定**：
+後台方案卡寫「1,000 requests (one-time)」，外部比較表寫「每月 5,000 credits」，API 回應看不出來
+（只回每頁扣幾點，沒有剩餘點數與重置日）。所以不寫死，讓 ChocoData 自己回答（2026-11-24）：
+- 平常：每輪最多 PER_RUN_MAX、每天最多 DAILY_MAX、近 WINDOW_DAYS 天最多 WINDOW_MAX 頁
+  （每月重置的話剛好用得完，一次性的話約 12 月中用完）。
+- 回「點數不足」→ 本輪立刻停，記進 provider_exhaustion。之後每 PROBE_EVERY_HOURS 小時只試 1 頁：
+  拿到頁面＝點數恢復（每月重置），清掉紀錄、回到平常配速；還是不足就繼續等。第一次不足後
+  GIVE_UP_DAYS 天都沒恢復＝確定是一次性，不再試（要重新啟用就刪掉 provider_exhaustion 那一列）。
+帳本記在 api_usage（provider='chocodata'）；看板用量面板顯示目前狀態。
 
 **金鑰在網址查詢參數裡**（官方 SDK：`?api_key=`，header 認證回 401）。repo 公開、Actions
 紀錄公開：錯誤訊息絕不含網址或連線錯誤原文，回應內容一律先遮掉金鑰。
@@ -41,8 +46,11 @@ API_URL = "https://api.chocodata.com/api/v1/universal/get"
 PROVIDER = "chocodata"
 #: 只給冷門線（Google 實價最少的四條）。熱門線 Bright Data 已經夠多。
 COLD_ROUTES = (("KHH", "CTS"), ("KHH", "NGO"), ("KHH", "FUK"), ("KHH", "OKA"))
-TOTAL_MAX = 950              # 一次性 1,000 頁（實測已花 4 頁）留緩衝；每頁 5 credits
-DAILY_MAX = 30               # 約 32 天用完
+WINDOW_DAYS = 30
+WINDOW_MAX = 950             # 約 1,000 頁留緩衝（每頁 5 credits）
+DAILY_MAX = 30               # 一個月約 900–930 頁
+PROBE_EVERY_HOURS = 24       # 點數不足之後多久試一次
+GIVE_UP_DAYS = 40            # 第一次不足後這麼多天都沒恢復＝一次性額度，不再試（超過一個月的週期）
 PER_RUN_MAX = 2              # 每頁 2–8 秒；一輪最多 2 頁，不拖長 monitor
 TRIPS_PER_ROUTE = 12         # 每條線每輪的候選行程數（快取日期＋固定日期）
 #: 固定日期跟 Bright Data 用同一套 anchor_trips；不錯開的話算出來的日子幾乎相同、都被「24 小時內
@@ -128,11 +136,23 @@ def page_hint(page) -> str:
     return f"{len(page):,} 字，標題「{title}」，特徵：{'、'.join(marks) or '無'}"
 
 
+def _hours_since(now: datetime, stamp: str) -> float:
+    return (now - datetime.fromisoformat(stamp)).total_seconds() / 3600
+
+
 def allowance(store, now: datetime) -> int:
-    """這一輪可以送幾頁：每輪、每天、累計三個上限取最小。"""
-    total = store.api_usage_since(PROVIDER, "2000-01-01")
+    """這一輪可以送幾頁。點數不足過：每 PROBE_EVERY_HOURS 小時試 1 頁，GIVE_UP_DAYS 天後不再試；
+    否則每輪、每天、近 WINDOW_DAYS 天三個上限取最小。"""
+    state = store.exhaustion(PROVIDER)
+    if state:
+        first, last = state
+        if _hours_since(now, first) >= GIVE_UP_DAYS * 24:
+            return 0
+        return 1 if _hours_since(now, last) >= PROBE_EVERY_HOURS else 0
     today = store.api_usage_since(PROVIDER, now.date().isoformat())
-    return max(0, min(PER_RUN_MAX, DAILY_MAX - today, TOTAL_MAX - total))
+    window = store.api_usage_since(
+        PROVIDER, (now.date() - timedelta(days=WINDOW_DAYS - 1)).isoformat())
+    return max(0, min(PER_RUN_MAX, DAILY_MAX - today, WINDOW_MAX - window))
 
 
 class ColdSweeper:
@@ -163,6 +183,14 @@ class ColdSweeper:
         self.stats = {"allowance": self.left, "requests": 0, "ok": 0, "recorded": 0,
                       "no_direct": 0, "errors": 0, "exhausted": False, "hinted": 0,
                       "tiger_hinted": 0}
+
+    def _credits_back(self) -> None:
+        """拿到頁面＝有點數。之前記過點數不足的話，代表額度重置了：清掉紀錄、記一筆 log。"""
+        state = self.store.exhaustion(self.provider)
+        if state:
+            self.store.clear_exhausted(self.provider)
+            log.warning("%s 點數恢復了（%s 起點數不足）：看起來額度會重置，回到平常配速",
+                        self.label, state[0])
 
     def _ago(self, **delta) -> str:
         return (self.now - timedelta(**delta)).isoformat(timespec="seconds")
@@ -258,6 +286,7 @@ class ColdSweeper:
         started = self.clock()
         try:
             page = self.fetch(o, d, dep, ret)
+            self._credits_back()
             itineraries = parse(page)
             self.store.record_api_check(self.provider, o, d, dep, ret, stamp,
                                         parsed=bool(itineraries))
@@ -272,7 +301,11 @@ class ColdSweeper:
         except ChocoDataExhausted as exc:
             self.stats["errors"] += 1
             self.stats["exhausted"] = True
-            log.warning("%s 點數不足，本輪停止：%s", self.label, exc)
+            self.store.record_exhausted(self.provider, stamp)
+            # ChocoData 之後每天試 1 頁（allowance）；ScrapingAnt 照 /v2/usage 的剩餘點數配速
+            then = (f"之後每 {PROBE_EVERY_HOURS} 小時試 1 頁，看會不會重置"
+                    if self.provider == PROVIDER else "等額度重置")
+            log.warning("%s 點數不足，本輪停止（%s）：%s", self.label, then, exc)
         except ChocoDataError as exc:
             self.stats["errors"] += 1
             log.warning("%s %s→%s %s/%s: %s", self.label, o, d, dep, ret, exc)
