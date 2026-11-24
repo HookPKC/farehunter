@@ -201,6 +201,7 @@ def _sweep_alerts(store, cfg, now, line_budget) -> int:
         sent = notify(offer, verdict, pstate, line_budget=line_budget)
         if not sent and channels_configured():
             log.error("巡檢警報發送失敗，下一輪巡檢查到時再發: %s→%s %s", o, d, dep)
+            store.note_notify_failure()
             continue
         store.record_alert(o, d, dep, pstate.selected_price, verdict.reason,
                            return_date=ret, carrier_signature=csig,
@@ -274,6 +275,7 @@ def _full_alerts(store, cfg, now, line_budget) -> int:
         sent = notify(offer, verdict, pstate, line_budget=line_budget)
         if not sent and channels_configured():
             log.error("傳統航空警報發送失敗，下一輪查到時再發: %s→%s %s", o, d, dep)
+            store.note_notify_failure()
             continue
         store.record_alert(o, d, dep, pstate.selected_price, verdict.reason,
                            return_date=ret, carrier_signature=csig,
@@ -421,7 +423,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
     # 全空而 workflow 從頭到尾綠燈。
     summary = {"searched": 0, "recorded": 0, "alerts": 0, "errors": 0,
                "empty": 0, "zero_record_routes": [], "unchanged": 0}
-    store.record_monitor_run(datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    run_started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    store.record_monitor_run(run_started)
     cache_since = (datetime.now(timezone.utc)
                    - timedelta(hours=CACHE_REWRITE_HOURS)).isoformat(timespec="seconds")
     # 日期基準一律由 now 導出，讓 run(now=) 是**完整**的時鐘注入。
@@ -553,6 +556,7 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     if not sent and channels_configured():
                         log.error("通知發送失敗，保留至下一輪重試: %s→%s %s",
                                   origin, dest, offer.depart_date)
+                        store.note_notify_failure()
                         continue
                     store.record_alert(
                         origin, dest, offer.depart_date,
@@ -678,6 +682,8 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
         if not all_searches_failed(summary):
             try:
                 summary["digest"] = daily_digest.maybe_send(store, cfg["routes"], now)
+                if summary["digest"].get("skipped") == "send_failed":
+                    store.note_notify_failure()
             except Exception:
                 log.exception("每日摘要意外失敗，本輪略過")
 
@@ -686,6 +692,14 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
             log.error("本輪 Aviasales 完全沒有資料的航線 %d/%d 條：%s",
                       len(summary["zero_record_routes"]), len(cfg["routes"]),
                       ", ".join(summary["zero_record_routes"]))
+
+        # 自我檢查（health.self_check）判斷「這段時間有沒有送出 Google 實價查詢」用。
+        # summary 的鍵跟 provider 同名（brightdata、gflights2、chocodata、scrapingant）。
+        try:
+            store.finish_monitor_run(run_started, google_requests=sum(
+                int((summary.get(k) or {}).get("requests") or 0) for k in SWEEP_PROVIDERS))
+        except Exception:
+            log.exception("記錄本輪 Google 查詢數失敗，略過（只影響自我檢查的原因判斷）")
 
         # 累積視角：本輪零記錄只看當下，觀測齡才能抓到「已經斷線多天」。
         # 用 config 的航線清單而非 DB DISTINCT，否則從未成功抓過的航線

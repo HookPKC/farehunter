@@ -135,13 +135,30 @@ jobs:
       # ping 失敗也不影響主流程。guard skip 屬健康狀態，照樣 ping。
       # 前面任何步驟失敗時本步驟不執行（預設 if: success()）→ healthchecks
       # 收不到 ping 就會在 grace 期後通知 Hook。
+      # 自我檢查（2026-11-24，health.self_check）：commit 之後讀 prices.db，Google 實價斷了
+      # 或通知連續送不出去時改回報 /fail 並附上原因 → healthchecks 立刻寄信；恢復後下一次
+      # 正常回報會再寄一封「恢復」。只印問題描述，不印 HC_PING_URL。
       - name: Heartbeat（HC_PING_URL 未設定時自動跳過）
         env:
           HC_PING_URL: ${{ secrets.HC_PING_URL }}
         run: |
+          CHECK_FILE="$RUNNER_TEMP/self_check.txt"
+          PYTHONPATH=src python -m farehunter.health prices.db config.yaml > "$CHECK_FILE" \
+            || echo "自我檢查程式沒有跑完，請看 Actions log" >> "$CHECK_FILE"
+          if [ -s "$CHECK_FILE" ]; then
+            echo "::warning::自我檢查發現問題"
+            cat "$CHECK_FILE"
+          else
+            echo "自我檢查：正常"
+          fi
           if [ -n "$HC_PING_URL" ]; then
-            curl -fsS -m 10 --retry 3 "$HC_PING_URL" \
-              || echo "heartbeat ping 失敗（不影響主流程）"
+            if [ -s "$CHECK_FILE" ]; then
+              curl -fsS -m 10 --retry 3 --data-binary @"$CHECK_FILE" "$HC_PING_URL/fail" \
+                || echo "heartbeat ping 失敗（不影響主流程）"
+            else
+              curl -fsS -m 10 --retry 3 "$HC_PING_URL" \
+                || echo "heartbeat ping 失敗（不影響主流程）"
+            fi
           else
             echo "HC_PING_URL 未設定，跳過心跳"
           fi
