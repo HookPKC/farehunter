@@ -625,6 +625,19 @@ class Store:
             (provider, origin, destination, depart_date, return_date, since)
         ).fetchone() is not None
 
+    def dead_trip(self, origin: str, destination: str, depart_date: str, return_date: str,
+                  since: str, *, providers: int = 2) -> bool:
+        """since 之後至少 providers 家拿到這趟的頁面都解析不到航班，而且沒有任何一家解析到
+        （2026-11-24：2027 年 9–10 月的遠期日子三家輪流各查一次、全部解析不到）。"""
+        bad, good = self.conn.execute(
+            """SELECT COUNT(DISTINCT CASE WHEN parsed=0 THEN provider END),
+                      COUNT(CASE WHEN parsed=1 THEN 1 END)
+               FROM api_checks
+               WHERE origin=? AND destination=? AND depart_date=? AND return_date=?
+                 AND julianday(checked_at) >= julianday(?)""",
+            (origin, destination, depart_date, return_date, since)).fetchone()
+        return bad >= providers and not good
+
     def api_checked_for(self, provider: str, origin: str, destination: str,
                         depart_date: str, return_date: str, want: str, since: str) -> bool:
         """since 之後有沒有替這一組航空公司（want）查過這趟。"""

@@ -200,11 +200,13 @@ class ColdSweeper:
 
         別家只算**解析得到航班**的頁面：2026-11-22 ScrapingAnt 31 頁有 14 頁解析不到（Google 給了別的
         版面），原本那幾趟會連帶讓 ChocoData 24 小時內不查。自己解析不到的照樣算查過（同一家重試多半
-        還是一樣，留給別家）。"""
+        還是一樣，留給別家）。但**兩家都解析不到**（而且沒有一家解析到）的行程 7 天內誰都不再查：
+        2026-11-24 遠期日子（2027 年 9–10 月）三家輪流各查一次、全部解析不到，一天半浪費約 16 頁。"""
         return (self.store.has_google_since(o, d, dep, ret, since)
                 or any(self.store.api_checked_since(p, o, d, dep, ret, since,
                                                     parsed_only=p != self.provider)
-                       for p in self.checkers))
+                       for p in self.checkers)
+                or self.store.dead_trip(o, d, dep, ret, self._ago(days=MISS_MEMORY_DAYS)))
 
     def _weekdays(self, o: str, d: str) -> tuple[frozenset, frozenset]:
         """(有直飛的星期幾, 最近落空的星期幾)，以最近一次為準；落空看兩家供應商。"""

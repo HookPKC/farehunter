@@ -462,9 +462,13 @@ class Verifier:
             k = int(self.now.timestamp() // 3600) % len(order)
             order = order[k:] + order[:k]
 
+        dead_since = self._ago(days=MISS_MEMORY_DAYS)
+
         def fresh(o, d, dep, ret):
+            # 兩家都解析不到的行程（頁面上本來就沒有航班可列，例如班表還沒開）7 天內不再查（store.dead_trip）
             return (self.store.has_google_since(o, d, dep, ret, since)
-                    or self.store.api_checked_since(self.provider, o, d, dep, ret, since))
+                    or self.store.api_checked_since(self.provider, o, d, dep, ret, since)
+                    or self.store.dead_trip(o, d, dep, ret, dead_since))
 
         deadline = self.clock() + SWEEP_DEADLINE_S
         while self._can_send() and self.clock() < deadline and any(queues.values()):
