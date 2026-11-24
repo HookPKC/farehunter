@@ -187,6 +187,43 @@ def test_another_sweepers_unparsable_page_does_not_block_but_its_own_does(tmp_pa
     assert asked == [_d(30)]                                        # 31 號自己查過；30 號別家沒解析到 → 照查
 
 
+def test_a_trip_two_sweepers_could_not_parse_is_skipped_by_everyone(tmp_path):
+    """2026-11-24：2027 年 9–10 月的遠期日子三家輪流各查一次、全部解析不到。"""
+    st = _store(tmp_path)
+    old = (NOW - timedelta(days=3)).isoformat(timespec="seconds")
+    for p in (bd.PROVIDER, cd.PROVIDER):                                       # 30 號：兩家都解析不到
+        st.record_api_check(p, "KHH", "CTS", _d(30), _d(35), old, parsed=False)
+    st.record_api_check(bd.PROVIDER, "KHH", "CTS", _d(31), _d(36), old, parsed=False)   # 31 號：只有一家
+    st.record_api_check(cd.PROVIDER, "KHH", "CTS", _d(31), _d(36), old, parsed=True)
+    for p in (bd.PROVIDER, cd.PROVIDER):                                       # 32 號：兩家，但 8 天前
+        st.record_api_check(p, "KHH", "CTS", _d(32), _d(37),
+                            (NOW - timedelta(days=8)).isoformat(timespec="seconds"), parsed=False)
+    asked = []
+    ant = sa.Sweeper(st, NOW, left=3, fetcher=lambda o, d, dep, ret: asked.append(dep) or _page())
+    ant.tiger_hints = {("KHH", "CTS"): [(_d(30), _d(35)), (_d(31), _d(36)), (_d(32), _d(37))]}
+    ant.queues = lambda c, _q=ant.queues: {r: q for r, q in _q(c).items() if r == ("KHH", "CTS")}
+    ant.sweep([])
+    assert asked[:2] == [_d(31), _d(32)]                   # 30 號跳過；31 號有一家解析到、32 號過了 7 天
+    assert st.dead_trip("KHH", "CTS", _d(30), _d(35), (NOW - timedelta(days=7)).isoformat())
+    assert not st.dead_trip("KHH", "CTS", _d(31), _d(36), (NOW - timedelta(days=7)).isoformat())
+    for p, ok in ((bd.PROVIDER, False), (sa.PROVIDER, False), (cd.PROVIDER, True)):  # 兩家不行、一家可以
+        st.record_api_check(p, "KHH", "CTS", _d(34), _d(39), old, parsed=ok)
+    assert not st.dead_trip("KHH", "CTS", _d(34), _d(39), (NOW - timedelta(days=7)).isoformat())
+
+
+def test_bright_data_sweep_also_skips_a_trip_two_others_could_not_parse(tmp_path):
+    st = _store(tmp_path)
+    old = (NOW - timedelta(days=2)).isoformat(timespec="seconds")
+    for p in (cd.PROVIDER, sa.PROVIDER):
+        st.record_api_check(p, "KHH", "CTS", _d(30), _d(35), old, parsed=False)
+    asked = []
+    v = bd.Verifier(st, NOW, allowance=1, fetcher=lambda o, d, dep, ret: asked.append(dep) or _page())
+    cands = [Offer("KHH", "CTS", _d(30), _d(35), 9000.0, "TWD", "IT", 0, ""),
+             Offer("KHH", "CTS", _d(33), _d(38), 9500.0, "TWD", "IT", 0, "")]
+    v.sweep(cands, [("KHH", "CTS")])
+    assert asked == [_d(33)]
+
+
 def test_an_unparsable_page_logs_a_hint_not_the_page(tmp_path, caplog):
     import logging
     st = _store(tmp_path)
