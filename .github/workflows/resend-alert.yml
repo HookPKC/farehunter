@@ -28,7 +28,14 @@ jobs:
           from types import SimpleNamespace
           from farehunter.models import Offer
           from farehunter.analyzer import Verdict
+          import farehunter.notify as N
           from farehunter.notify import format_alert, send_line
+          # 第一次（run 45768792325）沒帶 Telegram 設定，保留額度被當成 30 則（剩 22）→ 只推給擁有者。
+          # 這是使用者要求的一次性重發：不留保留額度，並確認實際打的是 /broadcast。
+          N.owner_reserve = lambda: 0
+          hit = []
+          _post = N.requests.post
+          N.requests.post = lambda url, **kw: hit.append(url) or _post(url, **kw)
           offer = Offer("KHH", "OKA", "2027-01-05", "2027-01-08", 5115.0, "TWD", "IT", 0, "",
                         source="google", provider="brightdata")
           verdict = Verdict(True, "big_drop",
@@ -39,5 +46,7 @@ jobs:
           print(text)
           if not send_line(text):
               raise SystemExit("LINE 沒送出（看上面的 log）")
-          print("LINE 已送出")
+          if not any(u.endswith("/broadcast") for u in hit):
+              raise SystemExit("沒有廣播給朋友（只推給擁有者）")
+          print("LINE 已廣播給朋友")
           PY
