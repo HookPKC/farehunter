@@ -1,0 +1,43 @@
+name: Resend Alert (one-off)
+
+# 2026-11-26 一次性：KHH⇄OKA 2027-01-05 已驗證 5,115 當天被 LINE 配速擋下、朋友沒收到（那天第一則廣播
+# 被凌晨的便宜日推播用掉）。使用者要求重發給 LINE 朋友。只能手動觸發；文案與原警報相同（format_alert）。
+# 用完即刪。不碰 prices.db、不 commit。
+on:
+  workflow_dispatch:
+
+jobs:
+  resend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Broadcast the KHH-OKA alert to LINE friends
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          LINE_BROADCAST: "1"
+        run: |
+          python - << 'PY'
+          import sys; sys.path.insert(0, "src")
+          from datetime import datetime, timezone
+          from types import SimpleNamespace
+          from farehunter.models import Offer
+          from farehunter.analyzer import Verdict
+          from farehunter.notify import format_alert, send_line
+          offer = Offer("KHH", "OKA", "2027-01-05", "2027-01-08", 5115.0, "TWD", "IT", 0, "",
+                        source="google", provider="brightdata")
+          verdict = Verdict(True, "big_drop",
+                            "5,115 TWD 比 2027-01-05 這天的中位數 8,592 低 40%（該日樣本 250）")
+          state = SimpleNamespace(state="verified", selected_price=5115.0,
+                                  selected_observed_at=datetime(2026, 11, 26, 5, 17, 42, tzinfo=timezone.utc))
+          text = format_alert(offer, verdict, state)
+          print(text)
+          if not send_line(text):
+              raise SystemExit("LINE 沒送出（看上面的 log）")
+          print("LINE 已送出")
+          PY
