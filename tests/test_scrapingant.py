@@ -48,6 +48,7 @@ class _Resp:
 
 
 class _Session:
+    """resp 可以是一個回應（每次都回它）或一串回應（依序回）。"""
     def __init__(self, resp=None, exc=None):
         self.resp, self.exc, self.calls = resp, exc, []
 
@@ -55,7 +56,7 @@ class _Session:
         self.calls.append((url, kw))
         if self.exc:
             raise self.exc
-        return self.resp
+        return self.resp.pop(0) if isinstance(self.resp, list) else self.resp
 
 
 # ---- fetch：金鑰只在 header、錯誤遮罩 --------------------------------------------
@@ -69,6 +70,32 @@ def test_fetch_puts_the_key_in_a_header_and_returns_the_html(monkeypatch):
     assert kw["params"] == {"url": bd.search_url("KHH", "NGO", _d(30), _d(35)), "browser": "true",
                             "proxy_country": "US"}     # 固定出口：避開歐洲 IP 的 Google 同意頁
     assert KEY not in url and KEY not in str(kw["params"])
+
+
+def test_a_502_from_the_us_exit_is_retried_once_on_a_random_exit(monkeypatch):
+    """2026-11-24 起美國出口常回 502 Bad Gateway；拿到頁面時解析率高，所以先試美國、不通再退回隨機。"""
+    monkeypatch.setenv("SCRAPINGANT_API_KEY", KEY)
+    s = _Session([_Resp(502, "Bad Gateway"), _Resp(200, _page())])
+    assert sa.fetch("KHH", "NGO", _d(30), _d(35), session=s) == _page()
+    (_, first), (_, second) = s.calls
+    assert first["params"]["proxy_country"] == "US" and "proxy_country" not in second["params"]
+    assert second["params"]["url"] == first["params"]["url"] and second["headers"] == {"x-api-key": KEY}
+
+
+def test_the_retry_happens_only_once_and_not_for_other_errors(monkeypatch):
+    monkeypatch.setenv("SCRAPINGANT_API_KEY", KEY)
+    s = _Session([_Resp(502, "Bad Gateway"), _Resp(504, "Gateway Timeout")])
+    with pytest.raises(sa.ScrapingAntError) as e:
+        sa.fetch("KHH", "NGO", _d(30), _d(35), session=s)
+    assert len(s.calls) == 2 and "HTTP 504" in str(e.value)
+    s = _Session([_Resp(500, "oops")])
+    with pytest.raises(sa.ScrapingAntError):
+        sa.fetch("KHH", "NGO", _d(30), _d(35), session=s)
+    assert len(s.calls) == 1                                        # 500 不換出口重試
+    s = _Session([_Resp(403, '{"detail":"API credits limit exceeded"}')])
+    with pytest.raises(sa.ScrapingAntExhausted):
+        sa.fetch("KHH", "NGO", _d(30), _d(35), session=s)
+    assert len(s.calls) == 1                                        # 點數用完不重試
 
 
 def test_transport_errors_carry_only_the_exception_type(monkeypatch):

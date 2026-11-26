@@ -46,6 +46,10 @@ ANCHOR_OFFSET_DAYS = 2
 #: 標題「Before you continue」的 Google 同意頁（歐洲 IP 才會跳）。固定美國出口避開同意牆；幣別與語言
 #: 由網址的 curr=TWD、hl=en、gl=tw 決定，跟出口國家無關。參數名 proxy_country（官方 proxy 設定文件）。
 PROXY_COUNTRY = "US"
+#: 指定出口回這些狀態時，同一次改用不指定國家的出口再試一次（只試一次）。2026-11-24 13:17 UTC 起美國出口
+#: 常回 502 Bad Gateway（ScrapingAnt 連不到 Google）：11/25 24 次只有 6 次拿到頁面，但拿到的 6 頁全部
+#: 解析成功。美國通的時候照用（解析率高），不通時退回隨機出口（11/22–23 約 42%）。
+FALLBACK_STATUSES = (502, 503, 504)
 CONNECT_TIMEOUT_S = 10
 READ_TIMEOUT_S = 90
 
@@ -69,17 +73,23 @@ def _key() -> str:
     return key
 
 
-def fetch(origin: str, dest: str, depart: str, ret: str,
-          session: requests.Session | None = None) -> str:
-    """回傳 Google Flights 搜尋頁的 HTML。"""
-    key = _key()
+def _get(session, key: str, params: dict):
     try:
-        r = (session or requests).get(
-            API_URL, params={"url": search_url(origin, dest, depart, ret), "browser": "true",
-                    "proxy_country": PROXY_COUNTRY},
-            headers={"x-api-key": key}, timeout=(CONNECT_TIMEOUT_S, READ_TIMEOUT_S))
+        return (session or requests).get(API_URL, params=params, headers={"x-api-key": key},
+                                         timeout=(CONNECT_TIMEOUT_S, READ_TIMEOUT_S))
     except requests.RequestException as exc:
         raise ScrapingAntError(f"transport: {type(exc).__name__}") from None
+
+
+def fetch(origin: str, dest: str, depart: str, ret: str,
+          session: requests.Session | None = None) -> str:
+    """回傳 Google Flights 搜尋頁的 HTML。先用 PROXY_COUNTRY 出口；回 FALLBACK_STATUSES 時改用隨機出口再試一次。"""
+    key = _key()
+    params = {"url": search_url(origin, dest, depart, ret), "browser": "true"}
+    r = _get(session, key, {**params, "proxy_country": PROXY_COUNTRY})
+    if r.status_code in FALLBACK_STATUSES:
+        log.info("ScrapingAnt %s 出口回 HTTP %s，改用隨機出口再試一次", PROXY_COUNTRY, r.status_code)
+        r = _get(session, key, params)
     if r.status_code != 200:
         text = cd._redact(f"HTTP {r.status_code}: {r.text[:300]}", key)[:200]
         low = text.lower()
