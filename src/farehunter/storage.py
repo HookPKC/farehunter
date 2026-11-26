@@ -71,9 +71,14 @@ CREATE TABLE IF NOT EXISTS api_usage (
 -- 每月約 60 筆，不必清理。
 -- quota_left＝這則送出後 LINE 回報的本月剩餘則數（查不到時 NULL），給看板的用量面板顯示。
 CREATE TABLE IF NOT EXISTS line_sends (
-    sent_at    TEXT NOT NULL,
-    mode       TEXT NOT NULL,
-    quota_left INTEGER
+    sent_at     TEXT NOT NULL,
+    mode        TEXT NOT NULL,
+    quota_left  INTEGER,
+    -- 廣播的是哪條線、什麼價格（2026-11-26：同一條線 3 天內只廣播一次，除非再便宜 10%）。
+    -- 便宜日推播與舊列沒有這些資訊。
+    origin      TEXT,
+    destination TEXT,
+    price       REAL
 );
 
 -- 巡檢最近查過哪些行程（Bright Data 巡檢用，ADR 0004）。查到頁面卻沒有可寫入的直飛價
@@ -220,8 +225,13 @@ class Store:
                 self.conn.execute(
                     f"ALTER TABLE api_usage ADD COLUMN {col} {kind} NOT NULL DEFAULT 0")
         # migration: line_sends.quota_left（2026-11-11，用量面板）。舊列沒有這個資訊。
-        if "quota_left" not in [r[1] for r in self.conn.execute("PRAGMA table_info(line_sends)")]:
+        lcols = [r[1] for r in self.conn.execute("PRAGMA table_info(line_sends)")]
+        if "quota_left" not in lcols:
             self.conn.execute("ALTER TABLE line_sends ADD COLUMN quota_left INTEGER")
+        # migration: line_sends 的航線與價格（2026-11-26，同線 3 天只廣播一次）。舊列沒有這些資訊。
+        for col, kind in (("origin", "TEXT"), ("destination", "TEXT"), ("price", "REAL")):
+            if col not in lcols:
+                self.conn.execute(f"ALTER TABLE line_sends ADD COLUMN {col} {kind}")
         # migration: monitor_runs 的自我檢查欄位（2026-11-24）。舊列沒有這些資訊：查詢數 NULL、通知失敗 0。
         mcols = [r[1] for r in self.conn.execute("PRAGMA table_info(monitor_runs)")]
         if "google_requests" not in mcols:
@@ -528,11 +538,21 @@ class Store:
             (provider, first_day)).fetchone()
         return int(row[0])
 
-    def record_line_send(self, sent_at: str, mode: str,
-                         quota_left: int | None = None) -> None:
-        self.conn.execute("INSERT INTO line_sends (sent_at, mode, quota_left) VALUES (?, ?, ?)",
-                          (sent_at, mode, quota_left))
+    def record_line_send(self, sent_at: str, mode: str, quota_left: int | None = None, *,
+                         origin: str | None = None, destination: str | None = None,
+                         price: float | None = None) -> None:
+        self.conn.execute(
+            "INSERT INTO line_sends (sent_at, mode, quota_left, origin, destination, price)"
+            " VALUES (?, ?, ?, ?, ?, ?)", (sent_at, mode, quota_left, origin, destination, price))
         self.conn.commit()
+
+    def route_broadcast_floor(self, origin: str, destination: str, since: str) -> float | None:
+        """since 之後這條線廣播給朋友的最低價；沒廣播過回 None。"""
+        row = self.conn.execute(
+            "SELECT MIN(price) FROM line_sends WHERE mode='broadcast' AND origin=? AND destination=?"
+            " AND price IS NOT NULL AND julianday(sent_at) >= julianday(?)",
+            (origin, destination, since)).fetchone()
+        return None if row is None or row[0] is None else float(row[0])
 
     def line_sends_since(self, mode: str, since: str) -> int:
         """since（含）之後送出的 mode 則數。用 julianday 比，不靠字串格式。"""

@@ -542,9 +542,9 @@ def test_a_paced_down_broadcast_is_skipped_once_telegram_delivered(tmp_path, mon
     assert _mode(api2) == "owner"
 
 
-def test_with_telegram_the_owner_reserve_drops_to_ten(tmp_path, monkeypatch):
-    """本月剩 15 則：沒有 Telegram 時低於保留的 30 則、只發給擁有者；有 Telegram 時保留 10 則，
-    廣播 5 則後剩 10 → 今天第一則照常廣播給朋友。"""
+def test_with_telegram_the_owner_reserve_drops_to_three(tmp_path, monkeypatch):
+    """本月剩 15 則：沒有 Telegram 時低於保留的 30 則、只發給擁有者；有 Telegram 時保留 3 則
+    （2026-11-26 由 10 降到 3），廣播 5 則後剩 10 → 今天第一則照常廣播給朋友。"""
     _broadcast_env(monkeypatch)                                         # 只有 LINE
     st, b = _budget(tmp_path)
     assert N.owner_reserve() == N.LINE_OWNER_RESERVE == 30
@@ -554,10 +554,10 @@ def test_with_telegram_the_owner_reserve_drops_to_ten(tmp_path, monkeypatch):
     _both_env(monkeypatch)                                              # 加上 Telegram
     (tmp_path / "t").mkdir()
     st2, b2 = _budget(tmp_path / "t")
-    assert N.owner_reserve() == N.LINE_OWNER_RESERVE_WITH_TELEGRAM == 10
+    assert N.owner_reserve() == N.LINE_OWNER_RESERVE_WITH_TELEGRAM == 3
     api2 = _PacedApi(limit=200, used=185)
     assert N.send_line("x", session=api2, budget=b2) is True and _mode(api2) == "broadcast"
-    api3 = _PacedApi(limit=200, used=186)                               # 剩 14：廣播完剩 9 < 10
+    api3 = _PacedApi(limit=200, used=193)                               # 剩 7：廣播完剩 2 < 3
     (tmp_path / "u").mkdir()
     _, b3 = _budget(tmp_path / "u")
     assert N.send_line("x", session=api3, budget=b3, owner_reached=True) is False
@@ -588,3 +588,76 @@ def test_cheap_day_push_skips_the_line_owner_push_once_telegram_delivered(tmp_pa
     s = C.run(str(tmp_path / "p.db"), str(board), now=now)
     assert seen.get("owner_reached") is True
     assert s["sent"] == 1 and s["failed"] == 0                          # Telegram 送到就算推播成功
+
+
+# ---- 同一條線 3 天內只廣播一次，除非再便宜 10%（2026-11-26）-------------------------
+
+def _notify_priced(monkeypatch, api, budget, route=("KHH", "FUK"), price=6781.0):
+    from types import SimpleNamespace
+    monkeypatch.setattr(N.requests, "get", api.get)
+    monkeypatch.setattr(N.requests, "post", api.post)
+    monkeypatch.setattr(N, "format_alert", lambda *a: "便宜機票")
+    offer = Offer(route[0], route[1], "2026-12-01", "2026-12-09", price, "TWD", "IT", 0, "")
+    return N.notify(offer, VERDICT, SimpleNamespace(state="verified", selected_price=price),
+                    line_budget=budget)
+
+
+def test_a_route_already_broadcast_in_3_days_goes_only_to_the_owner(tmp_path, monkeypatch, caplog):
+    """實例：福岡 11/24 一天三則（12/01 6,781、12/02 6,481、12/09 6,881），朋友收一則就夠。"""
+    _both_env(monkeypatch)
+    st = Store(str(tmp_path / "prices.db"))
+    st.record_line_send((DAY - timedelta(days=2)).isoformat(), "broadcast", 100,
+                        origin="KHH", destination="FUK", price=6781.0)
+    b = N.LineBudget(st, DAY)
+    api = _BothApi(limit=200, used=50)
+    with caplog.at_level(logging.INFO, logger="farehunter.notify"):
+        assert _notify_priced(monkeypatch, api, b, price=6481.0) == ["telegram"]   # 只便宜 4.4%
+    assert api.line_posts() == [] and "3 天內已經廣播過" in caplog.text
+    api2 = _BothApi(limit=200, used=50)
+    assert _notify_priced(monkeypatch, api2, b, price=6100.0) == ["telegram", "line"]  # 便宜 10% 以上
+    api3 = _BothApi(limit=200, used=50)
+    assert _notify_priced(monkeypatch, api3, b, route=("KHH", "OKA"), price=5115.0) == ["telegram", "line"]
+
+
+def test_the_spacing_expires_after_3_days_and_records_route_and_price(tmp_path, monkeypatch):
+    _both_env(monkeypatch)
+    st = Store(str(tmp_path / "prices.db"))
+    st.record_line_send((DAY - timedelta(days=3, minutes=1)).isoformat(), "broadcast", 100,
+                        origin="KHH", destination="FUK", price=6781.0)
+    b = N.LineBudget(st, DAY)
+    api = _BothApi(limit=200, used=50)
+    assert _notify_priced(monkeypatch, api, b, price=6781.0) == ["telegram", "line"]
+    row = st.conn.execute("SELECT mode, origin, destination, price FROM line_sends"
+                          " ORDER BY rowid DESC LIMIT 1").fetchone()
+    assert tuple(row) == ("broadcast", "KHH", "FUK", 6781.0)
+    assert b.route_recently_told("KHH", "FUK", 6500.0)                   # 剛廣播過、只便宜 4%
+
+
+def test_old_line_sends_table_gets_the_route_columns(tmp_path):
+    import sqlite3
+    db = tmp_path / "old.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE line_sends (sent_at TEXT NOT NULL, mode TEXT NOT NULL)")
+    con.execute("INSERT INTO line_sends VALUES ('2026-11-01T00:00:00+00:00', 'broadcast')")
+    con.commit()
+    con.close()
+    st = Store(str(db))
+    assert st.route_broadcast_floor("KHH", "FUK", "2026-10-01") is None    # 舊列沒有航線：不擋
+
+
+def test_cheap_day_pushes_never_broadcast_to_line_friends(tmp_path, monkeypatch):
+    """2026-11-26：凌晨一則 KHH-NRT 春節 14,956 的便宜日推播用掉當天的廣播名額，下午已驗證的
+    KHH⇄OKA 5,115 就廣播不出去。便宜日推播改成只發給擁有者。"""
+    seen = {}
+    monkeypatch.setattr(C, "send_telegram", lambda text, **k: True)
+    monkeypatch.setattr(C, "send_line", lambda text, **k: seen.update(k) or False)
+    now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    item = {"origin": "KHH", "destination": "NRT", "depart_date": "2026-11-20",
+            "return_date": "2026-11-25", "price": 7200.0,
+            "neighbour_median": 12000.0, "neighbours": 8, "discount_pct": 40.0,
+            "notable": True, "source": "google", "carriers": "IT",
+            "observed_at": (now - timedelta(minutes=5)).isoformat()}
+    board = tmp_path / "data.json"
+    board.write_text(json.dumps({"cheap_days": [item]}), encoding="utf-8")
+    C.run(str(tmp_path / "p.db"), str(board), now=now)
+    assert seen.get("owner_only") is True
