@@ -222,8 +222,10 @@ def run(db_path: str = "prices.db", data_path: str | None = None,
                 summary["sent"] += 1
                 continue
             telegram_ok = send_telegram(text, quiet=quiet_hours(now))
-            # Telegram 已經送到擁有者：LINE 只在會廣播給朋友時才發（notify.send_line）
-            line_ok = send_line(text, budget=budget, owner_reached=telegram_ok)
+            # 2026-11-26 起便宜日推播不廣播給 LINE 朋友（owner_only）：朋友只用 LINE、額度要留給價格警報。
+            # 11/26 凌晨一則 KHH-NRT 春節 14,956 的便宜日推播用掉當天的廣播名額，下午已驗證的
+            # KHH⇄OKA 5,115 就廣播不出去。Telegram 送到就不再用 LINE；Telegram 沒送到才用 LINE 發給擁有者。
+            line_ok = send_line(text, budget=budget, owner_only=True, owner_reached=telegram_ok)
             sent = [c for c, ok in (("telegram", telegram_ok), ("line", line_ok)) if ok]
             if not sent:
                 # 沒設任何管道時 notify.notify 的行為是印出來，這裡沿用：
