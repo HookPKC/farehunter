@@ -156,6 +156,28 @@ CREATE TABLE IF NOT EXISTS provider_exhaustion (
     last_at  TEXT NOT NULL
 );
 
+-- 使用者指定行程的專屬追蹤（trip_watch.py，2026-11-27）。不寫 observations：看板的航線清單取自那裡，
+-- 追蹤的航線（例如高雄⇄熊本）會變成多出來的一條線。checks＝每次成功查詢（price NULL＝頁面正常但
+-- 查不到直飛）；notices＝上次通知的價格（只留最新一筆）。
+CREATE TABLE IF NOT EXISTS trip_watch_checks (
+    origin      TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    depart_date TEXT NOT NULL,
+    return_date TEXT NOT NULL,
+    checked_at  TEXT NOT NULL,
+    price       REAL,
+    carriers    TEXT
+);
+CREATE TABLE IF NOT EXISTS trip_watch_notices (
+    origin      TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    depart_date TEXT NOT NULL,
+    return_date TEXT NOT NULL,
+    sent_at     TEXT NOT NULL,
+    price       REAL,
+    PRIMARY KEY (origin, destination, depart_date, return_date)
+);
+
 -- Telegram 每日摘要（daily_digest.py）發過的台灣日期，一天只發一次。
 CREATE TABLE IF NOT EXISTS digest_sends (
     day     TEXT PRIMARY KEY,
@@ -694,6 +716,36 @@ class Store:
         keep_from = (datetime.fromisoformat(started_at) - timedelta(days=2)).isoformat(timespec="seconds")
         self.conn.execute("DELETE FROM monitor_runs WHERE julianday(started_at) < julianday(?)",
                           (keep_from,))
+        self.conn.commit()
+
+    def trip_watch_checked_since(self, origin: str, destination: str, depart: str, ret: str,
+                                 since: str) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM trip_watch_checks WHERE origin=? AND destination=? AND depart_date=?"
+            " AND return_date=? AND julianday(checked_at) >= julianday(?)",
+            (origin, destination, depart, ret, since)).fetchone() is not None
+
+    def record_trip_watch_check(self, origin: str, destination: str, depart: str, ret: str,
+                                checked_at: str, price: float | None, carriers: str | None) -> None:
+        self.conn.execute("INSERT INTO trip_watch_checks VALUES (?, ?, ?, ?, ?, ?, ?)",
+                          (origin, destination, depart, ret, checked_at, price, carriers))
+        self.conn.commit()
+
+    def trip_watch_last_notified(self, origin: str, destination: str, depart: str,
+                                 ret: str) -> tuple[float | None, str] | None:
+        """(上次通知的價格（None＝通知的是查不到直飛）, 時間)；沒通知過回 None。"""
+        row = self.conn.execute(
+            "SELECT price, sent_at FROM trip_watch_notices WHERE origin=? AND destination=?"
+            " AND depart_date=? AND return_date=?", (origin, destination, depart, ret)).fetchone()
+        return None if row is None else (row[0], row[1])
+
+    def record_trip_watch_notice(self, origin: str, destination: str, depart: str, ret: str,
+                                 sent_at: str, price: float | None) -> None:
+        self.conn.execute(
+            "INSERT INTO trip_watch_notices VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(origin, destination, depart_date, return_date)"
+            " DO UPDATE SET sent_at=excluded.sent_at, price=excluded.price",
+            (origin, destination, depart, ret, sent_at, price))
         self.conn.commit()
 
     def exhaustion(self, provider: str) -> tuple[str, str] | None:
