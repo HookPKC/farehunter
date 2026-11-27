@@ -25,6 +25,7 @@ from . import gflights2_flights as gflights2
 from . import calendar_hints
 from . import tigerair_calendar
 from . import daily_digest
+from . import trip_watch
 from .models import MAX_STAY_NIGHTS, MIN_STAY_NIGHTS, Offer, stay_ok
 
 log = logging.getLogger(__name__)
@@ -675,6 +676,14 @@ def run(config_path: str = "config.yaml", db_path: str = "prices.db",
                     summary["alerts"] += n
             except Exception:
                 log.exception("傳統航空警報意外失敗，本輪略過")
+
+        # 使用者指定行程的專屬追蹤（trip_watch）：每 12 小時查一次 Google 直飛實價，有變化就 Telegram。
+        # 用 Bright Data，用量記進同一本帳。Aviasales 全滅的輪次不 commit，查過的紀錄會消失，所以不跑。
+        if brightdata.configured() and trip_watch.trips(cfg) and not all_searches_failed(summary):
+            try:
+                summary["trip_watch"] = trip_watch.run(store, cfg, now)
+            except Exception:
+                log.exception("行程追蹤意外失敗，本輪略過")
 
         # Telegram 每日摘要（daily_digest）：台灣時間早上那輪發給擁有者，不用 LINE。放在所有警報
         # 之後，摘要才算得到這輪的實價與警報。Aviasales 全滅的輪次不 commit，「今天發過」的紀錄

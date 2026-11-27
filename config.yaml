@@ -98,3 +98,13 @@ routes:
     destination: NGO      # 名古屋中部
     absolute_threshold: 7700    # 原 7500 → 11100（快取價）→ 2026-11-20 實價重算 7700
     sweep_alerts: true
+
+# 使用者指定行程的專屬追蹤（trip_watch.py，2026-11-27）：每 12 小時查一次 Google 直飛實價，第一次查到、
+# 便宜 3% 以上、貴 5% 以上、或查不到直飛時用 Telegram 通知擁有者（不佔 LINE）。出發日到了自動停。
+# 不必在上面的 routes 裡；結果不進看板。
+watch_trips:
+  - origin: KHH
+    destination: KMJ
+    depart: "2027-03-02"
+    return: "2027-03-09"
+    note: 熊本＋福岡自由行（虎航週二、五飛；11/27 查 9,752）
