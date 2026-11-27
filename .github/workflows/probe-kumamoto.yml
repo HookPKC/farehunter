@@ -1,0 +1,21 @@
+name: Probe Kumamoto (one-off)
+
+# 2026-11-27 一次性：3 月初福岡 vs 熊本的票價。只讀、不碰 prices.db、不 commit。用完即刪。
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Tigerair calendar + Google Flights via Bright Data
+        env:
+          BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
+          BRIGHTDATA_ZONE: ${{ secrets.BRIGHTDATA_ZONE }}
+        run: python scripts/probe_kumamoto.py
