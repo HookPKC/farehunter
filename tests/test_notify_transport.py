@@ -340,17 +340,22 @@ def test_the_first_broadcast_of_the_day_goes_out_while_above_the_reserve(tmp_pat
     assert st.line_sends_since("broadcast", "2026-11-10T00:00:00+00:00") == 1
 
 
-def test_a_second_broadcast_needs_room_for_one_a_day_until_month_end(tmp_path, monkeypatch):
-    """今天已廣播過：剩 100 則、還有 21 天，廣播完得留 30＋5×20＝130 → 只發給擁有者。"""
+def test_a_second_broadcast_the_same_day_goes_out_while_above_the_reserve(tmp_path, monkeypatch):
+    """2026-11-27 起不再替「月底前每天一則」預留：11/26 KHH⇄NGO 6,910（低於門檻 10%）是當天第二則、
+    月底剩 17 則（廣播完 13 < 3＋4×4），原本只發給擁有者。現在只要不動到保留額度就廣播。"""
     _broadcast_env(monkeypatch)
     st, b = _budget(tmp_path, earlier=[("2026-11-10T01:00:00+00:00", "broadcast")])
-    api = _PacedApi(limit=200, used=100)
+    api = _PacedApi(limit=200, used=183)                        # 剩 17：廣播 5 則後 12 ≥ 30？否
     assert N.send_line("便宜機票", session=api, budget=b) is True
-    assert _mode(api) == "owner"
-    assert st.line_sends_since("owner", "2026-11-10T00:00:00+00:00") == 1
-    roomy = _PacedApi(limit=200, used=60)                      # 剩 140：135 ≥ 130 → 可以
-    assert N.send_line("便宜機票", session=roomy, budget=b) is True
-    assert _mode(roomy) == "broadcast"
+    assert _mode(api) == "owner"                                # 沒有 Telegram 時保留 30 則
+    _both_env(monkeypatch)                                      # 有 Telegram：保留 3 則
+    api2 = _PacedApi(limit=200, used=183)
+    assert N.send_line("便宜機票", session=api2, budget=b) is True
+    assert _mode(api2) == "broadcast"
+    assert st.line_sends_since("broadcast", "2026-11-10T00:00:00+00:00") == 2
+    low = _PacedApi(limit=200, used=193)                        # 剩 7：廣播完 2 < 3 → 只給擁有者
+    assert N.send_line("便宜機票", session=low, budget=b) is True
+    assert _mode(low) == "owner"
 
 
 def test_the_day_is_counted_in_taiwan_time(tmp_path, monkeypatch):
@@ -368,8 +373,8 @@ def test_recipients_come_from_line_statistics_with_a_fallback(tmp_path, monkeypa
     """12 位好友時一次廣播用掉 12 則；同樣的剩餘額度，5 人可以、12 人就不行。"""
     _broadcast_env(monkeypatch)
     st, b = _budget(tmp_path, earlier=[("2026-11-10T01:00:00+00:00", "broadcast")])
-    # 剩 140：5 人時 135 ≥ 130 可以；12 人時 128 < 30＋12×20 → 不行
-    many = _PacedApi(limit=200, used=60, insight={"status": "ready", "targetedReaches": 12})
+    # 剩 40（沒有 Telegram，保留 30）：5 人時 35 ≥ 30 可以；12 人時 28 < 30 → 不行
+    many = _PacedApi(limit=200, used=160, insight={"status": "ready", "targetedReaches": 12})
     assert N.send_line("便宜機票", session=many, budget=b) is True
     assert _mode(many) == "owner"
     monkeypatch.setenv("LINE_RECIPIENTS", "12")                # 讀不到統計時用設定值
@@ -419,9 +424,9 @@ def test_the_send_record_keeps_the_remaining_quota(tmp_path, monkeypatch):
     _broadcast_env(monkeypatch)
     st, b = _budget(tmp_path)
     assert N.send_line("x", session=_PacedApi(limit=200, used=100), budget=b) is True    # 廣播：100 − 5
-    assert N.send_line("x", session=_PacedApi(limit=200, used=105), budget=b) is True    # 今天第二則 → 只給擁有者
+    assert N.send_line("x", session=_PacedApi(limit=200, used=168), budget=b) is True    # 剩 32：廣播會動到保留 30 → 只給擁有者
     rows = [tuple(r) for r in st.conn.execute("SELECT mode, quota_left FROM line_sends ORDER BY rowid")]
-    assert rows == [("broadcast", 95), ("owner", 94)]
+    assert rows == [("broadcast", 95), ("owner", 31)]
     (tmp_path / "u").mkdir()
     st2, b2 = _budget(tmp_path / "u")
     assert N.send_line("x", session=_PacedApi(unlimited=True), budget=b2) is True         # 查不到額度 → 不猜
@@ -531,13 +536,13 @@ def test_verified_alerts_are_still_broadcast_to_friends(tmp_path, monkeypatch):
 
 
 def test_a_paced_down_broadcast_is_skipped_once_telegram_delivered(tmp_path, monkeypatch):
-    """今天已廣播過、配速不准再廣播：原本改發給擁有者，現在擁有者已從 Telegram 收到 → 不發。"""
+    """額度不夠廣播：原本改發給擁有者，現在擁有者已從 Telegram 收到 → 不發。"""
     _both_env(monkeypatch)
     st, b = _budget(tmp_path, earlier=[("2026-11-10T01:00:00+00:00", "broadcast")])
-    api = _PacedApi(limit=200, used=100)
+    api = _PacedApi(limit=200, used=193)                        # 剩 7：廣播完 2 < 3
     assert N.send_line("x", session=api, budget=b, owner_reached=True) is False
     assert api.posts == []
-    api2 = _PacedApi(limit=200, used=100)
+    api2 = _PacedApi(limit=200, used=193)
     assert N.send_line("x", session=api2, budget=b, owner_reached=False) is True
     assert _mode(api2) == "owner"
 

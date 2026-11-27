@@ -207,11 +207,12 @@ class LineBudget:
     """LINE 額度配速（使用者說明見 docs/RUNBOOK_HOOK.md §3e）：讓免費額度攤到整個月，而不是前 20 天用完、
     月底朋友完全收不到。
 
-    規則（send_line 廣播前檢查）：
-      - 台灣日期今天第一則：照常廣播，只要廣播完還留得下保留額度（owner_reserve）。
-      - 今天第二則以後：廣播完還得留夠「之後每天一則廣播」的額度＋保留額度，否則只發給
-        擁有者。前面沒用完的額度自然留給後面忙的日子。
-    只需要「今天廣播過幾次」（prices.db 的 line_sends）與 LINE 回報的本月剩餘則數。
+    規則（send_line 廣播前檢查）：廣播完還留得下保留額度（owner_reserve）就廣播，否則只發給擁有者。
+
+    2026-11-27 拿掉「同一天第二則要先留夠月底前每天一則」的預留：11/26 已驗證的 KHH⇄NGO 6,910（比門檻
+    7,700 低 10%）因為那天已廣播過一次、月底只剩 17 則而沒發給朋友；沒有好價的日子，預留的額度到月底就
+    作廢。現在會廣播的只剩已驗證的警報（未驗證與便宜日推播只發給擁有者），浪費改由「同一條線 3 天只廣播
+    一次」（route_recently_told）擋掉——11/21 起的警報重播每月約 164 則，在免費 200 則內。
     """
 
     def __init__(self, store, now: datetime):
@@ -231,10 +232,7 @@ class LineBudget:
         return calendar.monthrange(t.year, t.month)[1] - t.day + 1
 
     def allows_broadcast(self, left: int, recipients: int) -> bool:
-        after, reserve = left - recipients, owner_reserve()
-        if self.broadcasts_today() == 0:
-            return after >= reserve
-        return after >= reserve + recipients * (self.days_left() - 1)
+        return left - recipients >= owner_reserve()
 
     def route_recently_told(self, origin: str, destination: str, price: float) -> bool:
         """這條線 LINE_ROUTE_SPACING_DAYS 天內已經廣播過、而且這次沒有再便宜 10% 以上。"""
@@ -329,9 +327,8 @@ def send_line(text: str, session: requests.Session | None = None, *,
         elif left is not None and budget is not None:
             n = _line_recipients(s, headers, token, budget.now)
             if not budget.allows_broadcast(left, n):
-                log.info("LINE 配速：本月剩 %d 則、今天已廣播 %d 次、還有 %d 天"
-                         "（每次廣播 %d 則）：這則只發給擁有者",
-                         left, budget.broadcasts_today(), budget.days_left(), n)
+                log.info("LINE 額度：本月剩 %d 則，廣播一次 %d 則就會動到保留的 %d 則：這則只發給擁有者",
+                         left, n, owner_reserve())
                 broadcast = False
     if broadcast_mode and not broadcast and owner_reached:
         log.info("LINE：擁有者已經從 Telegram 收到這則，不再用 LINE 發（省下 1 則額度給朋友）")
